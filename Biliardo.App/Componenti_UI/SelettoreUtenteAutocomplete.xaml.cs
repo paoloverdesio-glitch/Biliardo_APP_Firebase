@@ -265,13 +265,13 @@ namespace Biliardo.App.Componenti_UI
     {
         public static readonly ToInitialConverter Instance = new();
 
-        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
             var s = value as string;
             return string.IsNullOrWhiteSpace(s) ? "?" : s.Substring(0, 1).ToUpperInvariant();
         }
 
-        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
             => throw new NotSupportedException();
     }
 }
