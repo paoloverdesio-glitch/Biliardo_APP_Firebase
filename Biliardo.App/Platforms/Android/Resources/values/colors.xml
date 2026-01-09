@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<!-- Verde molto scuro per primary / status bar, in linea con la Home -->
+	<color name="colorPrimary">#00100A</color>
+	<color name="colorPrimaryDark">#00100A</color>
+
+	<!-- Verde più acceso per accent -->
+	<color name="colorAccent">#00452A</color>
+</resources>

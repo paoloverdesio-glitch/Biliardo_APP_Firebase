@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- =========================================================================
+ Pagina di registrazione (SOLO FIREBASE):
+  - Crea account Firebase Auth (email/password)
+  - Invia email di verifica (link)
+  - Crea profilo su Firestore: users_public/{uid} + nicknames/{nicknameLower}
+============================================================================ -->
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Pagine_Autenticazione.Pagina_Registrazione"
+             Title="Registrati"
+             BackgroundColor="{StaticResource Bil_VerdeScuro}">
+
+    <Grid>
+
+        <ScrollView>
+            <VerticalStackLayout Padding="16" Spacing="14">
+
+                <Label Text="Crea account (Firebase)"
+                       FontSize="24"
+                       HorizontalOptions="Center"
+                       TextColor="White" />
+
+                <Label Text="Nickname *"
+                       FontAttributes="Bold"
+                       TextColor="White" />
+                <Entry x:Name="NicknameEntry"
+                       Style="{StaticResource Bil_Entry_SuScuro}"
+                       Placeholder="3–20 caratteri: A-Z a-z 0-9 _ . -" />
+
+                <Label Text="Email *"
+                       FontAttributes="Bold"
+                       TextColor="White" />
+                <Entry x:Name="EmailEntry"
+                       Style="{StaticResource Bil_Entry_SuScuro}"
+                       Placeholder="nome@dominio"
+                       Keyboard="Email" />
+
+                <Label Text="Password *"
+                       FontAttributes="Bold"
+                       TextColor="White" />
+                <HorizontalStackLayout Spacing="8">
+                    <Entry x:Name="PasswordEntry"
+                           Style="{StaticResource Bil_Entry_SuScuro}"
+                           Placeholder="Almeno 8 caratteri"
+                           IsPassword="True"
+                           HorizontalOptions="FillAndExpand" />
+                    <Button x:Name="TogglePasswordButton"
+                            Text="👁"
+                            WidthRequest="44"
+                            Clicked="TogglePassword_Clicked"
+                            BackgroundColor="#006633"
+                            TextColor="White" />
+                </HorizontalStackLayout>
+
+                <!-- Opzionali (li salviamo su Firestore solo se presenti) -->
+                <Label Text="Nome (opzionale)" TextColor="White" />
+                <Entry x:Name="NomeEntry" Style="{StaticResource Bil_Entry_SuScuro}" Placeholder="Nome" />
+
+                <Label Text="Cognome (opzionale)" TextColor="White" />
+                <Entry x:Name="CognomeEntry" Style="{StaticResource Bil_Entry_SuScuro}" Placeholder="Cognome" />
+
+                <Label Text="Città (opzionale)" TextColor="White" />
+                <Entry x:Name="CittaEntry" Style="{StaticResource Bil_Entry_SuScuro}" Placeholder="Città" />
+
+                <Label Text="Circolo (opzionale)" TextColor="White" />
+                <Entry x:Name="CircoloEntry" Style="{StaticResource Bil_Entry_SuScuro}" Placeholder="Circolo di appartenenza" />
+
+                <Label Text="Telefono (opzionale)" TextColor="White" />
+                <Entry x:Name="TelefonoEntry" Style="{StaticResource Bil_Entry_SuScuro}" Placeholder="+39…" Keyboard="Telephone" />
+
+                <Label Text="Età (opzionale)" TextColor="White" />
+                <Entry x:Name="EtaEntry" Style="{StaticResource Bil_Entry_SuScuro}" Placeholder="0–120" Keyboard="Numeric" />
+
+                <Label Text="Categoria FISBB (opzionale)" TextColor="White" />
+                <Picker x:Name="CategoriaPicker"
+                        Style="{StaticResource Bil_Picker_SuScuro}"
+                        Title="Seleziona categoria">
+                    <Picker.Items>
+                        <x:String>3ª</x:String>
+                        <x:String>2ª</x:String>
+                        <x:String>1ª</x:String>
+                        <x:String>Master</x:String>
+                        <x:String>Nazionale</x:String>
+                        <x:String>NazionalePro</x:String>
+                    </Picker.Items>
+                </Picker>
+
+                <Button Text="Registrati con Firebase"
+                        Clicked="OnRegistratiFirebase"
+                        BackgroundColor="#0B5F31"
+                        TextColor="White" />
+
+                <Label Text="Dopo la registrazione riceverai una mail con LINK di verifica. Verifica e poi fai login con Firebase."
+                       FontSize="12"
+                       TextColor="#CCCCCC" />
+
+                <BoxView HeightRequest="1" BackgroundColor="#444" />
+
+                <Button Text="Torna al login"
+                        Clicked="OnTornaLogin"
+                        BackgroundColor="#006633"
+                        TextColor="White" />
+
+                <Label Text="* Campi obbligatori"
+                       FontSize="12"
+                       TextColor="#CCCCCC" />
+
+            </VerticalStackLayout>
+        </ScrollView>
+
+        <!-- Popup Overlay -->
+        <Grid x:Name="PopupOverlay"
+              BackgroundColor="#80000000"
+              IsVisible="False"
+              HorizontalOptions="Fill"
+              VerticalOptions="Fill">
+            <Border BackgroundColor="#006633"
+                    Padding="16"
+                    StrokeThickness="0"
+                    HorizontalOptions="Center"
+                    VerticalOptions="Center"
+                    WidthRequest="320">
+                <VerticalStackLayout Spacing="12">
+                    <Label x:Name="PopupTitleLabel"
+                           Text="Titolo"
+                           FontAttributes="Bold"
+                           FontSize="18"
+                           TextColor="White"
+                           HorizontalTextAlignment="Center" />
+                    <Label x:Name="PopupMessageLabel"
+                           Text="Messaggio"
+                           FontSize="14"
+                           TextColor="White"
+                           HorizontalTextAlignment="Center" />
+                    <Button Text="OK"
+                            Clicked="OnPopupOkClicked"
+                            BackgroundColor="#004d26"
+                            TextColor="White" />
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
+
+    </Grid>
+</ContentPage>

@@ -1,0 +1,313 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  === Pagine_Home/Pagina_Home.xaml ============================================
+  Home dopo login:
+   - Sfondo gradiente verde scuro.
+   - Barra superiore: SOLO icone (3 palle biliardo, mercatino, sfida, chat, menu account).
+   - Menu laterale sinistro free1..free15 (slide da sinistra).
+   - Menu laterale destro account (Info app / Esci →) (slide da destra).
+   - Popup verde stile unificato.
+============================================================================ -->
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Pagine_Home.Pagina_Home"
+             Title="Biliardo">
+
+    <!-- ===================== [A] SFONDO GRADIENTE SCURO ==================== -->
+    <ContentPage.Background>
+        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#00100A" Offset="0.0" />
+            <GradientStop Color="#003020" Offset="0.4" />
+            <GradientStop Color="#00452A" Offset="1.0" />
+        </LinearGradientBrush>
+    </ContentPage.Background>
+
+    <!-- ===================== [B] LAYOUT BASE A GRIGLIA ===================== -->
+    <Grid RowDefinitions="Auto,*"
+          ColumnDefinitions="*">
+
+        <!-- ===================== [B1] BARRA SUPERIORE (ICONE) =============== -->
+        <Grid Grid.Row="0"
+              Padding="10,0,10,6"
+              BackgroundColor="#00000000">
+            <Grid.ColumnDefinitions>
+                <!-- Icona 3 palle / menu laterale sinistro -->
+                <ColumnDefinition Width="Auto" />
+                <!-- Spazio centrale flessibile -->
+                <ColumnDefinition Width="*" />
+                <!-- Mercatino -->
+                <ColumnDefinition Width="Auto" />
+                <!-- Sfida (spade) -->
+                <ColumnDefinition Width="Auto" />
+                <!-- Chat (nuvoletta) -->
+                <ColumnDefinition Width="Auto" />
+                <!-- Menu account (logout) -->
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- [B1.1] ICONA 3 PALLE DA BILIARDO (apre menu sinistro) -->
+            <Frame Grid.Column="0"
+                   Padding="0"
+                   BackgroundColor="#00000033"
+                   HorizontalOptions="Start"
+                   VerticalOptions="Center"
+                   CornerRadius="18"
+                   HasShadow="False"
+                   WidthRequest="64"
+                   HeightRequest="64">
+                <Frame.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnMenuLaterale_Toggle" />
+                </Frame.GestureRecognizers>
+
+                <Image Source="appicon_threeballs.svg"
+                       WidthRequest="48"
+                       HeightRequest="48"
+                       Aspect="AspectFit"
+                       Margin="0,6,0,0"
+                       VerticalOptions="Center"
+                       HorizontalOptions="Center" />
+            </Frame>
+
+            <!-- [B1.2] ICONA MERCATINO (CARRELLO, SOLO ICONA) -->
+            <Grid Grid.Column="2"
+                  Margin="6,0"
+                  VerticalOptions="Center">
+                <Grid.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnMercatino" />
+                </Grid.GestureRecognizers>
+                <Label Text="🛒"
+                       FontSize="22"
+                       HorizontalOptions="Center"
+                       VerticalOptions="Center" />
+            </Grid>
+
+            <!-- [B1.3] ICONA SFIDA (2 SPADE INCROCIATE, SOLO ICONA) -->
+            <Grid Grid.Column="3"
+                  Margin="6,0"
+                  VerticalOptions="Center">
+                <Grid.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnCreaSfida" />
+                </Grid.GestureRecognizers>
+                <Label Text="⚔️"
+                       FontSize="22"
+                       HorizontalOptions="Center"
+                       VerticalOptions="Center" />
+            </Grid>
+
+            <!-- [B1.4] ICONA CHAT (NUVOLETTA, SOLO ICONA) -->
+            <Grid Grid.Column="4"
+                  Margin="6,0"
+                  VerticalOptions="Center">
+                <Grid.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnApriMessaggi" />
+                </Grid.GestureRecognizers>
+                <Label Text="💬"
+                       FontSize="22"
+                       HorizontalOptions="Center"
+                       VerticalOptions="Center" />
+            </Grid>
+
+            <!-- [B1.5] ICONA MENU ACCOUNT (FRECCIA BIANCA A DESTRA) -->
+            <Grid Grid.Column="5"
+                  Margin="6,0,0,0"
+                  VerticalOptions="Center">
+                <Grid.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnLogoutMenu" />
+                </Grid.GestureRecognizers>
+                <Label Text="➤"
+                       FontSize="24"
+                       TextColor="White"
+                       HorizontalOptions="Center"
+                       VerticalOptions="Center" />
+            </Grid>
+        </Grid>
+
+        <!-- ===================== [B2] CORPO (PULITO) ======================== -->
+        <Grid Grid.Row="1">
+            <!-- Area pronta per contenuti futuri -->
+        </Grid>
+
+        <!-- ===================== [C] MENU LATERALE SINISTRO ================== -->
+        <Grid x:Name="overlay_menu"
+              Grid.RowSpan="2"
+              BackgroundColor="#00000066"
+              IsVisible="False"
+              Opacity="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- [C1] PANNELLO SINISTRO SCORREVOLE (FREE1..FREE15) -->
+            <Frame x:Name="menu_panel"
+                   Grid.Column="0"
+                   Padding="0"
+                   CornerRadius="0"
+                   BackgroundColor="Black"
+                   HasShadow="False"
+                   WidthRequest="280"
+                   TranslationX="-280">
+                <ScrollView>
+                    <VerticalStackLayout Padding="16,28"
+                                         Spacing="10">
+                        <Label Text="MENU"
+                               FontSize="14"
+                               TextColor="White" />
+                        <BoxView HeightRequest="1"
+                                 BackgroundColor="#444444"
+                                 Margin="0,0,0,8" />
+
+                        <!-- Voci free1..free15 -->
+                        <Button Text="free1"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free2"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free3"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free4"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free5"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free6"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free7"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free8"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free9"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free10" Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free11" Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free12" Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free13" Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free14" Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                        <Button Text="free15" Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
+                    </VerticalStackLayout>
+                </ScrollView>
+            </Frame>
+
+            <!-- [C2] AREA CLIC PER CHIUDERE MENU SINISTRO -->
+            <ContentView Grid.Column="1">
+                <ContentView.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnMenuLaterale_Toggle" />
+                </ContentView.GestureRecognizers>
+            </ContentView>
+        </Grid>
+
+        <!-- ===================== [D] MENU LATERALE DESTRO (ACCOUNT) ========= -->
+        <Grid x:Name="overlay_logout_menu"
+              Grid.RowSpan="2"
+              BackgroundColor="#00000066"
+              IsVisible="False"
+              Opacity="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="280" />
+            </Grid.ColumnDefinitions>
+
+            <!-- [D1] AREA CLIC PER CHIUDERE MENU DESTRO -->
+            <ContentView Grid.Column="0">
+                <ContentView.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnLogoutMenu_Toggle" />
+                </ContentView.GestureRecognizers>
+            </ContentView>
+
+            <!-- [D2] PANNELLO DESTRO SCORREVOLE (ACCOUNT) -->
+            <Frame x:Name="logout_menu_panel"
+                   Grid.Column="1"
+                   Padding="0"
+                   CornerRadius="0"
+                   BackgroundColor="Black"
+                   HasShadow="False"
+                   WidthRequest="280"
+                   TranslationX="280">
+                <ScrollView>
+                    <VerticalStackLayout Padding="16,28"
+                                         Spacing="10">
+                        <Label Text="ACCOUNT"
+                               FontSize="14"
+                               TextColor="White" />
+                        <BoxView HeightRequest="1"
+                                 BackgroundColor="#444444"
+                                 Margin="0,0,0,8" />
+
+                        <Button Text="Info su BiliardoApp"
+                                Style="{StaticResource LogoutMenuVoice}"
+                                Clicked="OnLogoutInfoClicked" />
+
+                        <Button Text="Esci →"
+                                Style="{StaticResource LogoutMenuVoice}"
+                                Clicked="OnLogoutExitClicked" />
+                    </VerticalStackLayout>
+                </ScrollView>
+            </Frame>
+        </Grid>
+
+        <!-- ===================== [E] POPUP OVERLAY UNIFICATO ================= -->
+        <Grid x:Name="PopupOverlay"
+              Grid.RowSpan="2"
+              BackgroundColor="#80000000"
+              IsVisible="False"
+              HorizontalOptions="Fill"
+              VerticalOptions="Fill">
+            <Frame BackgroundColor="#006633"
+                   Padding="16"
+                   HorizontalOptions="Center"
+                   VerticalOptions="Center"
+                   WidthRequest="320"
+                   CornerRadius="16"
+                   HasShadow="False">
+                <VerticalStackLayout Spacing="12">
+                    <Label x:Name="PopupTitleLabel"
+                           Text="Titolo"
+                           FontAttributes="Bold"
+                           FontSize="18"
+                           TextColor="White"
+                           HorizontalTextAlignment="Center" />
+                    <Label x:Name="PopupMessageLabel"
+                           Text="Messaggio"
+                           FontSize="14"
+                           TextColor="White"
+                           HorizontalTextAlignment="Center" />
+                    <Button Text="OK"
+                            Clicked="OnPopupOkClicked"
+                            BackgroundColor="#004d26"
+                            TextColor="White" />
+                </VerticalStackLayout>
+            </Frame>
+        </Grid>
+
+    </Grid>
+
+    <!-- ===================== [F] STILI LOCALI (MENU TESTO) ================== -->
+    <ContentPage.Resources>
+        <!-- Menu sinistro FREE -->
+        <Style x:Key="MenuVoice"
+               TargetType="Button">
+            <Setter Property="HorizontalOptions" Value="Fill" />
+            <Setter Property="TextColor" Value="White" />
+            <Setter Property="Padding" Value="8,10" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Background">
+                <Setter.Value>
+                    <!-- Gradiente verde scuro inclinato ~20° rispetto all'orizzontale -->
+                    <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.15">
+                        <GradientStop Color="#022C22" Offset="0.0" />
+                        <GradientStop Color="#064E3B" Offset="0.5" />
+                        <GradientStop Color="#047857" Offset="1.0" />
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Menu destro ACCOUNT -->
+        <Style x:Key="LogoutMenuVoice"
+               TargetType="Button">
+            <Setter Property="HorizontalOptions" Value="Fill" />
+            <Setter Property="TextColor" Value="White" />
+            <Setter Property="Padding" Value="8,10" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Background">
+                <Setter.Value>
+                    <!-- Gradiente verde scuro inclinato ~20° rispetto all'orizzontale -->
+                    <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.15">
+                        <GradientStop Color="#022C22" Offset="0.0" />
+                        <GradientStop Color="#064E3B" Offset="0.5" />
+                        <GradientStop Color="#047857" Offset="1.0" />
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </ContentPage.Resources>
+</ContentPage>

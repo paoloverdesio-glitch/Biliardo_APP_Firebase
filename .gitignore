@@ -1,0 +1,57 @@
+﻿# Visual Studio
+.vs/
+**/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+**/bin/
+**/obj/
+
+# Test
+TestResults/
+
+# NuGet cache locale
+.nuget/packages/
+.nuget_packages/
+packages/
+
+# Android artifacts
+*.apk
+*.aab
+*.apks
+out-apk/
+
+# Export / dump temporanei
+tools/exports/
+GPT_DUMP_*.zip
+GPT_DUMP_*/
+_GPT_EXPORT_MIN/
+_dump_fix_*/
+
+# Log / diagnostica / build traces (NON versionare)
+*.log
+*.binlog
+msbuild.binlog
+
+# Export / dump vari (NON versionare)
+EXPORT_*.txt
+REPORT_*.txt
+DISCOVER_*.txt
+dump_*.txt
+bundle_code__*.txt
+solution-structure.txt
+project_file_list*.txt
+project_file_list*.json
+codici_selezionati.txt
+
+# Cartelle di lavoro temporanee (NON versionare)
+_apk_out/
+_backup/
+_chatgpt_dump/
+_deploy_logs/
+_diag/
+_safety/
+artifacts/

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "455478098374",
+    "project_id": "biliardoapp",
+    "storage_bucket": "biliardoapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:455478098374:android:3b04d64af0327377759ac7",
+        "android_client_info": {
+          "package_name": "com.biliardoapp.biliardo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyALuzYgz9kGXlsc_0WDQ_xGiSTyeWoqlM4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

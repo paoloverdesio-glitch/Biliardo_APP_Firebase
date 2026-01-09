@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Biliardo.App.Componenti_UI.BottomSheetAllegatiPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    BackgroundColor="#80000000"
+    Padding="0">
+
+    <Grid>
+
+        <!-- Backdrop (tap fuori per chiudere) -->
+        <BoxView BackgroundColor="Transparent">
+            <BoxView.GestureRecognizers>
+                <TapGestureRecognizer Tapped="OnBackdropTapped" />
+            </BoxView.GestureRecognizers>
+        </BoxView>
+
+        <!-- Sheet -->
+        <Border
+            x:Name="SheetBorder"
+            VerticalOptions="End"
+            Margin="12"
+            Padding="16"
+            BackgroundColor="#0F0F0F"
+            Stroke="#1F1F1F"
+            StrokeThickness="1">
+
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="18" />
+            </Border.StrokeShape>
+
+            <VerticalStackLayout Spacing="14">
+
+                <Grid ColumnDefinitions="*,Auto" VerticalOptions="Center">
+                    <Label Text="Allega"
+                           FontSize="16"
+                           FontAttributes="Bold"
+                           TextColor="#E6E6E6"
+                           VerticalOptions="Center" />
+
+                    <Label Grid.Column="1"
+                           Text="✕"
+                           FontSize="18"
+                           TextColor="#B0B0B0"
+                           VerticalOptions="Center">
+                        <Label.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnCloseTapped" />
+                        </Label.GestureRecognizers>
+                    </Label>
+                </Grid>
+
+                <!-- Griglia 4x2 come screenshot -->
+                <Grid ColumnDefinitions="*,*,*,*"
+                      RowDefinitions="Auto,Auto"
+                      RowSpacing="14"
+                      ColumnSpacing="14">
+
+                    <!-- Riga 0 -->
+                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnGalleryTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_gallery.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Galleria" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnCameraTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_camera_colorata.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Fotocamera" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnLocationTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_location.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Posizione" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="3" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnContactTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_contact.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Contatto" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <!-- Riga 1 -->
+                    <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnDocumentTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_document.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Documento" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnAudioTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_audio.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Audio" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnPollTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_poll.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Sondaggio" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="3" Style="{StaticResource TileStyle}">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnEventTapped" />
+                        </Border.GestureRecognizers>
+                        <VerticalStackLayout Spacing="6" HorizontalOptions="Center" VerticalOptions="Center">
+                            <Image Source="ic_event.svg" WidthRequest="22" HeightRequest="22"/>
+                            <Label Text="Evento" Style="{StaticResource TileLabelStyle}" />
+                        </VerticalStackLayout>
+                    </Border>
+
+                </Grid>
+
+            </VerticalStackLayout>
+        </Border>
+
+    </Grid>
+
+    <!-- Stili locali (così il file è autocontenuto) -->
+    <ContentPage.Resources>
+        <ResourceDictionary>
+
+            <Style x:Key="TileStyle" TargetType="Border">
+                <Setter Property="BackgroundColor" Value="#171717" />
+                <Setter Property="Stroke" Value="#242424" />
+                <Setter Property="StrokeThickness" Value="1" />
+                <Setter Property="Padding" Value="10" />
+                <Setter Property="HeightRequest" Value="84" />
+                <Setter Property="HorizontalOptions" Value="Fill" />
+                <Setter Property="VerticalOptions" Value="Fill" />
+                <Setter Property="StrokeShape">
+                    <Setter.Value>
+                        <RoundRectangle CornerRadius="14" />
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="TileLabelStyle" TargetType="Label">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="TextColor" Value="#A8A8A8" />
+                <Setter Property="HorizontalTextAlignment" Value="Center" />
+                <Setter Property="LineBreakMode" Value="NoWrap" />
+            </Style>
+
+        </ResourceDictionary>
+    </ContentPage.Resources>
+
+</ContentPage>

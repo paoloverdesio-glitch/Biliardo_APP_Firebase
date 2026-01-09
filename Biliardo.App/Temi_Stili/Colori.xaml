@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<?xaml-comp compile="true" ?>
+<ResourceDictionary xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml">
+
+    <!-- Palette base (riusa i colori già presenti nelle pagine) -->
+    <Color x:Key="Bil_VerdeScuro">#0B5F31</Color>
+    <Color x:Key="Bil_Verde">#006633</Color>
+    <Color x:Key="Bil_VerdeInvia">#166534</Color>
+
+    <Color x:Key="Bil_Bianco">#FFFFFF</Color>
+    <Color x:Key="Bil_Nero">#000000</Color>
+
+    <Color x:Key="Bil_GrigioTestoSecondario">#CCCCCC</Color>
+    <Color x:Key="Bil_GrigioHint">#B3B3B3</Color>
+
+    <Color x:Key="Bil_SfondoInputScuro">#1E1E1E</Color>
+    <Color x:Key="Bil_BordoChiaro">#DDDDDD</Color>
+
+    <Color x:Key="Bil_Overlay">#80000000</Color>
+
+</ResourceDictionary>

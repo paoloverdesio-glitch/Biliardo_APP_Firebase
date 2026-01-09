@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView
+    x:Class="Biliardo.App.Componenti_UI.SelettoreUtenteAutocomplete"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:local="clr-namespace:Biliardo.App.Componenti_UI">
+
+    <VerticalStackLayout Spacing="4" x:Name="RootLayout">
+
+        <!-- Campo di input + spinner -->
+        <Grid ColumnDefinitions="*,Auto" HeightRequest="44">
+            <Entry
+                x:Name="TxtInput"
+                Grid.Column="0"
+                Placeholder="Cerca nickname..."
+                ClearButtonVisibility="WhileEditing"
+                ReturnType="Next"
+                TextChanged="OnTextChanged"
+                Focused="OnFocused"
+                Unfocused="OnUnfocused" />
+
+            <ActivityIndicator
+                x:Name="Spinner"
+                Grid.Column="1"
+                WidthRequest="24"
+                HeightRequest="24"
+                IsVisible="False"
+                IsRunning="False"
+                VerticalOptions="Center"
+                HorizontalOptions="End" />
+        </Grid>
+
+        <!-- TENDINA SUGGERIMENTI -->
+        <Frame
+            x:Name="DropPanel"
+            HasShadow="True"
+            Padding="0"
+            IsVisible="False"
+            BackgroundColor="{AppThemeBinding Light=White, Dark=#1E1E1E}"
+            BorderColor="#DDDDDD"
+            MaximumHeightRequest="440">
+
+            <Grid RowDefinitions="Auto,*">
+                <!-- Stato "nessun risultato" -->
+                <Label
+                    x:Name="LblEmpty"
+                    Grid.Row="0"
+                    Text="Nessun nickname trovato"
+                    IsVisible="False"
+                    Padding="12,8"
+                    TextColor="{AppThemeBinding Light=#666, Dark=#CCC}" />
+
+                <!-- Elenco risultati -->
+                <CollectionView
+                    x:Name="ListSuggerimenti"
+                    Grid.Row="1"
+                    SelectionMode="Single"
+                    RemainingItemsThreshold="5"
+                    RemainingItemsThresholdReached="OnRemainingItemsThresholdReached"
+                    SelectionChanged="OnSelectionChanged">
+                    <CollectionView.ItemsLayout>
+                        <LinearItemsLayout Orientation="Vertical" ItemSpacing="0"/>
+                    </CollectionView.ItemsLayout>
+
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Padding="12,10" ColumnDefinitions="Auto,*" HeightRequest="44">
+                                <!-- Placeholder avatar (iniziale) -->
+                                <Border WidthRequest="24" HeightRequest="24" BackgroundColor="#0F6B4F" StrokeThickness="0"
+                                        StrokeShape="RoundRectangle 12" VerticalOptions="Center">
+                                    <Label Text="{Binding Nickname, Converter={x:Static local:ToInitialConverter.Instance}}"
+                                           HorizontalOptions="Center" VerticalOptions="Center"
+                                           FontAttributes="Bold" FontSize="12" TextColor="White"/>
+                                </Border>
+
+                                <Label Grid.Column="1" Text="{Binding Nickname}" VerticalTextAlignment="Center" Margin="8,0,0,0"
+                                       TextColor="{AppThemeBinding Light=#111, Dark=#EEE}"/>
+                            </Grid>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+            </Grid>
+        </Frame>
+    </VerticalStackLayout>
+</ContentView>

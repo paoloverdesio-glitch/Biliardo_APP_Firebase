@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<?xaml-comp compile="true" ?>
+<ResourceDictionary xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml">
+
+    <!-- Stile input “sicuro” su sfondo scuro -->
+    <Style x:Key="Bil_Entry_SuScuro" TargetType="Entry">
+        <Setter Property="TextColor" Value="{StaticResource Bil_Bianco}" />
+        <Setter Property="PlaceholderColor" Value="{StaticResource Bil_GrigioHint}" />
+        <Setter Property="BackgroundColor" Value="{StaticResource Bil_SfondoInputScuro}" />
+    </Style>
+
+    <Style x:Key="Bil_Editor_SuScuro" TargetType="Editor">
+        <Setter Property="TextColor" Value="{StaticResource Bil_Bianco}" />
+        <Setter Property="PlaceholderColor" Value="{StaticResource Bil_GrigioHint}" />
+        <Setter Property="BackgroundColor" Value="{StaticResource Bil_SfondoInputScuro}" />
+    </Style>
+
+    <Style x:Key="Bil_Picker_SuScuro" TargetType="Picker">
+        <Setter Property="TextColor" Value="{StaticResource Bil_Bianco}" />
+        <Setter Property="TitleColor" Value="{StaticResource Bil_GrigioHint}" />
+        <Setter Property="BackgroundColor" Value="{StaticResource Bil_SfondoInputScuro}" />
+    </Style>
+
+</ResourceDictionary>

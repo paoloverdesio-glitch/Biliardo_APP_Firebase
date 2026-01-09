@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- =========================================================================
+ Pagina di login (Firebase-only):
+  - Login Firebase (Email + Password) tramite REST client già presente (FirebaseAuthClient)
+  - Blocco login finché email non verificata (re-invio email verifica)
+  - Pulsante Registrazione (Firebase)
+  - Pulsante Diagnostica (share log locale)
+============================================================================ -->
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Pagine_Autenticazione.Pagina_Login"
+             Title="Accedi">
+
+    <Grid>
+
+        <ScrollView>
+            <VerticalStackLayout Padding="16" Spacing="12">
+
+                <Label Text="Accedi"
+                       FontSize="24"
+                       HorizontalOptions="Center" />
+
+                <Entry x:Name="NicknameEntry"
+                       Placeholder="Email"
+                       Keyboard="Email"
+                       AutomationId="Login_Email" />
+
+                <HorizontalStackLayout Spacing="8">
+                    <Entry x:Name="PasswordEntry"
+                           Placeholder="Password"
+                           IsPassword="True"
+                           HorizontalOptions="FillAndExpand"
+                           AutomationId="Login_Password" />
+                    <Button x:Name="TogglePasswordButton"
+                            Text="👁"
+                            WidthRequest="44"
+                            Clicked="TogglePassword_Clicked"
+                            AutomationId="Login_PwdEyeButton"
+                            BackgroundColor="#006633"
+                            TextColor="White" />
+                </HorizontalStackLayout>
+
+                <!-- Pulsanti -->
+                <VerticalStackLayout Spacing="10">
+
+                    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto">
+                        <Button Text="Accedi (Firebase)"
+                                Grid.Column="0"
+                                Clicked="OnLoginFirebaseClicked"
+                                AutomationId="Login_AccediFirebase"
+                                BackgroundColor="#006633"
+                                TextColor="White" />
+
+                        <Button x:Name="BtnInviaDiag"
+                                Text="Diagnostica"
+                                Grid.Column="1"
+                                Margin="12,0,0,0"
+                                Clicked="OnSendDiagClicked"
+                                AutomationId="Login_InviaDiagnostica"
+                                BackgroundColor="#006633"
+                                TextColor="White" />
+                    </Grid>
+
+                    <Button Text="Crea account (Firebase)"
+                            Clicked="OnVaiARegistrazioneClicked"
+                            AutomationId="Login_VaiARegistrazione"
+                            BackgroundColor="#0B5F31"
+                            TextColor="White" />
+                </VerticalStackLayout>
+
+                <Label Text="Nota: se l’email non è verificata, l’app reinvia automaticamente l’email di verifica e blocca l’accesso."
+                       FontSize="12"
+                       TextColor="#666" />
+            </VerticalStackLayout>
+        </ScrollView>
+
+        <!-- Popup -->
+        <Grid x:Name="PopupOverlay"
+              BackgroundColor="#80000000"
+              IsVisible="False"
+              HorizontalOptions="Fill"
+              VerticalOptions="Fill">
+
+            <Border BackgroundColor="#006633"
+                    Padding="16"
+                    StrokeThickness="0"
+                    HorizontalOptions="Center"
+                    VerticalOptions="Center"
+                    WidthRequest="320"
+                    TranslationY="-95">
+
+                <VerticalStackLayout Spacing="12">
+                    <Label x:Name="PopupTitleLabel"
+                           Text="Titolo"
+                           FontAttributes="Bold"
+                           FontSize="18"
+                           TextColor="White"
+                           HorizontalTextAlignment="Center" />
+
+                    <Label x:Name="PopupMessageLabel"
+                           Text="Messaggio"
+                           FontSize="14"
+                           TextColor="White"
+                           HorizontalTextAlignment="Center" />
+
+                    <Button Text="OK"
+                            Clicked="PopupOkButton_Clicked"
+                            BackgroundColor="#004d26"
+                            TextColor="White" />
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
+
+    </Grid>
+</ContentPage>

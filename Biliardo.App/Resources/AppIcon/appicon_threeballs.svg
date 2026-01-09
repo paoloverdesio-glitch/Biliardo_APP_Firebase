@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+	<!-- Solo elementi in primo piano: sfondo già gestito da appicon_bg.svg -->
+	<g>
+		<!-- Palla gialla (sinistra) -->
+		<circle cx="190" cy="220" r="70" fill="#F4D03F" stroke="#000000" stroke-opacity="0.15" stroke-width="4"/>
+		<!-- highlight -->
+		<circle cx="170" cy="200" r="18" fill="#FFFFFF" fill-opacity="0.6"/>
+
+		<!-- Palla bianca (destra) -->
+		<circle cx="322" cy="220" r="70" fill="#FFFFFF" stroke="#000000" stroke-opacity="0.15" stroke-width="4"/>
+		<!-- highlight -->
+		<circle cx="302" cy="200" r="18" fill="#FFFFFF" fill-opacity="0.6"/>
+
+		<!-- Palla rossa (centro basso) -->
+		<circle cx="256" cy="320" r="70" fill="#E74C3C" stroke="#000000" stroke-opacity="0.15" stroke-width="4"/>
+		<!-- highlight -->
+		<circle cx="236" cy="300" r="18" fill="#FFFFFF" fill-opacity="0.6"/>
+	</g>
+</svg>

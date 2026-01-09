@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    x:Class="Biliardo.App.Pagine_Autenticazione.Pagina_Accesso_Selezione"
+    Title="Biliardo">
+
+    <Grid RowDefinitions="Auto,*,Auto" Padding="24" BackgroundColor="#0B5F31">
+        <!-- Sfondo: riempie la pagina e non intercetta i tocchi -->
+        <Image Source="sfondo_bil_spazio.png"
+               Grid.RowSpan="3"
+               Aspect="AspectFill"
+               InputTransparent="True" />
+
+        <Image Source="logo_home.png"
+               HeightRequest="140"
+               HorizontalOptions="Center"
+               Margin="0,24,0,16"/>
+
+        <VerticalStackLayout Grid.Row="1" Spacing="14">
+            <Button Text="Accedi"
+                    Clicked="OnAccedi"
+                    BackgroundColor="#FFFFFF"
+                    TextColor="#0B5F31"
+                    CornerRadius="12"/>
+
+            <Button Text="Registrati"
+                    Clicked="OnRegistrati"
+                    BackgroundColor="#FFFFFF"
+                    TextColor="#0B5F31"
+                    CornerRadius="12"/>
+
+            <Button Text="Entra come ospite"
+                    Clicked="OnEntraComeOspite"
+                    BackgroundColor="#E0E0E0"
+                    TextColor="#0B5F31"
+                    CornerRadius="12"/>
+        </VerticalStackLayout>
+
+        <Label Grid.Row="2"
+               Text="© 2025 Biliardo"
+               HorizontalOptions="Center"
+               TextColor="White"
+               Opacity="0.6"
+               Margin="0,18,0,0"/>
+    </Grid>
+</ContentPage>
