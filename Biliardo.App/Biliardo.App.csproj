@@ -142,4 +142,24 @@
 		</MauiXaml>
 	</ItemGroup>
 
+	<Target Name="GenerateBuildStamp" BeforeTargets="BeforeCompile">
+		<PropertyGroup>
+			<BuildStamp>$([System.DateTime]::UtcNow.ToString("yyyyMMdd_HHmmss"))</BuildStamp>
+			<BuildStampFile>$(IntermediateOutputPath)BuildInfo.g.cs</BuildStampFile>
+		</PropertyGroup>
+		<ItemGroup>
+			<_BuildInfoLines Include="namespace Biliardo.App;" />
+			<_BuildInfoLines Include="public static class BuildInfo" />
+			<_BuildInfoLines Include="{" />
+			<_BuildInfoLines Include="    public const string BuildStamp = &quot;$(BuildStamp)&quot;;" />
+			<_BuildInfoLines Include="}" />
+		</ItemGroup>
+		<WriteLinesToFile File="$(BuildStampFile)"
+						  Lines="@(_BuildInfoLines)"
+						  Overwrite="true" />
+		<ItemGroup>
+			<Compile Include="$(BuildStampFile)" />
+		</ItemGroup>
+	</Target>
+
 </Project>

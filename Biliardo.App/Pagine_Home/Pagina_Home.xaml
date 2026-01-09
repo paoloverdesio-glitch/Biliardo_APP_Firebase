@@ -10,6 +10,7 @@
 ============================================================================ -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:local="clr-namespace:Biliardo.App"
              x:Class="Biliardo.App.Pagine_Home.Pagina_Home"
              Title="Biliardo">
 
@@ -23,7 +24,7 @@
     </ContentPage.Background>
 
     <!-- ===================== [B] LAYOUT BASE A GRIGLIA ===================== -->
-    <Grid RowDefinitions="Auto,*"
+    <Grid RowDefinitions="Auto,Auto,*"
           ColumnDefinitions="*">
 
         <!-- ===================== [B1] BARRA SUPERIORE (ICONE) =============== -->
@@ -123,13 +124,21 @@
         </Grid>
 
         <!-- ===================== [B2] CORPO (PULITO) ======================== -->
-        <Grid Grid.Row="1">
+        <!-- ===================== [B1.6] BUILD STAMP ======================== -->
+        <Label Grid.Row="1"
+               Text="{x:Static local:BuildInfo.BuildStamp}"
+               FontSize="12"
+               TextColor="White"
+               HorizontalOptions="Center"
+               Margin="0,0,0,6" />
+
+        <Grid Grid.Row="2">
             <!-- Area pronta per contenuti futuri -->
         </Grid>
 
         <!-- ===================== [C] MENU LATERALE SINISTRO ================== -->
         <Grid x:Name="overlay_menu"
-              Grid.RowSpan="2"
+              Grid.RowSpan="3"
               BackgroundColor="#00000066"
               IsVisible="False"
               Opacity="0">
@@ -187,7 +196,7 @@
 
         <!-- ===================== [D] MENU LATERALE DESTRO (ACCOUNT) ========= -->
         <Grid x:Name="overlay_logout_menu"
-              Grid.RowSpan="2"
+              Grid.RowSpan="3"
               BackgroundColor="#00000066"
               IsVisible="False"
               Opacity="0">
@@ -236,7 +245,7 @@
 
         <!-- ===================== [E] POPUP OVERLAY UNIFICATO ================= -->
         <Grid x:Name="PopupOverlay"
-              Grid.RowSpan="2"
+              Grid.RowSpan="3"
               BackgroundColor="#80000000"
               IsVisible="False"
               HorizontalOptions="Fill"
