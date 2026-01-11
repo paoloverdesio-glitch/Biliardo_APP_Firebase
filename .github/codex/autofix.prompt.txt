@@ -1,0 +1,16 @@
+﻿You are working in a .NET MAUI repository.
+
+GOAL
+Make CI succeed for BOTH targets with 0 errors (warnings ok):
+1) dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
+2) dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
+
+RULES
+- Keep changes minimal and strictly related to fixing build errors.
+- Do NOT modify generated outputs under **/bin or **/obj.
+- Do NOT add secrets or credentials to the repo.
+
+PROCESS
+- Run the Windows build; if it fails, fix code and retry until it passes.
+- Run the Android build; if it fails, fix code and retry until it passes.
+- When both pass, stop.
