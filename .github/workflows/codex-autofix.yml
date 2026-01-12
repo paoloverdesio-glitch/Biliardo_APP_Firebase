@@ -79,13 +79,15 @@ jobs:
             throw "Missing codex/autofix.prompt.txt in repo root."
           }
 
-      - name: Setup Node.js (for npm)
+      - name: Capture base env (PATH + APPDATA)
         if: env.CODEX_AUTOFIX_SKIP != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "BASE_PATH=$env:PATH"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "APPDATA=$env:APPDATA" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Prepare npm global prefix folder (Windows)
+      - name: Ensure npm-global folders exist
         if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
@@ -129,9 +131,8 @@ jobs:
         if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: openai/codex-action@v1
         env:
-          NPM_CONFIG_PREFIX: ${{ runner.temp }}\npm-global
-          npm_config_prefix: ${{ runner.temp }}\npm-global
-          PATH: ${{ runner.temp }}\npm-global;${{ runner.temp }}\npm-global\node_modules\.bin;${{ env.PATH }}
+          NPM_CONFIG_PREFIX: '${{ runner.temp }}\npm-global'
+          PATH: '${{ runner.temp }}\npm-global;${{ runner.temp }}\npm-global\node_modules\.bin;${{ env.APPDATA }}\npm;${{ env.BASE_PATH }}'
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
           prompt-file: codex/autofix.prompt.txt
