@@ -16,13 +16,14 @@ concurrency:
 jobs:
   autofix:
     name: Autofix failing PR build with Codex
-    # Solo se: la build è FALLITA ed era una PR (non push su master)
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'failure' &&
-        github.event.workflow_run.event == 'pull_request'
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
       }}
     runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout failed commit (detached)
@@ -30,6 +31,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Attach HEAD to the PR branch
         shell: pwsh
@@ -44,7 +46,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           if (-not (Test-Path "codex/autofix.prompt.txt")) {
-            Write-Error "Missing codex/autofix.prompt.txt in repo root. Commit it to master."
+            throw "Missing codex/autofix.prompt.txt in repo root."
           }
 
       - name: Ensure npm global bin is on PATH (Windows)
@@ -80,7 +82,6 @@ jobs:
           dotnet restore Biliardo.App/Biliardo.App.csproj
 
       - name: Run Codex (fix build)
-        id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
@@ -89,7 +90,6 @@ jobs:
           model: gpt-5.2-codex
           sandbox: workspace-write
           codex-version: latest
-          # OBBLIGATORIO su windows-latest
           safety-strategy: unsafe
 
       - name: Build (Windows) - verify
@@ -115,9 +115,8 @@ jobs:
             exit 0
           }
 
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add -A
           git commit -m "Codex: autofix build"
 
