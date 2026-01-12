@@ -32,7 +32,6 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: true
-          # Usa PAT dedicato per fare push e per far ripartire la CI dopo i commit del bot
           token: ${{ secrets.CODEX_PUSH_TOKEN }}
 
       - name: Configure git (safe directory + authenticated origin)
@@ -40,7 +39,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           git config --global --add safe.directory "$env:GITHUB_WORKSPACE"
-          # Forza origin ad usare il token (GitHub maschera il secret nei log)
           git remote set-url origin "https://x-access-token:${{ secrets.CODEX_PUSH_TOKEN }}@github.com/${{ github.repository }}.git"
 
       - name: Attach HEAD to the PR branch
