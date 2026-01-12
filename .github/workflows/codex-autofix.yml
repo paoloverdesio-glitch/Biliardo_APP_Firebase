@@ -19,17 +19,40 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout failed SHA (PR head)
+      - name: Checkout failed SHA
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      - name: Attach HEAD to the PR branch
+      - name: Attach HEAD to PR branch
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           git checkout -B "${{ github.event.workflow_run.head_branch }}" "${{ github.event.workflow_run.head_sha }}"
 
+      - name: Ensure Codex prompt file exists (copy to both locations)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $p1 = ".github/codex/autofix.prompt.txt"
+          $p2 = "codex/autofix.prompt.txt"
+
+          if (Test-Path $p1) {
+            New-Item -ItemType Directory -Force "codex" | Out-Null
+            Copy-Item -Force $p1 $p2
+            Write-Host "Using prompt from $p1 (copied to $p2)."
+          }
+          elseif (Test-Path $p2) {
+            Write-Host "Using prompt from $p2."
+          }
+          else {
+            throw "Missing prompt. Create one of: $p1 or $p2"
+          }
+
+      # Se vuoi che Codex possa buildare durante l'autofix, devi preinstallare dipendenze
+      # perché il sandbox di Codex tipicamente non ha rete (linea guida ufficiale). :contentReference[oaicite:0]{index=0}
       - name: Setup .NET (from global.json)
         uses: actions/setup-dotnet@v5
         with:
@@ -44,51 +67,57 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install MAUI workloads (Windows+Android)
-        run: dotnet workload install maui-windows maui-android
+      - name: Install MAUI workloads (Windows + Android)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet workload install maui-windows maui-android
 
       - name: Restore
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet restore Biliardo.App/Biliardo.App.csproj
 
-      - name: Run Codex (fix build)
-        id: run_codex
+      # Tentativo 1: action ufficiale
+      - name: Run Codex (official action)
+        id: codex_action
+        continue-on-error: true
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
-          # Windows runners: must be 'unsafe' (required by the action)
-          safety-strategy: unsafe
-          # Codex sandboxing mode (Codex-level). Keep workspace-write so it can edit files.
-          sandbox: workspace-write
+          prompt-file: codex/autofix.prompt.txt
           working-directory: ${{ github.workspace }}
           model: gpt-5.2-codex
+          sandbox: workspace-write
+          safety-strategy: unsafe
+          codex-version: latest
           codex-args: '["--ask-for-approval","never"]'
-          prompt: |
-            You are Codex running inside GitHub Actions on Windows.
-            Goal: make the repository build successfully for BOTH targets:
-              1) dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0
-              2) dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android
 
-            Constraints:
-            - Keep functional behavior unchanged unless required for the build.
-            - Prefer minimal, reviewable diffs.
-            - Do NOT modify workflow files or secrets.
-            - Make changes only inside the repo working tree.
+      # Fallback: se l’action fallisce (es. spawn codex ENOENT), eseguo Codex via npx
+      - name: Run Codex (fallback via npx)
+        if: ${{ steps.codex_action.outcome == 'failure' }}
+        shell: pwsh
+        env:
+          OPENAI_API_KEY: ${{ secrets.CODEX_API_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
 
-            Plan:
-            - Reproduce the build failures locally in this runner.
-            - Fix compile errors (nullability, missing usings, wrong APIs, conditional compilation, csproj settings, etc.).
-            - Re-run both builds until they pass.
+          # Prompt via stdin (coerente col modo in cui l’action invoca codex exec senza prompt arg)
+          $prompt = Get-Content -Raw "codex/autofix.prompt.txt"
 
-      - name: Build (Windows) - verify
-        run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
-
-      - name: Build (Android) - verify
-        run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
+          # Esegue codex senza dipendere da PATH globale
+          $prompt | npx -y @openai/codex@latest exec `
+            --cd "$env:GITHUB_WORKSPACE" `
+            --model "gpt-5.2-codex" `
+            --ask-for-approval "never" `
+            --sandbox "workspace-write"
 
       - name: Commit & push changes (if any)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $status = (git status --porcelain)
           if ([string]::IsNullOrWhiteSpace($status)) {
             Write-Host "No changes to commit."
@@ -97,6 +126,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
           git commit -m "Codex: autofix build"
-          git push origin HEAD:"${{ github.event.workflow_run.head_branch }}"
+          git push
