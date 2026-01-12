@@ -78,6 +78,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           dotnet restore Biliardo.App/Biliardo.App.csproj
+          
+      - name: Ensure npm global bin is on PATH (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Run Codex (implement feature from prompt)
         uses: openai/codex-action@v1
