@@ -10,49 +10,49 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: codex-autofix-${{ github.event.workflow_run.head_sha }}
+  group: codex-autofix-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:
   autofix:
-    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'pull_request' }}
+    name: Autofix failing PR build with Codex
+    # Solo se: la build è FALLITA ed era una PR (non push su master)
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'failure' &&
+        github.event.workflow_run.event == 'pull_request'
+      }}
     runs-on: windows-latest
 
     steps:
-      - name: Checkout failed SHA
+      - name: Checkout failed commit (detached)
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      - name: Attach HEAD to PR branch
+      - name: Attach HEAD to the PR branch
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git checkout -B "${{ github.event.workflow_run.head_branch }}" "${{ github.event.workflow_run.head_sha }}"
+          $branch = "${{ github.event.workflow_run.head_branch }}"
+          $sha    = "${{ github.event.workflow_run.head_sha }}"
+          git checkout -B "$branch" "$sha"
 
-      - name: Ensure Codex prompt file exists (copy to both locations)
+      - name: Verify prompt file exists
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          $p1 = ".github/codex/autofix.prompt.txt"
-          $p2 = "codex/autofix.prompt.txt"
-
-          if (Test-Path $p1) {
-            New-Item -ItemType Directory -Force "codex" | Out-Null
-            Copy-Item -Force $p1 $p2
-            Write-Host "Using prompt from $p1 (copied to $p2)."
-          }
-          elseif (Test-Path $p2) {
-            Write-Host "Using prompt from $p2."
-          }
-          else {
-            throw "Missing prompt. Create one of: $p1 or $p2"
+          if (-not (Test-Path "codex/autofix.prompt.txt")) {
+            Write-Error "Missing codex/autofix.prompt.txt in repo root. Commit it to master."
           }
 
-      # Se vuoi che Codex possa buildare durante l'autofix, devi preinstallare dipendenze
-      # perché il sandbox di Codex tipicamente non ha rete (linea guida ufficiale). :contentReference[oaicite:0]{index=0}
+      - name: Ensure npm global bin is on PATH (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       - name: Setup .NET (from global.json)
         uses: actions/setup-dotnet@v5
         with:
@@ -79,10 +79,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           dotnet restore Biliardo.App/Biliardo.App.csproj
 
-      # Tentativo 1: action ufficiale
-      - name: Run Codex (official action)
-        id: codex_action
-        continue-on-error: true
+      - name: Run Codex (fix build)
+        id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
@@ -90,28 +88,21 @@ jobs:
           working-directory: ${{ github.workspace }}
           model: gpt-5.2-codex
           sandbox: workspace-write
-          safety-strategy: unsafe
           codex-version: latest
-          codex-args: '["--ask-for-approval","never"]'
+          # OBBLIGATORIO su windows-latest
+          safety-strategy: unsafe
 
-      # Fallback: se l’action fallisce (es. spawn codex ENOENT), eseguo Codex via npx
-      - name: Run Codex (fallback via npx)
-        if: ${{ steps.codex_action.outcome == 'failure' }}
+      - name: Build (Windows) - verify
         shell: pwsh
-        env:
-          OPENAI_API_KEY: ${{ secrets.CODEX_API_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
+          dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
 
-          # Prompt via stdin (coerente col modo in cui l’action invoca codex exec senza prompt arg)
-          $prompt = Get-Content -Raw "codex/autofix.prompt.txt"
-
-          # Esegue codex senza dipendere da PATH globale
-          $prompt | npx -y @openai/codex@latest exec `
-            --cd "$env:GITHUB_WORKSPACE" `
-            --model "gpt-5.2-codex" `
-            --ask-for-approval "never" `
-            --sandbox "workspace-write"
+      - name: Build (Android) - verify
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
 
       - name: Commit & push changes (if any)
         shell: pwsh
@@ -129,4 +120,6 @@ jobs:
 
           git add -A
           git commit -m "Codex: autofix build"
-          git push
+
+          $branch = "${{ github.event.workflow_run.head_branch }}"
+          git push origin "HEAD:$branch"
