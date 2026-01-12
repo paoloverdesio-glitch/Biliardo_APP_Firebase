@@ -53,40 +53,32 @@ jobs:
             throw "Missing codex/feature.prompt.it.txt in repo root."
           }
 
-      - name: Ensure npm global bin is on PATH (Windows)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Setup .NET (from global.json)
-        uses: actions/setup-dotnet@v5
+      - name: Setup Node.js (for Codex CLI)
+        uses: actions/setup-node@v4
         with:
-          global-json-file: global.json
+          node-version: "20"
 
-      - name: Setup Java (Temurin 17)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install MAUI workloads (Windows + Android)
+      - name: Install Codex CLI in a known location + verify (fix ENOENT)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          dotnet workload install maui-windows maui-android
 
-      - name: Restore
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          dotnet restore Biliardo.App/Biliardo.App.csproj
+          $prefix = Join-Path $env:RUNNER_TEMP "npm-global"
+          New-Item -ItemType Directory -Force -Path $prefix | Out-Null
+
+          "NPM_CONFIG_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $prefix | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          (Join-Path $prefix "node_modules\.bin") | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+          npm install -g "@openai/codex@latest" "@openai/codex-responses-api-proxy@latest"
+
+          where.exe codex
+          codex --version
 
       - name: Run Codex (implement feature from prompt)
         uses: openai/codex-action@v1
+        env:
+          NPM_CONFIG_PREFIX: ${{ runner.temp }}\npm-global
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
           prompt-file: codex/feature.prompt.it.txt
@@ -130,7 +122,6 @@ jobs:
 
           $prNumber = gh pr list --head "$env:CODEX_FEATURE_BRANCH" --base "master" --json number --jq ".[0].number"
           if (-not [string]::IsNullOrWhiteSpace($prNumber)) {
-            Write-Host "PR already exists: #$prNumber. Updating title/body."
             gh pr edit $prNumber --title "$title" --body "$body"
             exit 0
           }
