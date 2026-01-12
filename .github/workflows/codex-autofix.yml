@@ -1,0 +1,181 @@
+name: codex-autofix
+
+on:
+  workflow_run:
+    workflows: ["build"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: codex-autofix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    name: Autofix failing PR build with Codex
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'failure' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout failed commit (detached)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.CODEX_PUSH_TOKEN }}
+
+      - name: Configure git (safe directory + authenticated origin)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git config --global --add safe.directory "$env:GITHUB_WORKSPACE"
+          git remote set-url origin "https://x-access-token:${{ secrets.CODEX_PUSH_TOKEN }}@github.com/${{ github.repository }}.git"
+
+      - name: Attach HEAD to the PR branch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $branch = "${{ github.event.workflow_run.head_branch }}"
+          $sha    = "${{ github.event.workflow_run.head_sha }}"
+          git checkout -B "$branch" "$sha"
+
+      - name: Compute autofix attempt (max 3)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sha = "${{ github.event.workflow_run.head_sha }}"
+          $subject = (git show -s --format=%s $sha)
+
+          $attempt = 1
+          if ($subject -match '^Codex: autofix build \(attempt (\d+)\)$') {
+            $attempt = [int]$Matches[1] + 1
+          }
+
+          if ($attempt -gt 3) {
+            Write-Host "Max autofix attempts reached (3). Skipping."
+            "CODEX_AUTOFIX_SKIP=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            exit 0
+          }
+
+          "CODEX_AUTOFIX_ATTEMPT=$attempt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CODEX_AUTOFIX_SKIP=false"       | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify prompt file exists
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "codex/autofix.prompt.txt")) {
+            throw "Missing codex/autofix.prompt.txt in repo root."
+          }
+
+      - name: Create codex.cmd shim (Windows) + add workspace to PATH
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          "$env:GITHUB_WORKSPACE" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+          $shimPath = Join-Path $env:GITHUB_WORKSPACE "codex.cmd"
+
+          @'
+@echo off
+setlocal
+npx --yes @openai/codex@latest %*
+exit /b %ERRORLEVEL%
+'@ | Out-File -FilePath $shimPath -Encoding ascii -Force
+
+          Write-Host "Created shim: $shimPath"
+          Get-Content $shimPath
+
+      - name: Setup .NET (from global.json)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Setup Java (Temurin 17)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        uses: android-actions/setup-android@v3
+
+      - name: Install MAUI workloads (Windows + Android)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet workload install maui-windows maui-android
+
+      - name: Restore
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet restore Biliardo.App/Biliardo.App.csproj
+
+      - name: Run Codex (fix build)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.CODEX_API_KEY }}
+          prompt-file: codex/autofix.prompt.txt
+          working-directory: ${{ github.workspace }}
+          model: gpt-5.2-codex
+          sandbox: workspace-write
+          codex-version: latest
+          safety-strategy: unsafe
+
+      - name: Build (Windows) - verify
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
+
+      - name: Build (Android) - verify
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
+
+      - name: Commit & push changes (if any)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $status = (git status --porcelain)
+          if ([string]::IsNullOrWhiteSpace($status)) {
+            Write-Host "No changes to commit."
+            exit 0
+          }
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          $attempt = $env:CODEX_AUTOFIX_ATTEMPT
+          if ([string]::IsNullOrWhiteSpace($attempt)) { $attempt = "1" }
+
+          git commit -m "Codex: autofix build (attempt $attempt)"
+
+          $branch = "${{ github.event.workflow_run.head_branch }}"
+          git push origin "HEAD:$branch"

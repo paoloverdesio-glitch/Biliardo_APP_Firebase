@@ -1,0 +1,126 @@
+name: codex-feature
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: codex-feature
+  cancel-in-progress: true
+
+jobs:
+  feature:
+    name: Implement feature from prompt (IT) + open/update PR
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout (master)
+        uses: actions/checkout@v5
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.CODEX_PUSH_TOKEN }}
+
+      - name: Configure git (safe directory + authenticated origin)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git config --global --add safe.directory "$env:GITHUB_WORKSPACE"
+          git remote set-url origin "https://x-access-token:${{ secrets.CODEX_PUSH_TOKEN }}@github.com/${{ github.repository }}.git"
+
+      - name: Compute feature branch name
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "CODEX_FEATURE_BRANCH=codex/feature-${{ github.run_id }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Create and checkout feature branch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git checkout -B "$env:CODEX_FEATURE_BRANCH"
+
+      - name: Verify feature prompt file exists
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "codex/feature.prompt.it.txt")) {
+            throw "Missing codex/feature.prompt.it.txt in repo root."
+          }
+
+      - name: Create codex.cmd shim (Windows) + add workspace to PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Ensure the workspace is on PATH for subsequent steps (including node-based actions)
+          "$env:GITHUB_WORKSPACE" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+          $shimPath = Join-Path $env:GITHUB_WORKSPACE "codex.cmd"
+
+          @'
+@echo off
+setlocal
+REM Run Codex via npx (deterministic on Windows runners)
+npx --yes @openai/codex@latest %*
+exit /b %ERRORLEVEL%
+'@ | Out-File -FilePath $shimPath -Encoding ascii -Force
+
+          Write-Host "Created shim: $shimPath"
+          Get-Content $shimPath
+
+      - name: Run Codex (implement feature from prompt)
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.CODEX_API_KEY }}
+          prompt-file: codex/feature.prompt.it.txt
+          working-directory: ${{ github.workspace }}
+          model: gpt-5.2-codex
+          sandbox: workspace-write
+          codex-version: latest
+          safety-strategy: unsafe
+
+      - name: Commit & push changes (if any)
+        id: commit_push
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $status = (git status --porcelain)
+          if ([string]::IsNullOrWhiteSpace($status)) {
+            Write-Host "No changes to commit."
+            "pushed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Codex: implement feature from prompt"
+          git push -u origin "$env:CODEX_FEATURE_BRANCH"
+
+          "pushed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Create or update Pull Request
+        if: steps.commit_push.outputs.pushed == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_PUSH_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $title = "Codex: feature from prompt (IT)"
+          $body  = "Implementazione automatica da codex/feature.prompt.it.txt. Se la CI fallisce, codex-autofix tenterà le correzioni."
+
+          $prNumber = gh pr list --head "$env:CODEX_FEATURE_BRANCH" --base "master" --json number --jq ".[0].number"
+          if (-not [string]::IsNullOrWhiteSpace($prNumber)) {
+            gh pr edit $prNumber --title "$title" --body "$body"
+            exit 0
+          }
+
+          gh pr create --base "master" --head "$env:CODEX_FEATURE_BRANCH" --title "$title" --body "$body"

@@ -1,0 +1,52 @@
+Sei Codex dentro GitHub Actions. Devi modificare SOLO il contenuto del popup “Info su BiliardoApp” già presente nella Home, senza aggiungere nuove pagine o nuovi menu.
+
+CONTESTO (GIÀ NEL CODICE)
+- Il pulsante “Info su BiliardoApp” è nel menu account della Home in:
+  Biliardo.App/Pagine_Home/Pagina_Home.xaml
+  e richiama l’handler OnLogoutInfoClicked.
+- L’handler OnLogoutInfoClicked chiama ShowInfoBiliardoAppAsync() in:
+  Biliardo.App/Pagine_Home/Pagina_Home.xaml.cs
+- Il popup è un overlay XAML già esistente (PopupTitleLabel, PopupMessageLabel, bottone OK) e viene mostrato con ShowPopupAsync(message, title).
+
+OBIETTIVO
+Aggiorna il testo mostrato dal popup “Informazioni” (cioè la stringa costruita in ShowInfoBiliardoAppAsync) per includere più informazioni diagnostiche utili, in italiano, mantenendo lo stile “popup verde” già presente.
+
+COSA DEVE MOSTRARE IL POPUP (ORDINE CONSIGLIATO)
+1) Nome app + versione + build:
+   - AppInfo.Current.Name (se disponibile) o “BiliardoApp”
+   - AppInfo.Current.VersionString
+   - AppInfo.Current.BuildString
+2) Identificativi app:
+   - AppInfo.Current.PackageName
+3) Piattaforma/OS:
+   - DeviceInfo.Current.Platform
+   - DeviceInfo.Current.VersionString
+   - (se utile) RuntimeInformation.OSDescription
+4) Framework/runtime:
+   - RuntimeInformation.FrameworkDescription
+   - RuntimeInformation.ProcessArchitecture (o equivalente)
+5) Dispositivo:
+   - DeviceInfo.Current.Manufacturer
+   - DeviceInfo.Current.Model
+6) Data/ora corrente (solo debug):
+   - DateTimeOffset.Now (formato chiaro, es. yyyy-MM-dd HH:mm:ss)
+
+REQUISITI TECNICI
+- Modifiche MINIME: idealmente solo ShowInfoBiliardoAppAsync() e gli using necessari.
+- Non creare nuove pagine.
+- Non cambiare la navigazione.
+- Non toccare bin/ obj.
+- Se qualche proprietà non è disponibile su una piattaforma, gestisci con fallback “n/d” senza rompere la build.
+- Mantieni title del popup “Informazioni” come ora (puoi lasciarlo invariato).
+
+NOTE UI
+- Il messaggio viene assegnato a PopupMessageLabel (Label già esistente): usa testo multilinea con “\n”.
+- Mantieni il popup con solo bottone OK (non aggiungere altri pulsanti in questo task).
+
+BUILD DA FAR PASSARE (0 errori)
+1) dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
+2) dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
+
+OUTPUT
+- Implementa la modifica e committa solo se necessario.
+- Se non serve cambiare nulla, non fare modifiche.
