@@ -10,6 +10,8 @@
 
 using System;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.ApplicationModel;
 using Biliardo.App.Pagine_Autenticazione;
@@ -223,14 +225,35 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task ShowInfoBiliardoAppAsync()
         {
-            var version = AppInfo.Current.VersionString;
-            var build = AppInfo.Current.BuildString;
+            static string SafeValue(string? value) =>
+                string.IsNullOrWhiteSpace(value) ? "n/d" : value;
 
-            var message =
-                $"BiliardoApp v{version} (build {build})\n" +
-                $"© BiliardoApp";
+            var appName = string.IsNullOrWhiteSpace(AppInfo.Current.Name)
+                ? "BiliardoApp"
+                : AppInfo.Current.Name;
+            var version = SafeValue(AppInfo.Current.VersionString);
+            var build = SafeValue(AppInfo.Current.BuildString);
+            var packageName = SafeValue(AppInfo.Current.PackageName);
+            var platform = SafeValue(DeviceInfo.Current.Platform.ToString());
+            var osVersion = SafeValue(DeviceInfo.Current.VersionString);
+            var osDescription = SafeValue(RuntimeInformation.OSDescription);
+            var framework = SafeValue(RuntimeInformation.FrameworkDescription);
+            var architecture = SafeValue(RuntimeInformation.ProcessArchitecture.ToString());
+            var manufacturer = SafeValue(DeviceInfo.Current.Manufacturer);
+            var model = SafeValue(DeviceInfo.Current.Model);
+            var now = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
-            await ShowPopupAsync(message, "Informazioni");
+            var messageBuilder = new StringBuilder()
+                .AppendLine($"{appName} v{version} (build {build})")
+                .AppendLine($"Package: {packageName}")
+                .AppendLine($"Piattaforma: {platform} {osVersion}")
+                .AppendLine($"OS: {osDescription}")
+                .AppendLine($"Runtime: {framework}")
+                .AppendLine($"Architettura: {architecture}")
+                .AppendLine($"Dispositivo: {manufacturer} {model}")
+                .AppendLine($"Data/Ora (debug): {now}");
+
+            await ShowPopupAsync(messageBuilder.ToString().TrimEnd(), "Informazioni");
         }
         // =================================================================
 
