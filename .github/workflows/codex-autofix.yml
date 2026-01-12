@@ -79,29 +79,20 @@ jobs:
             throw "Missing codex/autofix.prompt.txt in repo root."
           }
 
-      - name: Setup Node.js (for Codex CLI)
+      - name: Setup Node.js (for npm)
         if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install Codex CLI in a known location + verify (fix ENOENT)
+      - name: Prepare npm global prefix folder (Windows)
         if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           $prefix = Join-Path $env:RUNNER_TEMP "npm-global"
           New-Item -ItemType Directory -Force -Path $prefix | Out-Null
-
-          "NPM_CONFIG_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          $prefix | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          (Join-Path $prefix "node_modules\.bin") | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-          npm install -g "@openai/codex@latest" "@openai/codex-responses-api-proxy@latest"
-
-          where.exe codex
-          codex --version
+          New-Item -ItemType Directory -Force -Path (Join-Path $prefix "node_modules\.bin") | Out-Null
 
       - name: Setup .NET (from global.json)
         if: env.CODEX_AUTOFIX_SKIP != 'true'
@@ -134,11 +125,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           dotnet restore Biliardo.App/Biliardo.App.csproj
 
-      - name: Run Codex (fix build)
+      - name: Run Codex (fix build) - FIX ENOENT
         if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: openai/codex-action@v1
         env:
           NPM_CONFIG_PREFIX: ${{ runner.temp }}\npm-global
+          npm_config_prefix: ${{ runner.temp }}\npm-global
+          PATH: ${{ runner.temp }}\npm-global;${{ runner.temp }}\npm-global\node_modules\.bin;${{ env.PATH }}
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
           prompt-file: codex/autofix.prompt.txt
