@@ -5,6 +5,7 @@
   - Blocco login finché email non verificata (re-invio email verifica)
   - Pulsante Registrazione (Firebase)
   - Pulsante Diagnostica (share log locale)
+    -TEST CIAO PIPPO-
 ============================================================================ -->
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
