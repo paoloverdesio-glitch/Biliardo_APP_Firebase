@@ -32,6 +32,16 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: true
+          # Usa PAT dedicato per fare push e per far ripartire la CI dopo i commit del bot
+          token: ${{ secrets.CODEX_PUSH_TOKEN }}
+
+      - name: Configure git (safe directory + authenticated origin)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git config --global --add safe.directory "$env:GITHUB_WORKSPACE"
+          # Forza origin ad usare il token (GitHub maschera il secret nei log)
+          git remote set-url origin "https://x-access-token:${{ secrets.CODEX_PUSH_TOKEN }}@github.com/${{ github.repository }}.git"
 
       - name: Attach HEAD to the PR branch
         shell: pwsh
@@ -41,7 +51,30 @@ jobs:
           $sha    = "${{ github.event.workflow_run.head_sha }}"
           git checkout -B "$branch" "$sha"
 
+      - name: Compute autofix attempt (max 3)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sha = "${{ github.event.workflow_run.head_sha }}"
+          $subject = (git show -s --format=%s $sha)
+
+          $attempt = 1
+          if ($subject -match '^Codex: autofix build \(attempt (\d+)\)$') {
+            $attempt = [int]$Matches[1] + 1
+          }
+
+          if ($attempt -gt 3) {
+            Write-Host "Max autofix attempts reached (3). Skipping."
+            "CODEX_AUTOFIX_SKIP=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            exit 0
+          }
+
+          "CODEX_AUTOFIX_ATTEMPT=$attempt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CODEX_AUTOFIX_SKIP=false"       | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Autofix attempt: $attempt"
+
       - name: Verify prompt file exists
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -50,38 +83,45 @@ jobs:
           }
 
       - name: Ensure npm global bin is on PATH (Windows)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Setup .NET (from global.json)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
 
       - name: Setup Java (Temurin 17)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Android SDK
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: android-actions/setup-android@v3
 
       - name: Install MAUI workloads (Windows + Android)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           dotnet workload install maui-windows maui-android
 
       - name: Restore
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           dotnet restore Biliardo.App/Biliardo.App.csproj
 
       - name: Run Codex (fix build)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.CODEX_API_KEY }}
@@ -93,18 +133,21 @@ jobs:
           safety-strategy: unsafe
 
       - name: Build (Windows) - verify
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
 
       - name: Build (Android) - verify
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
 
       - name: Commit & push changes (if any)
+        if: env.CODEX_AUTOFIX_SKIP != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -118,7 +161,11 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Codex: autofix build"
+
+          $attempt = $env:CODEX_AUTOFIX_ATTEMPT
+          if ([string]::IsNullOrWhiteSpace($attempt)) { $attempt = "1" }
+
+          git commit -m "Codex: autofix build (attempt $attempt)"
 
           $branch = "${{ github.event.workflow_run.head_branch }}"
           git push origin "HEAD:$branch"
