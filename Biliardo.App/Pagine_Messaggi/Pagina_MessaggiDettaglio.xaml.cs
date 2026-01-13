@@ -70,8 +70,19 @@ namespace Biliardo.App.Pagine_Messaggi
         private string _titoloChat = "Chat";
         public string TitoloChat { get => _titoloChat; set { _titoloChat = value; OnPropertyChanged(); } }
 
-        private string _sottotitoloChat = "";
-        public string SottotitoloChat { get => _sottotitoloChat; set { _sottotitoloChat = value; OnPropertyChanged(); } }
+        private string _displayNomeCompleto = "";
+        public string DisplayNomeCompleto
+        {
+            get => _displayNomeCompleto;
+            set
+            {
+                _displayNomeCompleto = value ?? "";
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(HasDisplayNomeCompleto));
+            }
+        }
+
+        public bool HasDisplayNomeCompleto => !string.IsNullOrWhiteSpace(DisplayNomeCompleto);
 
         private string _testoMessaggio = "";
         public string TestoMessaggio
@@ -139,6 +150,17 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private readonly string? _peerUserId;
         private readonly string? _peerNickname;
+        private bool _peerProfileLoaded;
+        private string? _lastIdToken;
+        private string? _lastMyUid;
+        private string? _lastPeerId;
+        private string? _lastChatId;
+
+        private List<FirestoreChatService.MessageItem>? _pendingOrdered;
+        private string? _pendingSignature;
+        private CancellationTokenSource? _pendingApplyCts;
+        private readonly object _pendingLock = new();
+        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
 
         private CancellationTokenSource? _pollCts;
         private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
@@ -204,7 +226,9 @@ namespace Biliardo.App.Pagine_Messaggi
             catch { }
 
             TitoloChat = "Chat";
-            SottotitoloChat = "Dettaglio";
+            DisplayNomeCompleto = "";
+
+            ChatScrollTuning.Apply(CvMessaggi);
 
             AllegatiSelezionati.CollectionChanged += (_, __) =>
             {
@@ -232,7 +256,7 @@ namespace Biliardo.App.Pagine_Messaggi
             _peerNickname = (peerNickname ?? "").Trim();
 
             TitoloChat = string.IsNullOrWhiteSpace(_peerNickname) ? "Chat" : _peerNickname!;
-            SottotitoloChat = string.IsNullOrWhiteSpace(_peerUserId) ? "" : _peerUserId!;
+            DisplayNomeCompleto = "";
         }
 
         protected override void OnAppearing()
@@ -244,6 +268,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             StartPolling();
             RefreshVoiceBindings();
+            _ = EnsurePeerProfileAsync();
         }
 
         protected override void OnDisappearing()
@@ -260,6 +285,7 @@ namespace Biliardo.App.Pagine_Messaggi
             StopVoiceUiLoop();
             _playback.StopPlaybackSafe();
             CancelPrefetch();
+            CancelPendingApply();
 
             // sicurezza: se esco mentre registro, cancello
             _ = Task.Run(async () =>
@@ -273,6 +299,46 @@ namespace Biliardo.App.Pagine_Messaggi
                 catch { }
                 finally { _voiceOpLock.Release(); }
             });
+        }
+
+        private async Task EnsurePeerProfileAsync()
+        {
+            if (_peerProfileLoaded)
+                return;
+
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(peerId))
+                return;
+
+            _peerProfileLoaded = true;
+
+            try
+            {
+                var profile = await FirestoreDirectoryService.GetUserPublicAsync(peerId);
+                if (profile == null)
+                    return;
+
+                var display = BuildDisplayNomeCompleto(profile.FirstName, profile.LastName);
+                DisplayNomeCompleto = display;
+            }
+            catch { }
+        }
+
+        private static string BuildDisplayNomeCompleto(string? firstName, string? lastName)
+        {
+            var fn = (firstName ?? "").Trim();
+            var ln = (lastName ?? "").Trim();
+
+            if (string.IsNullOrWhiteSpace(fn) && string.IsNullOrWhiteSpace(ln))
+                return "";
+
+            if (string.IsNullOrWhiteSpace(fn))
+                return ln;
+
+            if (string.IsNullOrWhiteSpace(ln))
+                return fn;
+
+            return $"{fn} {ln}".Trim();
         }
 
         protected override void OnSizeAllocated(double width, double height)
@@ -405,6 +471,62 @@ namespace Biliardo.App.Pagine_Messaggi
             var first = Math.Max(0, e.FirstVisibleItemIndex);
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
             _ = SchedulePrefetchPhotosAsync(first, last);
+
+            SchedulePendingApply();
+        }
+
+        private void QueuePendingUpdate(string signature, List<FirestoreChatService.MessageItem> ordered)
+        {
+            lock (_pendingLock)
+            {
+                _pendingSignature = signature;
+                _pendingOrdered = ordered;
+            }
+            SchedulePendingApply();
+        }
+
+        private void SchedulePendingApply()
+        {
+            try { _pendingApplyCts?.Cancel(); } catch { }
+            try { _pendingApplyCts?.Dispose(); } catch { }
+            _pendingApplyCts = new CancellationTokenSource();
+            var token = _pendingApplyCts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(ScrollIdleDelay, token);
+                    if (token.IsCancellationRequested || IsScrollBusy())
+                        return;
+
+                    List<FirestoreChatService.MessageItem>? ordered = null;
+                    string? signature = null;
+
+                    lock (_pendingLock)
+                    {
+                        ordered = _pendingOrdered;
+                        signature = _pendingSignature;
+                        _pendingOrdered = null;
+                        _pendingSignature = null;
+                    }
+
+                    if (ordered == null || string.IsNullOrWhiteSpace(signature))
+                        return;
+
+                    var idToken = _lastIdToken;
+                    var myUid = _lastMyUid;
+                    var peerId = _lastPeerId;
+                    var chatId = _lastChatId;
+
+                    if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
+                        || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
+                        return;
+
+                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
+                }
+                catch { }
+            }, token);
         }
 
         // ============================================================
@@ -1298,6 +1420,10 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
+            _lastIdToken = idToken;
+            _lastMyUid = myUid;
+            _lastPeerId = peerId;
+            _lastChatId = chatId;
 
             var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: ct);
             var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
@@ -1311,9 +1437,33 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             if (IsScrollBusy())
+            {
+                QueuePendingUpdate(sig, ordered);
+                if (IsLoadingMessages)
+                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
                 return;
+            }
 
-            _lastUiSignature = sig;
+            await ApplyOrderedMessagesAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct);
+        }
+
+        private async Task ApplyOrderedMessagesAsync(
+            List<FirestoreChatService.MessageItem> ordered,
+            string signature,
+            string idToken,
+            string myUid,
+            string peerId,
+            string chatId,
+            CancellationToken ct)
+        {
+            if (string.Equals(signature, _lastUiSignature, StringComparison.Ordinal))
+            {
+                if (IsLoadingMessages)
+                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
+                return;
+            }
+
+            _lastUiSignature = signature;
 
             _ = Task.Run(async () =>
             {
@@ -1321,14 +1471,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 {
                     try
                     {
-                        await _fsChat.TryMarkDeliveredAsync(idToken!, chatId, m.MessageId, m.DeliveredTo, myUid!, ct);
-                        await _fsChat.TryMarkReadAsync(idToken!, chatId, m.MessageId, m.ReadBy, myUid!, ct);
+                        await _fsChat.TryMarkDeliveredAsync(idToken, chatId, m.MessageId, m.DeliveredTo, myUid, ct);
+                        await _fsChat.TryMarkReadAsync(idToken, chatId, m.MessageId, m.ReadBy, myUid, ct);
                     }
                     catch { }
                 }
             }, ct);
 
-            MainThread.BeginInvokeOnMainThread(() =>
+            await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 IsLoadingMessages = false;
 
@@ -1353,7 +1503,7 @@ namespace Biliardo.App.Pagine_Messaggi
                             lastDay = d;
                         }
 
-                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid!, peerId));
+                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
                     }
 
                     appended = true;
@@ -1390,7 +1540,7 @@ namespace Biliardo.App.Pagine_Messaggi
                             lastDay = d;
                         }
 
-                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid!, peerId));
+                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
                         appended = true;
                     }
                 }
@@ -1436,6 +1586,19 @@ namespace Biliardo.App.Pagine_Messaggi
             try { _prefetchCts?.Cancel(); } catch { }
             try { _prefetchCts?.Dispose(); } catch { }
             _prefetchCts = null;
+        }
+
+        private void CancelPendingApply()
+        {
+            lock (_pendingLock)
+            {
+                _pendingOrdered = null;
+                _pendingSignature = null;
+            }
+
+            try { _pendingApplyCts?.Cancel(); } catch { }
+            try { _pendingApplyCts?.Dispose(); } catch { }
+            _pendingApplyCts = null;
         }
 
         private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)

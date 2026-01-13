@@ -29,7 +29,8 @@
                        FontAttributes="Bold"
                        FontSize="18"
                        LineBreakMode="TailTruncation" />
-                <Label Text="{Binding Source={x:Reference ThisPage}, Path=SottotitoloChat}"
+                <Label Text="{Binding Source={x:Reference ThisPage}, Path=DisplayNomeCompleto}"
+                       IsVisible="{Binding Source={x:Reference ThisPage}, Path=HasDisplayNomeCompleto}"
                        TextColor="White"
                        FontSize="12"
                        Opacity="0.75"
