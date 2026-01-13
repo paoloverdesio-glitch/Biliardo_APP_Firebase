@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -13,6 +14,7 @@ using Microsoft.Maui.Devices.Sensors;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
@@ -47,18 +49,6 @@ namespace Biliardo.App.Pagine_Messaggi
         // soglie gesture sul mic
         private const double MIC_CANCEL_DX = -110;          // swipe sinistra => cancella (solo hold, NON lock)
         private const double MIC_LOCK_DY = -110;            // swipe su => lock
-
-        // ============================================================
-        // 3) PERFORMANCE / SCROLL
-        // ============================================================
-        private long _scrollBusyUntilUtcTicks;
-        private const int ScrollBusyHoldMs = 450;
-
-        private bool IsScrollBusy()
-            => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
-
-        private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
 
         // ============================================================
         // VM/UI state
@@ -156,12 +146,6 @@ namespace Biliardo.App.Pagine_Messaggi
         private string? _lastPeerId;
         private string? _lastChatId;
 
-        private List<FirestoreChatService.MessageItem>? _pendingOrdered;
-        private string? _pendingSignature;
-        private CancellationTokenSource? _pendingApplyCts;
-        private readonly object _pendingLock = new();
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
-
         private CancellationTokenSource? _pollCts;
         private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
         private string _lastUiSignature = "";
@@ -169,6 +153,27 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private string? _chatIdCached;
+
+        private readonly ScrollWorkCoordinator _scrollCoordinator = new();
+        private CollectionViewNativeScrollStateTracker? _scrollTracker;
+        private readonly ChatLocalCache _localCache = new();
+        private readonly SemaphoreSlim _loadLock = new(1, 1);
+        private bool _fastLoadStarted;
+        private bool _hasRenderedInitialMessages;
+        private bool _backfillStarted;
+        private bool _isPagingOlder;
+        private int _lastFirstVisibleIndex;
+        private bool _pendingOlderLoad;
+        private DateTimeOffset? _oldestMessageUtc;
+        private DateTimeOffset? _newestMessageUtc;
+
+        private const int FastInitialLimit = 20;
+        private const int BackfillLimit = 80;
+        private const int WindowMaxMessages = 200;
+        private const int CacheMaxMessages = 50;
+        private const int OlderPageSize = 40;
+        private const int OlderTriggerThreshold = 8;
+        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(280);
 
         // Prefetch foto (visibili + 5)
         private readonly HashSet<string> _prefetchPhotoMessageIds = new(StringComparer.Ordinal);
@@ -266,6 +271,15 @@ namespace Biliardo.App.Pagine_Messaggi
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
 
+            if (!_fastLoadStarted)
+            {
+                _fastLoadStarted = true;
+                _ = FastInitialLoadAsync();
+            }
+
+            if (_scrollTracker == null)
+                _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(CvMessaggi, _scrollCoordinator, ScrollIdleDelay);
+
             StartPolling();
             RefreshVoiceBindings();
             _ = EnsurePeerProfileAsync();
@@ -285,7 +299,12 @@ namespace Biliardo.App.Pagine_Messaggi
             StopVoiceUiLoop();
             _playback.StopPlaybackSafe();
             CancelPrefetch();
-            CancelPendingApply();
+            _scrollCoordinator.ClearPending();
+            _scrollTracker?.Dispose();
+            _scrollTracker = null;
+            _backfillStarted = false;
+            _isPagingOlder = false;
+            _pendingOlderLoad = false;
 
             // sicurezza: se esco mentre registro, cancello
             _ = Task.Run(async () =>
@@ -465,68 +484,15 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void OnMessagesScrolled(object sender, ItemsViewScrolledEventArgs e)
         {
-            MarkScrollBusy();
+            _scrollCoordinator.NotifyActivity();
             _userNearBottom = e.LastVisibleItemIndex >= (Messaggi.Count - 2);
+            _lastFirstVisibleIndex = e.FirstVisibleItemIndex;
 
             var first = Math.Max(0, e.FirstVisibleItemIndex);
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
             _ = SchedulePrefetchPhotosAsync(first, last);
 
-            SchedulePendingApply();
-        }
-
-        private void QueuePendingUpdate(string signature, List<FirestoreChatService.MessageItem> ordered)
-        {
-            lock (_pendingLock)
-            {
-                _pendingSignature = signature;
-                _pendingOrdered = ordered;
-            }
-            SchedulePendingApply();
-        }
-
-        private void SchedulePendingApply()
-        {
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = new CancellationTokenSource();
-            var token = _pendingApplyCts.Token;
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(ScrollIdleDelay, token);
-                    if (token.IsCancellationRequested || IsScrollBusy())
-                        return;
-
-                    List<FirestoreChatService.MessageItem>? ordered = null;
-                    string? signature = null;
-
-                    lock (_pendingLock)
-                    {
-                        ordered = _pendingOrdered;
-                        signature = _pendingSignature;
-                        _pendingOrdered = null;
-                        _pendingSignature = null;
-                    }
-
-                    if (ordered == null || string.IsNullOrWhiteSpace(signature))
-                        return;
-
-                    var idToken = _lastIdToken;
-                    var myUid = _lastMyUid;
-                    var peerId = _lastPeerId;
-                    var chatId = _lastChatId;
-
-                    if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
-                        || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
-                        return;
-
-                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
-                }
-                catch { }
-            }, token);
+            ScheduleOlderPagingIfNeeded();
         }
 
         // ============================================================
@@ -1403,8 +1369,107 @@ namespace Biliardo.App.Pagine_Messaggi
             return hc.ToHashCode().ToString("X");
         }
 
-        private async Task LoadOnceAsync(CancellationToken ct)
+        private async Task FastInitialLoadAsync()
         {
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(peerId))
+                return;
+
+            var myUid = FirebaseSessionePersistente.GetLocalId();
+            if (string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            var cacheKey = _localCache.GetCacheKey(_chatIdCached, peerId);
+            var swCache = Stopwatch.StartNew();
+            var cached = await _localCache.TryReadAsync(cacheKey, CancellationToken.None);
+            swCache.Stop();
+            Debug.WriteLine($"[ChatLoad] Cache read {cached.Count} in {swCache.ElapsedMilliseconds}ms");
+
+            if (cached.Count > 0)
+            {
+                var ordered = cached.OrderBy(m => m.CreatedAtUtc).ToList();
+                var sig = ComputeUiSignature(ordered);
+                await ApplyMessageDiffAsync(ordered, sig, idToken: "", myUid!, peerId, chatId: "", ct: CancellationToken.None, allowTrim: true, applyReceipts: false, source: "cache");
+            }
+
+            try
+            {
+                var provider = await SessionePersistente.GetProviderAsync();
+                if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                if (string.IsNullOrWhiteSpace(idToken))
+                    return;
+
+                var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
+                _lastIdToken = idToken;
+                _lastMyUid = myUid;
+                _lastPeerId = peerId;
+                _lastChatId = chatId;
+
+                var swFetch = Stopwatch.StartNew();
+                var latest = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: FastInitialLimit, ct: CancellationToken.None);
+                swFetch.Stop();
+                Debug.WriteLine($"[ChatLoad] Fast fetch {latest.Count} in {swFetch.ElapsedMilliseconds}ms");
+
+                var ordered = latest.OrderBy(m => m.CreatedAtUtc).ToList();
+                var sig = ComputeUiSignature(ordered);
+                await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "fast");
+
+                if (!_backfillStarted)
+                {
+                    _backfillStarted = true;
+                    _ = StartBackfillAsync(idToken!, myUid!, peerId, chatId);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ChatLoad] Fast load failed: {ex.Message}");
+            }
+        }
+
+        private async Task StartBackfillAsync(string idToken, string myUid, string peerId, string chatId)
+        {
+            var swFetch = Stopwatch.StartNew();
+            var msgs = await _fsChat.GetLastMessagesAsync(idToken, chatId, limit: BackfillLimit, ct: CancellationToken.None);
+            swFetch.Stop();
+            Debug.WriteLine($"[ChatLoad] Backfill fetch {msgs.Count} in {swFetch.ElapsedMilliseconds}ms");
+
+            var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
+            var sig = ComputeUiSignature(ordered);
+            await ApplyMessageDiffAsync(ordered, sig, idToken, myUid, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "backfill");
+
+            _ = _localCache.WriteAsync(_localCache.GetCacheKey(chatId, peerId), ordered, CacheMaxMessages, CancellationToken.None);
+        }
+
+        private void ScheduleOlderPagingIfNeeded()
+        {
+            if (_pendingOlderLoad || _isPagingOlder)
+                return;
+
+            if (_lastFirstVisibleIndex > OlderTriggerThreshold)
+                return;
+
+            _pendingOlderLoad = true;
+            _scrollCoordinator.EnqueueUiWork(async () =>
+            {
+                _pendingOlderLoad = false;
+                if (_lastFirstVisibleIndex > OlderTriggerThreshold)
+                    return;
+
+                await LoadOlderMessagesAsync();
+            }, "page-older");
+        }
+
+        private async Task LoadOlderMessagesAsync()
+        {
+            if (_isPagingOlder)
+                return;
+
+            if (_oldestMessageUtc == null)
+                return;
+
             var peerId = (_peerUserId ?? "").Trim();
             if (string.IsNullOrWhiteSpace(peerId))
                 return;
@@ -1413,48 +1478,314 @@ namespace Biliardo.App.Pagine_Messaggi
             if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
                 return;
 
-            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
             var myUid = FirebaseSessionePersistente.GetLocalId();
-
             if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
                 return;
 
-            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
-            _lastIdToken = idToken;
-            _lastMyUid = myUid;
-            _lastPeerId = peerId;
-            _lastChatId = chatId;
+            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
+            _isPagingOlder = true;
 
-            var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: ct);
-            var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
-
-            var sig = ComputeUiSignature(ordered);
-            if (sig == _lastUiSignature)
+            try
             {
-                if (IsLoadingMessages)
-                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
-                return;
-            }
+                var swFetch = Stopwatch.StartNew();
+                var older = await _fsChat.GetMessagesBeforeAsync(idToken!, chatId, _oldestMessageUtc.Value, limit: OlderPageSize, ct: CancellationToken.None);
+                swFetch.Stop();
+                Debug.WriteLine($"[ChatLoad] Older fetch {older.Count} in {swFetch.ElapsedMilliseconds}ms");
 
-            if (IsScrollBusy())
+                if (older.Count == 0)
+                    return;
+
+                var ordered = older.OrderBy(m => m.CreatedAtUtc).ToList();
+                var sig = ComputeUiSignature(ordered);
+                await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: false, source: "older");
+            }
+            finally
             {
-                QueuePendingUpdate(sig, ordered);
-                if (IsLoadingMessages)
-                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
-                return;
+                _isPagingOlder = false;
             }
-
-            await ApplyOrderedMessagesAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct);
         }
 
-        private async Task ApplyOrderedMessagesAsync(
+        private async Task ApplyMessageDiffOnUiAsync(
+            List<FirestoreChatService.MessageItem> ordered,
+            string myUid,
+            string peerId,
+            bool allowTrim,
+            string source)
+        {
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var swApply = Stopwatch.StartNew();
+
+                var existingById = new Dictionary<string, ChatMessageVm>(StringComparer.Ordinal);
+                foreach (var vm in Messaggi.Where(x => !x.IsDateSeparator))
+                {
+                    if (!string.IsNullOrWhiteSpace(vm.Id))
+                        existingById[vm.Id] = vm;
+                }
+
+                var newMessages = ordered.Where(m => !existingById.ContainsKey(m.MessageId)).ToList();
+                var updates = ordered.Where(m => existingById.ContainsKey(m.MessageId)).ToList();
+
+                foreach (var m in updates)
+                {
+                    if (!existingById.TryGetValue(m.MessageId, out var existing))
+                        continue;
+
+                    if (existing.IsMine)
+                    {
+                        var delivered = (m.DeliveredTo ?? Array.Empty<string>()).Contains(peerId, StringComparer.Ordinal);
+                        var read = (m.ReadBy ?? Array.Empty<string>()).Contains(peerId, StringComparer.Ordinal);
+                        var newStatus = (read || delivered) ? "✓✓" : "✓";
+                        if (!string.Equals(existing.StatusLabel, newStatus, StringComparison.Ordinal))
+                            existing.StatusLabel = newStatus;
+                    }
+                }
+
+                var insertedCount = 0;
+                var appended = false;
+
+                if (Messaggi.Count == 0)
+                {
+                    AppendMessagesWithSeparators(ordered, myUid, peerId, null);
+                    insertedCount = ordered.Count;
+                    appended = true;
+                }
+                else if (newMessages.Count > 0)
+                {
+                    var allOlder = _oldestMessageUtc != null && newMessages.Max(m => m.CreatedAtUtc) < _oldestMessageUtc.Value;
+                    if (allOlder)
+                    {
+                        var anchor = CaptureAnchor();
+                        InsertOlderMessagesWithSeparators(newMessages, myUid, peerId);
+                        insertedCount = newMessages.Count;
+                        RestoreAnchor(anchor);
+                    }
+                    else
+                    {
+                        AppendMessagesWithSeparators(newMessages, myUid, peerId, Messaggi.LastOrDefault(x => !x.IsDateSeparator));
+                        insertedCount = newMessages.Count;
+                        appended = true;
+                    }
+                }
+
+                if (allowTrim)
+                    TrimWindowIfNeeded();
+
+                UpdateBounds();
+                CleanupDateSeparators();
+
+                if (appended && _userNearBottom)
+                    ScrollToEnd();
+
+                if (!_hasRenderedInitialMessages && Messaggi.Count > 0)
+                {
+                    _hasRenderedInitialMessages = true;
+                    IsLoadingMessages = false;
+                }
+                else if (IsLoadingMessages && Messaggi.Count > 0)
+                {
+                    IsLoadingMessages = false;
+                }
+
+                swApply.Stop();
+                Debug.WriteLine($"[ChatLoad] Apply {source} add={insertedCount} update={updates.Count} in {swApply.ElapsedMilliseconds}ms");
+            });
+        }
+
+        private void AppendMessagesWithSeparators(
+            IEnumerable<FirestoreChatService.MessageItem> messages,
+            string myUid,
+            string peerId,
+            ChatMessageVm? lastExisting)
+        {
+            var lastDay = lastExisting?.CreatedAt.ToLocalTime().Date;
+            foreach (var m in messages)
+            {
+                var d = m.CreatedAtUtc.ToLocalTime().Date;
+                if (lastDay == null || d != lastDay.Value)
+                {
+                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(d));
+                    lastDay = d;
+                }
+
+                Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
+            }
+        }
+
+        private void InsertOlderMessagesWithSeparators(
+            IEnumerable<FirestoreChatService.MessageItem> messages,
+            string myUid,
+            string peerId)
+        {
+            var firstExisting = Messaggi.FirstOrDefault(x => !x.IsDateSeparator);
+            var firstExistingDay = firstExisting?.CreatedAt.ToLocalTime().Date;
+
+            var insertList = new List<ChatMessageVm>();
+            DateTime? lastDay = null;
+
+            foreach (var m in messages)
+            {
+                var day = m.CreatedAtUtc.ToLocalTime().Date;
+                if (lastDay == null || day != lastDay.Value)
+                {
+                    if (!(firstExistingDay != null && insertList.Count == 0 && day == firstExistingDay.Value))
+                        insertList.Add(ChatMessageVm.CreateDateSeparator(day));
+
+                    lastDay = day;
+                }
+
+                insertList.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
+            }
+
+            for (int i = insertList.Count - 1; i >= 0; i--)
+                Messaggi.Insert(0, insertList[i]);
+        }
+
+        private void TrimWindowIfNeeded()
+        {
+            var realCount = Messaggi.Count(x => !x.IsDateSeparator);
+            if (realCount <= WindowMaxMessages)
+                return;
+
+            var targetRemove = realCount - WindowMaxMessages;
+            var removed = 0;
+
+            for (int i = 0; i < Messaggi.Count && removed < targetRemove;)
+            {
+                if (!Messaggi[i].IsDateSeparator)
+                {
+                    Messaggi.RemoveAt(i);
+                    removed++;
+                    continue;
+                }
+
+                i++;
+            }
+
+            CleanupDateSeparators();
+        }
+
+        private void CleanupDateSeparators()
+        {
+            if (Messaggi.Count == 0)
+                return;
+
+            for (int i = Messaggi.Count - 1; i >= 0; i--)
+            {
+                if (i == 0 && Messaggi[i].IsDateSeparator)
+                {
+                    Messaggi.RemoveAt(i);
+                    continue;
+                }
+
+                if (i == Messaggi.Count - 1 && Messaggi[i].IsDateSeparator)
+                {
+                    Messaggi.RemoveAt(i);
+                    continue;
+                }
+
+                if (i > 0 && Messaggi[i].IsDateSeparator && Messaggi[i - 1].IsDateSeparator)
+                {
+                    Messaggi.RemoveAt(i);
+                }
+            }
+        }
+
+        private void UpdateBounds()
+        {
+            var first = Messaggi.FirstOrDefault(x => !x.IsDateSeparator);
+            var last = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
+            _oldestMessageUtc = first?.CreatedAt;
+            _newestMessageUtc = last?.CreatedAt;
+        }
+
+        private ChatScrollAnchor CaptureAnchor()
+        {
+            if (Messaggi.Count == 0)
+                return new ChatScrollAnchor(null, 0, 0);
+
+            var fallbackIndex = Math.Clamp(_lastFirstVisibleIndex, 0, Math.Max(0, Messaggi.Count - 1));
+            var messageId = Messaggi.ElementAtOrDefault(fallbackIndex)?.Id;
+
+            return ChatScrollAnchorHelper.Capture(CvMessaggi, fallbackIndex, messageId);
+        }
+
+        private void RestoreAnchor(ChatScrollAnchor anchor)
+        {
+            ChatScrollAnchorHelper.Restore(CvMessaggi, anchor, id =>
+            {
+                if (string.IsNullOrWhiteSpace(id))
+                    return -1;
+
+                for (int i = 0; i < Messaggi.Count; i++)
+                {
+                    if (string.Equals(Messaggi[i].Id, id, StringComparison.Ordinal))
+                        return i;
+                }
+
+                return -1;
+            });
+        }
+
+        private async Task LoadOnceAsync(CancellationToken ct)
+        {
+            await _loadLock.WaitAsync(ct);
+            try
+            {
+                var peerId = (_peerUserId ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(peerId))
+                    return;
+
+                var provider = await SessionePersistente.GetProviderAsync();
+                if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+                var myUid = FirebaseSessionePersistente.GetLocalId();
+
+                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
+                    return;
+
+                var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
+                _lastIdToken = idToken;
+                _lastMyUid = myUid;
+                _lastPeerId = peerId;
+                _lastChatId = chatId;
+
+                var swFetch = Stopwatch.StartNew();
+                var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: BackfillLimit, ct: ct);
+                swFetch.Stop();
+                Debug.WriteLine($"[ChatLoad] Poll fetch {msgs.Count} in {swFetch.ElapsedMilliseconds}ms");
+
+                var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
+                var sig = ComputeUiSignature(ordered);
+                if (sig == _lastUiSignature)
+                {
+                    if (IsLoadingMessages)
+                        MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
+                    return;
+                }
+
+                await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct, allowTrim: true, applyReceipts: true, source: "poll");
+            }
+            finally
+            {
+                _loadLock.Release();
+            }
+        }
+
+        private async Task ApplyMessageDiffAsync(
             List<FirestoreChatService.MessageItem> ordered,
             string signature,
             string idToken,
             string myUid,
             string peerId,
             string chatId,
-            CancellationToken ct)
+            CancellationToken ct,
+            bool allowTrim,
+            bool applyReceipts,
+            string source)
         {
             if (string.Equals(signature, _lastUiSignature, StringComparison.Ordinal))
             {
@@ -1465,89 +1796,34 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _lastUiSignature = signature;
 
-            _ = Task.Run(async () =>
+            if (applyReceipts)
             {
-                foreach (var m in ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)))
+                _ = Task.Run(async () =>
                 {
-                    try
+                    foreach (var m in ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)))
                     {
-                        await _fsChat.TryMarkDeliveredAsync(idToken, chatId, m.MessageId, m.DeliveredTo, myUid, ct);
-                        await _fsChat.TryMarkReadAsync(idToken, chatId, m.MessageId, m.ReadBy, myUid, ct);
+                        try
+                        {
+                            await _fsChat.TryMarkDeliveredAsync(idToken, chatId, m.MessageId, m.DeliveredTo, myUid, ct);
+                            await _fsChat.TryMarkReadAsync(idToken, chatId, m.MessageId, m.ReadBy, myUid, ct);
+                        }
+                        catch { }
                     }
-                    catch { }
-                }
-            }, ct);
+                }, ct);
+            }
 
-            await MainThread.InvokeOnMainThreadAsync(() =>
+            var swApply = Stopwatch.StartNew();
+            _scrollCoordinator.EnqueueUiWork(async () =>
             {
-                IsLoadingMessages = false;
+                await ApplyMessageDiffOnUiAsync(ordered, myUid, peerId, allowTrim, source);
+            }, $"apply-{source}");
+            swApply.Stop();
+            Debug.WriteLine($"[ChatLoad] Diff queued {ordered.Count} ({source}) in {swApply.ElapsedMilliseconds}ms");
 
-                var byId = new Dictionary<string, ChatMessageVm>(StringComparer.Ordinal);
-                foreach (var vm in Messaggi.Where(x => !x.IsDateSeparator))
-                {
-                    if (!string.IsNullOrWhiteSpace(vm.Id))
-                        byId[vm.Id] = vm;
-                }
-
-                bool appended = false;
-
-                if (Messaggi.Count == 0)
-                {
-                    DateTime? lastDay = null;
-                    foreach (var m in ordered)
-                    {
-                        var d = m.CreatedAtUtc.ToLocalTime().Date;
-                        if (lastDay == null || d != lastDay.Value)
-                        {
-                            Messaggi.Add(ChatMessageVm.CreateDateSeparator(d));
-                            lastDay = d;
-                        }
-
-                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
-                    }
-
-                    appended = true;
-                }
-                else
-                {
-                    var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
-                    var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
-
-                    foreach (var m in ordered)
-                    {
-                        var id = m.MessageId ?? "";
-                        if (string.IsNullOrWhiteSpace(id))
-                            continue;
-
-                        if (byId.TryGetValue(id, out var existing))
-                        {
-                            if (existing.IsMine)
-                            {
-                                var delivered = (m.DeliveredTo ?? Array.Empty<string>()).Contains(peerId, StringComparer.Ordinal);
-                                var read = (m.ReadBy ?? Array.Empty<string>()).Contains(peerId, StringComparer.Ordinal);
-
-                                var newStatus = (read || delivered) ? "✓✓" : "✓";
-                                if (!string.Equals(existing.StatusLabel, newStatus, StringComparison.Ordinal))
-                                    existing.StatusLabel = newStatus;
-                            }
-                            continue;
-                        }
-
-                        var d = m.CreatedAtUtc.ToLocalTime().Date;
-                        if (lastDay == null || d != lastDay.Value)
-                        {
-                            Messaggi.Add(ChatMessageVm.CreateDateSeparator(d));
-                            lastDay = d;
-                        }
-
-                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
-                        appended = true;
-                    }
-                }
-
-                if (appended && _userNearBottom)
-                    ScrollToEnd();
-            });
+            if (!string.Equals(source, "cache", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(chatId))
+            {
+                _ = _localCache.WriteAsync(_localCache.GetCacheKey(chatId, peerId), ordered, CacheMaxMessages, ct);
+            }
         }
 
         private async Task<string> EnsureChatIdAsync(string idToken, string myUid, string peerUid, CancellationToken ct = default)
@@ -1586,19 +1862,6 @@ namespace Biliardo.App.Pagine_Messaggi
             try { _prefetchCts?.Cancel(); } catch { }
             try { _prefetchCts?.Dispose(); } catch { }
             _prefetchCts = null;
-        }
-
-        private void CancelPendingApply()
-        {
-            lock (_pendingLock)
-            {
-                _pendingOrdered = null;
-                _pendingSignature = null;
-            }
-
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = null;
         }
 
         private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)
