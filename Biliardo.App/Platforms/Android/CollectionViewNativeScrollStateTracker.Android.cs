@@ -9,11 +9,54 @@ namespace Biliardo.App.Infrastructure
     public sealed partial class CollectionViewNativeScrollStateTracker
     {
         private static readonly ConditionalWeakTable<RecyclerView, RecyclerScrollListener> Listeners = new();
+        private static readonly ConditionalWeakTable<CollectionView, EventHandler> HandlerChangedHandlers = new();
 
         static partial void AttachPlatform(CollectionView view, ScrollWorkCoordinator coordinator)
         {
+            if (TryAttach(view, coordinator))
+                return;
+
+            if (HandlerChangedHandlers.TryGetValue(view, out _))
+                return;
+
+            EventHandler? handler = null;
+            handler = (_, __) =>
+            {
+                if (!TryAttach(view, coordinator))
+                    return;
+
+                view.HandlerChanged -= handler;
+                HandlerChangedHandlers.Remove(view);
+            };
+
+            HandlerChangedHandlers.Add(view, handler);
+            view.HandlerChanged += handler;
+        }
+
+        static partial void DetachPlatform(CollectionView view, ScrollWorkCoordinator coordinator)
+        {
+            if (HandlerChangedHandlers.TryGetValue(view, out var handler))
+            {
+                view.HandlerChanged -= handler;
+                HandlerChangedHandlers.Remove(view);
+            }
+
             if (view.Handler?.PlatformView is not RecyclerView recycler)
                 return;
+
+            if (Listeners.TryGetValue(recycler, out var listener))
+            {
+                recycler.RemoveOnScrollListener(listener);
+                Listeners.Remove(recycler);
+            }
+
+            coordinator.SetNativeTrackingActive(false);
+        }
+
+        private static bool TryAttach(CollectionView view, ScrollWorkCoordinator coordinator)
+        {
+            if (view.Handler?.PlatformView is not RecyclerView recycler)
+                return false;
 
             coordinator.SetNativeTrackingActive(true);
 
@@ -32,20 +75,7 @@ namespace Biliardo.App.Infrastructure
 
             recycler.SetItemViewCacheSize(20);
             recycler.HasFixedSize = true;
-        }
-
-        static partial void DetachPlatform(CollectionView view, ScrollWorkCoordinator coordinator)
-        {
-            if (view.Handler?.PlatformView is not RecyclerView recycler)
-                return;
-
-            if (Listeners.TryGetValue(recycler, out var listener))
-            {
-                recycler.RemoveOnScrollListener(listener);
-                Listeners.Remove(recycler);
-            }
-
-            coordinator.SetNativeTrackingActive(false);
+            return true;
         }
 
         private sealed class RecyclerScrollListener : RecyclerView.OnScrollListener

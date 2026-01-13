@@ -271,16 +271,19 @@ namespace Biliardo.App.Pagine_Messaggi
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
 
+            if (_scrollTracker == null)
+                _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(CvMessaggi, _scrollCoordinator, ScrollIdleDelay);
+
             if (!_fastLoadStarted)
             {
                 _fastLoadStarted = true;
                 _ = FastInitialLoadAsync();
             }
+            else
+            {
+                StartPolling();
+            }
 
-            if (_scrollTracker == null)
-                _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(CvMessaggi, _scrollCoordinator, ScrollIdleDelay);
-
-            StartPolling();
             RefreshVoiceBindings();
             _ = EnsurePeerProfileAsync();
         }
@@ -1347,6 +1350,13 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             while (!ct.IsCancellationRequested)
             {
+                if (!_hasRenderedInitialMessages)
+                {
+                    try { await Task.Delay(200, ct); }
+                    catch { break; }
+                    continue;
+                }
+
                 try { await LoadOnceAsync(ct); } catch { }
 
                 try { await Task.Delay(_pollInterval, ct); }
@@ -1390,6 +1400,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 var ordered = cached.OrderBy(m => m.CreatedAtUtc).ToList();
                 var sig = ComputeUiSignature(ordered);
                 await ApplyMessageDiffAsync(ordered, sig, idToken: "", myUid!, peerId, chatId: "", ct: CancellationToken.None, allowTrim: true, applyReceipts: false, source: "cache");
+                await MarkInitialRenderReadyAsync();
             }
 
             try
@@ -1416,6 +1427,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 var ordered = latest.OrderBy(m => m.CreatedAtUtc).ToList();
                 var sig = ComputeUiSignature(ordered);
                 await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "fast");
+                await MarkInitialRenderReadyAsync();
 
                 if (!_backfillStarted)
                 {
@@ -1427,6 +1439,19 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 Debug.WriteLine($"[ChatLoad] Fast load failed: {ex.Message}");
             }
+        }
+
+        private Task MarkInitialRenderReadyAsync()
+        {
+            if (_hasRenderedInitialMessages)
+                return Task.CompletedTask;
+
+            _hasRenderedInitialMessages = true;
+            return MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                IsLoadingMessages = false;
+                StartPolling();
+            });
         }
 
         private async Task StartBackfillAsync(string idToken, string myUid, string peerId, string chatId)
