@@ -53,12 +53,19 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private long _scrollBusyUntilUtcTicks;
         private const int ScrollBusyHoldMs = 450;
+        private const int ScrollIdleDebounceMs = 320;
+
+        // Flag reale "scroll in corso": evita mutate UI mentre l'utente scorre.
+        private bool _isScrollInProgress;
 
         private bool IsScrollBusy()
-            => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
+            => _isScrollInProgress || DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
 
         private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+        {
+            _isScrollInProgress = true;
+            Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+        }
 
         // ============================================================
         // VM/UI state
@@ -158,9 +165,15 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
         private string? _pendingSignature;
-        private CancellationTokenSource? _pendingApplyCts;
         private readonly object _pendingLock = new();
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
+        private bool _pendingRefresh;
+        private CancellationTokenSource? _scrollIdleCts;
+        private int _pendingPrefetchFirst = -1;
+        private int _pendingPrefetchLast = -1;
+
+        // Cache locale: download completati durante scroll, applicati solo dopo idle.
+        private readonly Dictionary<string, string> _pendingMediaLocalPaths = new(StringComparer.Ordinal);
+        private readonly object _pendingMediaLock = new();
 
         private CancellationTokenSource? _pollCts;
         private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
@@ -470,9 +483,18 @@ namespace Biliardo.App.Pagine_Messaggi
 
             var first = Math.Max(0, e.FirstVisibleItemIndex);
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
-            _ = SchedulePrefetchPhotosAsync(first, last);
+            if (Messaggi.Count > 0 && last >= first)
+            {
+                _pendingPrefetchFirst = first;
+                _pendingPrefetchLast = last;
+            }
+            else
+            {
+                _pendingPrefetchFirst = -1;
+                _pendingPrefetchLast = -1;
+            }
 
-            SchedulePendingApply();
+            ScheduleScrollIdleDebounce();
         }
 
         private void QueuePendingUpdate(string signature, List<FirestoreChatService.MessageItem> ordered)
@@ -481,52 +503,86 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 _pendingSignature = signature;
                 _pendingOrdered = ordered;
+                _pendingRefresh = true;
             }
-            SchedulePendingApply();
+            ScheduleScrollIdleDebounce();
         }
 
-        private void SchedulePendingApply()
+        private void ScheduleScrollIdleDebounce()
         {
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = new CancellationTokenSource();
-            var token = _pendingApplyCts.Token;
+            try { _scrollIdleCts?.Cancel(); } catch { }
+            try { _scrollIdleCts?.Dispose(); } catch { }
+            _scrollIdleCts = new CancellationTokenSource();
+            var token = _scrollIdleCts.Token;
 
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await Task.Delay(ScrollIdleDelay, token);
-                    if (token.IsCancellationRequested || IsScrollBusy())
+                    await Task.Delay(ScrollIdleDebounceMs, token);
+                    if (token.IsCancellationRequested)
                         return;
 
-                    List<FirestoreChatService.MessageItem>? ordered = null;
-                    string? signature = null;
+                    _isScrollInProgress = false;
 
-                    lock (_pendingLock)
+                    if (IsScrollBusy())
                     {
-                        ordered = _pendingOrdered;
-                        signature = _pendingSignature;
-                        _pendingOrdered = null;
-                        _pendingSignature = null;
+                        ScheduleScrollIdleDebounce();
+                        return;
                     }
 
-                    if (ordered == null || string.IsNullOrWhiteSpace(signature))
-                        return;
-
-                    var idToken = _lastIdToken;
-                    var myUid = _lastMyUid;
-                    var peerId = _lastPeerId;
-                    var chatId = _lastChatId;
-
-                    if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
-                        || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
-                        return;
-
-                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
+                    await OnScrollIdleAsync(token);
                 }
                 catch { }
             }, token);
+        }
+
+        private async Task OnScrollIdleAsync(CancellationToken token)
+        {
+            if (token.IsCancellationRequested || IsScrollBusy())
+                return;
+
+            List<FirestoreChatService.MessageItem>? ordered = null;
+            string? signature = null;
+            bool hasPendingRefresh;
+
+            lock (_pendingLock)
+            {
+                hasPendingRefresh = _pendingRefresh;
+                if (_pendingRefresh)
+                {
+                    ordered = _pendingOrdered;
+                    signature = _pendingSignature;
+                    _pendingOrdered = null;
+                    _pendingSignature = null;
+                    _pendingRefresh = false;
+                }
+            }
+
+            if (hasPendingRefresh && ordered != null && !string.IsNullOrWhiteSpace(signature))
+            {
+                var idToken = _lastIdToken;
+                var myUid = _lastMyUid;
+                var peerId = _lastPeerId;
+                var chatId = _lastChatId;
+
+                if (!string.IsNullOrWhiteSpace(idToken) && !string.IsNullOrWhiteSpace(myUid)
+                    && !string.IsNullOrWhiteSpace(peerId) && !string.IsNullOrWhiteSpace(chatId))
+                {
+                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
+                }
+            }
+
+            await ApplyPendingMediaLocalPathsAsync(token);
+
+            if (_pendingPrefetchFirst >= 0 && _pendingPrefetchLast >= _pendingPrefetchFirst)
+            {
+                var first = _pendingPrefetchFirst;
+                var last = _pendingPrefetchLast;
+                _pendingPrefetchFirst = -1;
+                _pendingPrefetchLast = -1;
+                await SchedulePrefetchPhotosAsync(first, last);
+            }
         }
 
         // ============================================================
@@ -650,7 +706,10 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
                 }
 
-                m.MediaLocalPath = path;
+                if (IsScrollBusy())
+                    EnqueuePendingMediaLocalPath(m.Id ?? "", path);
+                else
+                    m.MediaLocalPath = path;
 
                 await Launcher.Default.OpenAsync(new OpenFileRequest
                 {
@@ -1456,6 +1515,12 @@ namespace Biliardo.App.Pagine_Messaggi
             string chatId,
             CancellationToken ct)
         {
+            if (IsScrollBusy())
+            {
+                QueuePendingUpdate(signature, ordered);
+                return;
+            }
+
             if (string.Equals(signature, _lastUiSignature, StringComparison.Ordinal))
             {
                 if (IsLoadingMessages)
@@ -1570,6 +1635,9 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
+                if (IsScrollBusy())
+                    return;
+
                 if (Messaggi.Count == 0)
                     return;
 
@@ -1588,23 +1656,91 @@ namespace Biliardo.App.Pagine_Messaggi
             _prefetchCts = null;
         }
 
+        private void EnqueuePendingMediaLocalPath(string messageId, string localPath)
+        {
+            if (string.IsNullOrWhiteSpace(messageId) || string.IsNullOrWhiteSpace(localPath))
+                return;
+
+            lock (_pendingMediaLock)
+            {
+                _pendingMediaLocalPaths[messageId] = localPath;
+            }
+        }
+
+        private async Task ApplyPendingMediaLocalPathsAsync(CancellationToken token)
+        {
+            Dictionary<string, string>? pending = null;
+
+            lock (_pendingMediaLock)
+            {
+                if (_pendingMediaLocalPaths.Count == 0)
+                    return;
+
+                pending = new Dictionary<string, string>(_pendingMediaLocalPaths, StringComparer.Ordinal);
+                _pendingMediaLocalPaths.Clear();
+            }
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (IsScrollBusy())
+                {
+                    foreach (var kvp in pending)
+                        EnqueuePendingMediaLocalPath(kvp.Key, kvp.Value);
+                    return;
+                }
+
+                foreach (var kvp in pending)
+                {
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    var vm = Messaggi.FirstOrDefault(x => !x.IsDateSeparator
+                                                         && string.Equals(x.Id, kvp.Key, StringComparison.Ordinal));
+                    if (vm == null)
+                        continue;
+
+                    if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath) && File.Exists(vm.MediaLocalPath))
+                        continue;
+
+                    vm.MediaLocalPath = kvp.Value;
+                }
+            });
+        }
+
         private void CancelPendingApply()
         {
             lock (_pendingLock)
             {
                 _pendingOrdered = null;
                 _pendingSignature = null;
+                _pendingRefresh = false;
             }
 
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = null;
+            _pendingPrefetchFirst = -1;
+            _pendingPrefetchLast = -1;
+
+            lock (_pendingMediaLock)
+            {
+                _pendingMediaLocalPaths.Clear();
+            }
+
+            try { _scrollIdleCts?.Cancel(); } catch { }
+            try { _scrollIdleCts?.Dispose(); } catch { }
+            _scrollIdleCts = null;
+            _isScrollInProgress = false;
         }
 
         private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)
         {
             if (firstIndex < 0 || lastIndex < 0 || firstIndex > lastIndex)
                 return;
+
+            if (IsScrollBusy())
+            {
+                _pendingPrefetchFirst = firstIndex;
+                _pendingPrefetchLast = lastIndex;
+                return;
+            }
 
             CancelPrefetch();
             _prefetchCts = new CancellationTokenSource();
@@ -1670,6 +1806,12 @@ namespace Biliardo.App.Pagine_Messaggi
 
                                 MainThread.BeginInvokeOnMainThread(() =>
                                 {
+                                    if (IsScrollBusy())
+                                    {
+                                        EnqueuePendingMediaLocalPath(vm.Id ?? "", local);
+                                        return;
+                                    }
+
                                     vm.MediaLocalPath = local;
                                 });
                             }
@@ -1778,6 +1920,12 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
+                    if (IsScrollBusy())
+                    {
+                        EnqueuePendingMediaLocalPath(m.Id ?? "", local);
+                        return;
+                    }
+
                     m.MediaLocalPath = local;
                 });
 
