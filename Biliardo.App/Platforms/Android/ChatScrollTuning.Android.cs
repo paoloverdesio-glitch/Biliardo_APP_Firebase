@@ -21,6 +21,15 @@ namespace Biliardo.App.Componenti_UI
             var listener = new TuningFlingListener(recycler);
             Listeners.Add(recycler, listener);
             recycler.SetOnFlingListener(listener);
+
+            try
+            {
+                if (recycler.ItemAnimator is SimpleItemAnimator animator)
+                    animator.SupportsChangeAnimations = false;
+
+                recycler.ItemAnimator = null;
+            }
+            catch { }
         }
 
         private sealed class TuningFlingListener : RecyclerView.OnFlingListener

@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Maui.ApplicationModel;
@@ -51,14 +52,11 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 3) PERFORMANCE / SCROLL
         // ============================================================
-        private long _scrollBusyUntilUtcTicks;
-        private const int ScrollBusyHoldMs = 450;
-
-        private bool IsScrollBusy()
-            => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
-
-        private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+        private const bool SCROLL_TRACE = false;
+        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(280);
+        private static readonly TimeSpan MediaCommitDelay = TimeSpan.FromMilliseconds(240);
+        private static readonly TimeSpan PollIntervalIdle = TimeSpan.FromMilliseconds(1200);
+        private static readonly TimeSpan PollIntervalScrolling = TimeSpan.FromMilliseconds(2200);
 
         // ============================================================
         // VM/UI state
@@ -158,12 +156,16 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
         private string? _pendingSignature;
-        private CancellationTokenSource? _pendingApplyCts;
         private readonly object _pendingLock = new();
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
+        private readonly object _rangeLock = new();
+        private VisibleRange _visibleRange = new(0, 0);
+
+        private readonly CollectionViewScrollStateProvider _scrollStateProvider;
+        private readonly ScrollWorkCoordinator _pendingApplyCoordinator;
+        private readonly ScrollWorkCoordinator _mediaCommitCoordinator;
+        private bool _isScrolling;
 
         private CancellationTokenSource? _pollCts;
-        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
         private string _lastUiSignature = "";
         private bool _userNearBottom = true;
 
@@ -173,6 +175,9 @@ namespace Biliardo.App.Pagine_Messaggi
         // Prefetch foto (visibili + 5)
         private readonly HashSet<string> _prefetchPhotoMessageIds = new(StringComparer.Ordinal);
         private CancellationTokenSource? _prefetchCts;
+        private readonly object _mediaCommitLock = new();
+        private readonly List<MediaCommit> _pendingMediaCommits = new();
+        private bool _prefetchRequested;
 
         // ============================================================
         // Voice (WhatsApp-like)
@@ -229,6 +234,15 @@ namespace Biliardo.App.Pagine_Messaggi
             DisplayNomeCompleto = "";
 
             ChatScrollTuning.Apply(CvMessaggi);
+            _scrollStateProvider = new CollectionViewScrollStateProvider(CvMessaggi);
+            _scrollStateProvider.ScrollingStateChanged += OnScrollStateChanged;
+            _scrollStateProvider.ScrollStateChangedDetailed += OnScrollStateDetailed;
+
+            _pendingApplyCoordinator = new ScrollWorkCoordinator(_scrollStateProvider, ApplyPendingMessagesAsync);
+            _pendingApplyCoordinator.SetDebounce(ScrollIdleDelay);
+
+            _mediaCommitCoordinator = new ScrollWorkCoordinator(_scrollStateProvider, CommitPendingMediaAsync);
+            _mediaCommitCoordinator.SetDebounce(MediaCommitDelay);
 
             AllegatiSelezionati.CollectionChanged += (_, __) =>
             {
@@ -286,6 +300,9 @@ namespace Biliardo.App.Pagine_Messaggi
             _playback.StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
+            _pendingApplyCoordinator.Dispose();
+            _mediaCommitCoordinator.Dispose();
+            _scrollStateProvider.Dispose();
 
             // sicurezza: se esco mentre registro, cancello
             _ = Task.Run(async () =>
@@ -465,14 +482,11 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void OnMessagesScrolled(object sender, ItemsViewScrolledEventArgs e)
         {
-            MarkScrollBusy();
             _userNearBottom = e.LastVisibleItemIndex >= (Messaggi.Count - 2);
 
             var first = Math.Max(0, e.FirstVisibleItemIndex);
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
-            _ = SchedulePrefetchPhotosAsync(first, last);
-
-            SchedulePendingApply();
+            UpdateVisibleRange(first, last);
         }
 
         private void QueuePendingUpdate(string signature, List<FirestoreChatService.MessageItem> ordered)
@@ -482,51 +496,39 @@ namespace Biliardo.App.Pagine_Messaggi
                 _pendingSignature = signature;
                 _pendingOrdered = ordered;
             }
-            SchedulePendingApply();
+            if (_scrollStateProvider.IsScrolling)
+                TraceScroll("BUFFERED pending update");
+
+            _pendingApplyCoordinator.RequestWork();
         }
 
-        private void SchedulePendingApply()
+        private async Task ApplyPendingMessagesAsync()
         {
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = new CancellationTokenSource();
-            var token = _pendingApplyCts.Token;
+            List<FirestoreChatService.MessageItem>? ordered;
+            string? signature;
 
-            _ = Task.Run(async () =>
+            lock (_pendingLock)
             {
-                try
-                {
-                    await Task.Delay(ScrollIdleDelay, token);
-                    if (token.IsCancellationRequested || IsScrollBusy())
-                        return;
+                ordered = _pendingOrdered;
+                signature = _pendingSignature;
+                _pendingOrdered = null;
+                _pendingSignature = null;
+            }
 
-                    List<FirestoreChatService.MessageItem>? ordered = null;
-                    string? signature = null;
+            if (ordered == null || string.IsNullOrWhiteSpace(signature))
+                return;
 
-                    lock (_pendingLock)
-                    {
-                        ordered = _pendingOrdered;
-                        signature = _pendingSignature;
-                        _pendingOrdered = null;
-                        _pendingSignature = null;
-                    }
+            var idToken = _lastIdToken;
+            var myUid = _lastMyUid;
+            var peerId = _lastPeerId;
+            var chatId = _lastChatId;
 
-                    if (ordered == null || string.IsNullOrWhiteSpace(signature))
-                        return;
+            if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
+                || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
+                return;
 
-                    var idToken = _lastIdToken;
-                    var myUid = _lastMyUid;
-                    var peerId = _lastPeerId;
-                    var chatId = _lastChatId;
-
-                    if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
-                        || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
-                        return;
-
-                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
-                }
-                catch { }
-            }, token);
+            TraceScroll("APPLY pending");
+            await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, CancellationToken.None);
         }
 
         // ============================================================
@@ -1381,9 +1383,13 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             while (!ct.IsCancellationRequested)
             {
-                try { await LoadOnceAsync(ct); } catch { }
+                if (!_isScrolling)
+                {
+                    try { await LoadOnceAsync(ct); } catch { }
+                }
 
-                try { await Task.Delay(_pollInterval, ct); }
+                var delay = _isScrolling ? PollIntervalScrolling : PollIntervalIdle;
+                try { await Task.Delay(delay, ct); }
                 catch { break; }
             }
         }
@@ -1436,15 +1442,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
             }
 
-            if (IsScrollBusy())
-            {
-                QueuePendingUpdate(sig, ordered);
-                if (IsLoadingMessages)
-                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
-                return;
-            }
-
-            await ApplyOrderedMessagesAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct);
+            QueuePendingUpdate(sig, ordered);
+            if (IsLoadingMessages)
+                MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
         }
 
         private async Task ApplyOrderedMessagesAsync(
@@ -1467,6 +1467,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _ = Task.Run(async () =>
             {
+                TraceScroll("PATCH delivered/read");
                 foreach (var m in ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)))
                 {
                     try
@@ -1490,6 +1491,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 }
 
                 bool appended = false;
+                var insertedCount = 0;
+                var updatedCount = 0;
 
                 if (Messaggi.Count == 0)
                 {
@@ -1504,6 +1507,7 @@ namespace Biliardo.App.Pagine_Messaggi
                         }
 
                         Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
+                        insertedCount++;
                     }
 
                     appended = true;
@@ -1528,7 +1532,10 @@ namespace Biliardo.App.Pagine_Messaggi
 
                                 var newStatus = (read || delivered) ? "✓✓" : "✓";
                                 if (!string.Equals(existing.StatusLabel, newStatus, StringComparison.Ordinal))
+                                {
                                     existing.StatusLabel = newStatus;
+                                    updatedCount++;
+                                }
                             }
                             continue;
                         }
@@ -1542,11 +1549,14 @@ namespace Biliardo.App.Pagine_Messaggi
 
                         Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
                         appended = true;
+                        insertedCount++;
                     }
                 }
 
                 if (appended && _userNearBottom)
                     ScrollToEnd();
+
+                TraceScroll($"APPLY done insert={insertedCount} update={updatedCount}");
             });
         }
 
@@ -1595,19 +1605,16 @@ namespace Biliardo.App.Pagine_Messaggi
                 _pendingOrdered = null;
                 _pendingSignature = null;
             }
-
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = null;
         }
 
-        private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)
+        private async Task PrefetchPhotosAsync(int firstIndex, int lastIndex)
         {
             if (firstIndex < 0 || lastIndex < 0 || firstIndex > lastIndex)
                 return;
 
-            CancelPrefetch();
-            _prefetchCts = new CancellationTokenSource();
+            if (_prefetchCts == null)
+                _prefetchCts = new CancellationTokenSource();
+
             var token = _prefetchCts.Token;
 
             List<ChatMessageVm> targets = new();
@@ -1668,10 +1675,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
                                 await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
 
-                                MainThread.BeginInvokeOnMainThread(() =>
-                                {
-                                    vm.MediaLocalPath = local;
-                                });
+                                QueueMediaCommit(vm, local);
                             }
                             catch { }
                             finally
@@ -1686,6 +1690,109 @@ namespace Biliardo.App.Pagine_Messaggi
                 catch { }
             }, token);
         }
+
+        private void UpdateVisibleRange(int first, int last)
+        {
+            lock (_rangeLock)
+            {
+                _visibleRange = new VisibleRange(first, last);
+            }
+
+            _prefetchRequested = true;
+        }
+
+        private VisibleRange GetVisibleRange()
+        {
+            lock (_rangeLock)
+            {
+                return _visibleRange;
+            }
+        }
+
+        private void QueueMediaCommit(ChatMessageVm vm, string localPath)
+        {
+            lock (_mediaCommitLock)
+            {
+                _pendingMediaCommits.Add(new MediaCommit(vm, localPath));
+            }
+
+            if (_scrollStateProvider.IsScrolling)
+                TraceScroll("BUFFERED media commit");
+
+            _mediaCommitCoordinator.RequestWork();
+        }
+
+        private async Task CommitPendingMediaAsync()
+        {
+            List<MediaCommit> commits;
+            lock (_mediaCommitLock)
+            {
+                if (_pendingMediaCommits.Count == 0)
+                    return;
+
+                commits = new List<MediaCommit>(_pendingMediaCommits);
+                _pendingMediaCommits.Clear();
+            }
+
+            TraceScroll("COMMIT media");
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var range = GetVisibleRange();
+                var applied = 0;
+
+                foreach (var commit in commits)
+                {
+                    if (!IsCommitInRange(commit, range))
+                        continue;
+
+                    commit.Vm.MediaLocalPath = commit.LocalPath;
+                    applied++;
+                }
+
+                TraceScroll($"COMMIT media done applied={applied}");
+            });
+        }
+
+        private bool IsCommitInRange(MediaCommit commit, VisibleRange range)
+        {
+            var index = Messaggi.IndexOf(commit.Vm);
+            if (index < 0)
+                return false;
+
+            var first = Math.Max(0, range.First - 2);
+            var last = Math.Min(Messaggi.Count - 1, range.Last + 2);
+            return index >= first && index <= last;
+        }
+
+        private void OnScrollStateChanged(object? sender, bool isScrolling)
+        {
+            _isScrolling = isScrolling;
+
+            if (!isScrolling && _prefetchRequested)
+            {
+                _prefetchRequested = false;
+                var range = GetVisibleRange();
+                _ = PrefetchPhotosAsync(range.First, range.Last);
+            }
+        }
+
+        private void OnScrollStateDetailed(object? sender, string stateName)
+        {
+            TraceScroll($"STATE {stateName}");
+        }
+
+        private static void TraceScroll(string message)
+        {
+            if (!SCROLL_TRACE)
+                return;
+
+#if ANDROID
+            Debug.WriteLine($"[SCROLL_TRACE] {message}");
+#endif
+        }
+
+        private readonly record struct VisibleRange(int First, int Last);
+        private readonly record struct MediaCommit(ChatMessageVm Vm, string LocalPath);
 
         // ============================================================
         // Send attachment (Storage + Firestore)
@@ -1776,7 +1883,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, m.StoragePath!, local);
 
-                MainThread.BeginInvokeOnMainThread(() =>
+                await MainThread.InvokeOnMainThreadAsync(() =>
                 {
                     m.MediaLocalPath = local;
                 });
