@@ -44,7 +44,7 @@
                             ItemsSource="{Binding Source={x:Reference ThisPage}, Path=Messaggi}"
                             SelectionMode="None"
                             ItemsUpdatingScrollMode="KeepScrollOffset"
-                            ItemSizingStrategy="MeasureFirstItem"
+                            ItemSizingStrategy="{OnPlatform Android=MeasureAllItems, Default=MeasureFirstItem}"
                             Scrolled="OnMessagesScrolled">
                 <CollectionView.ItemsLayout>
                     <LinearItemsLayout Orientation="Vertical" ItemSpacing="6" />

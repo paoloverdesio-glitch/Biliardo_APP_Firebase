@@ -306,6 +306,125 @@ namespace Biliardo.App.Servizi_Firebase
             return outList;
         }
 
+        public async Task<IReadOnlyList<MessageItem>> GetMessagesBeforeAsync(
+            string idToken,
+            string chatId,
+            DateTimeOffset beforeUtc,
+            int limit = 50,
+            CancellationToken ct = default)
+        {
+            if (limit <= 0) limit = 50;
+
+            var structuredQuery = new Dictionary<string, object>
+            {
+                ["from"] = new object[]
+                {
+                    new Dictionary<string, object> { ["collectionId"] = "messages" }
+                },
+                ["where"] = new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
+                        ["op"] = "LESS_THAN",
+                        ["value"] = FirestoreRestClient.VTimestamp(beforeUtc)
+                    }
+                },
+                ["orderBy"] = new object[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
+                        ["direction"] = "DESCENDING"
+                    }
+                },
+                ["limit"] = limit
+            };
+
+            using var doc = await FirestoreRestClient.RunQueryAsync(
+                structuredQuery,
+                idToken,
+                parentDocumentPath: $"chats/{chatId}",
+                ct: ct);
+
+            var outList = new List<MessageItem>();
+
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return outList;
+
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object) continue;
+                if (!el.TryGetProperty("document", out var d) || d.ValueKind != JsonValueKind.Object) continue;
+
+                var name = ReadString(d, "name");
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var messageId = ExtractLastPathSegment(name!);
+
+                if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                var senderId = ReadStringField(fields, "senderId");
+                var type = ReadStringField(fields, "type");
+                var createdAt = ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.MinValue;
+
+                var deliveredTo = ReadStringArray(fields, "deliveredTo");
+                var readBy = ReadStringArray(fields, "readBy");
+
+                string text = "";
+
+                var payloadText = ReadMapString(fields, "payload", "text");
+                if (!string.IsNullOrWhiteSpace(payloadText))
+                    text = payloadText;
+
+                if (string.IsNullOrWhiteSpace(senderId))
+                    senderId = ReadStringField(fields, "fromUid") ?? "";
+
+                if (string.IsNullOrWhiteSpace(text))
+                    text = ReadStringField(fields, "text") ?? "";
+
+                if (string.IsNullOrWhiteSpace(type))
+                    type = "text";
+
+                // media
+                var storagePath = ReadMapString(fields, "payload", "storagePath");
+                var fileName = ReadMapString(fields, "payload", "fileName");
+                var contentType = ReadMapString(fields, "payload", "contentType");
+                var durationMs = ReadMapInt64(fields, "payload", "durationMs");
+                var sizeBytes = ReadMapInt64(fields, "payload", "sizeBytes");
+
+                // location
+                var lat = ReadMapDouble(fields, "payload", "lat");
+                var lon = ReadMapDouble(fields, "payload", "lon");
+
+                // contact
+                var cn = ReadMapString(fields, "payload", "contactName");
+                var cp = ReadMapString(fields, "payload", "contactPhone");
+
+                outList.Add(new MessageItem(
+                    MessageId: messageId,
+                    SenderId: senderId ?? "",
+                    Type: type ?? "text",
+                    Text: text ?? "",
+                    CreatedAtUtc: createdAt,
+                    DeliveredTo: deliveredTo,
+                    ReadBy: readBy,
+                    StoragePath: storagePath,
+                    DurationMs: durationMs,
+                    FileName: fileName,
+                    ContentType: contentType,
+                    SizeBytes: sizeBytes,
+                    Latitude: lat,
+                    Longitude: lon,
+                    ContactName: cn,
+                    ContactPhone: cp
+                ));
+            }
+
+            return outList;
+        }
+
         public async Task SendTextMessageWithIdAsync(
             string idToken,
             string chatId,
