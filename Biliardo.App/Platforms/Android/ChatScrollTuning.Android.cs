@@ -22,13 +22,14 @@ namespace Biliardo.App.Componenti_UI
             Listeners.Add(recycler, listener);
             recycler.SetOnFlingListener(listener);
 
-            if (recycler.ItemAnimator is SimpleItemAnimator simpleAnimator)
+            var animator = recycler.GetItemAnimator();
+            if (animator is SimpleItemAnimator simpleAnimator)
                 simpleAnimator.SupportsChangeAnimations = false;
             else
-                recycler.ItemAnimator = null;
+                recycler.SetItemAnimator(null);
 
             recycler.SetItemViewCacheSize(20);
-            recycler.SetHasFixedSize(true);
+            recycler.HasFixedSize = true;
         }
 
         private sealed class TuningFlingListener : RecyclerView.OnFlingListener

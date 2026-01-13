@@ -24,13 +24,14 @@ namespace Biliardo.App.Infrastructure
                 recycler.AddOnScrollListener(listener);
             }
 
-            if (recycler.ItemAnimator is SimpleItemAnimator simpleAnimator)
+            var animator = recycler.GetItemAnimator();
+            if (animator is SimpleItemAnimator simpleAnimator)
                 simpleAnimator.SupportsChangeAnimations = false;
             else
-                recycler.ItemAnimator = null;
+                recycler.SetItemAnimator(null);
 
             recycler.SetItemViewCacheSize(20);
-            recycler.SetHasFixedSize(true);
+            recycler.HasFixedSize = true;
         }
 
         static partial void DetachPlatform(CollectionView view, ScrollWorkCoordinator coordinator)
