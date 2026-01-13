@@ -1,4 +1,5 @@
-using Android.Views;
+using AView = Android.Views.View;
+using AViewGroup = Android.Views.ViewGroup;
 using AndroidX.RecyclerView.Widget;
 
 namespace Biliardo.App.Componenti_UI
@@ -13,7 +14,7 @@ namespace Biliardo.App.Componenti_UI
             if (_disposed)
                 return;
 
-            var recycler = platformView as RecyclerView ?? FindRecyclerView(platformView as View);
+            var recycler = platformView as RecyclerView ?? FindRecyclerView(platformView as AView);
             if (recycler == null)
                 return;
 
@@ -33,7 +34,7 @@ namespace Biliardo.App.Componenti_UI
             _recycler = null;
         }
 
-        private static RecyclerView? FindRecyclerView(View? root)
+        private static RecyclerView? FindRecyclerView(AView? root)
         {
             if (root == null)
                 return null;
@@ -41,7 +42,7 @@ namespace Biliardo.App.Componenti_UI
             if (root is RecyclerView recycler)
                 return recycler;
 
-            if (root is ViewGroup group)
+            if (root is AViewGroup group)
             {
                 for (int i = 0; i < group.ChildCount; i++)
                 {
