@@ -5,7 +5,7 @@ namespace Biliardo.App.Infrastructure
 {
     public static partial class ChatScrollAnchorHelper
     {
-        static partial ChatScrollAnchor? CapturePlatform(CollectionView view, int fallbackIndex, string? messageId)
+        private static partial ChatScrollAnchor? CapturePlatform(CollectionView view, int fallbackIndex, string? messageId)
         {
             if (view.Handler?.PlatformView is not RecyclerView recycler)
                 return null;
@@ -23,7 +23,7 @@ namespace Biliardo.App.Infrastructure
             return new ChatScrollAnchor(messageId, index, offset);
         }
 
-        static partial void RestorePlatform(CollectionView view, ChatScrollAnchor anchor)
+        private static partial void RestorePlatform(CollectionView view, ChatScrollAnchor anchor)
         {
             if (view.Handler?.PlatformView is not RecyclerView recycler)
                 return;

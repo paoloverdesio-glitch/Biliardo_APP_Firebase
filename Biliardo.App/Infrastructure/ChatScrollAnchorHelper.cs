@@ -26,7 +26,7 @@ namespace Biliardo.App.Infrastructure
             RestorePlatform(view, new ChatScrollAnchor(anchor.MessageId, index, anchor.Offset));
         }
 
-        static partial ChatScrollAnchor? CapturePlatform(CollectionView view, int fallbackIndex, string? messageId);
-        static partial void RestorePlatform(CollectionView view, ChatScrollAnchor anchor);
+        private static partial ChatScrollAnchor? CapturePlatform(CollectionView view, int fallbackIndex, string? messageId);
+        private static partial void RestorePlatform(CollectionView view, ChatScrollAnchor anchor);
     }
 }
