@@ -9,6 +9,7 @@ using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Controls;
 using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Pagine_Autenticazione;
@@ -21,6 +22,14 @@ namespace Biliardo.App.Pagine_Messaggi
         // 1) PARAMETRI / STATO
         // =========================================================
         private readonly ListaViewModel _vm = new();
+        private readonly ScrollWorkCoordinator _scrollCoordinator = new(TimeSpan.FromMilliseconds(320));
+        private CollectionViewNativeScrollStateTracker? _scrollTracker;
+
+        private readonly object _pendingChatApplyGate = new();
+        private List<ChatPreview>? _pendingChatOrdered;
+        private string _pendingChatSignature = "";
+        private readonly SemaphoreSlim _chatApplyLock = new(1, 1);
+        private string _lastChatSignature = "";
 
         private CancellationTokenSource? _pollCts;
         private const int ThreadsPollingIntervalMs = 3000;
@@ -40,6 +49,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             UserPicker.IsVisible = false;
             UserPicker.UtenteSelezionato += OnUserPicked;
+            _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(ListaChat, _scrollCoordinator);
         }
 
         // =========================================================
@@ -90,6 +100,11 @@ namespace Biliardo.App.Pagine_Messaggi
             }
         }
 
+        private void OnListaChatScrolled(object sender, ItemsViewScrolledEventArgs e)
+        {
+            _scrollCoordinator.NotifyActivity();
+        }
+
         // =========================================================
         // 3) NAVIGAZIONE (NO ANIMAZIONE + STOP POLLING IMMEDIATO)
         // =========================================================
@@ -134,6 +149,9 @@ namespace Biliardo.App.Pagine_Messaggi
             // rientro dalla chat: riabilita navigazione e polling
             _isNavigatingToChat = false;
 
+            if (_scrollTracker == null)
+                _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(ListaChat, _scrollCoordinator);
+
             try
             {
                 var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
@@ -157,7 +175,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 await MostraTokenFcmDebugAsync();
 #endif
 
-                await _vm.CaricaAsync();
+                await RefreshChatListAsync();
                 StartPolling();
             }
             catch (Exception ex)
@@ -233,11 +251,8 @@ namespace Biliardo.App.Pagine_Messaggi
                             if (token.IsCancellationRequested)
                                 break;
 
-                            await MainThread.InvokeOnMainThreadAsync(async () =>
-                            {
-                                try { await _vm.CaricaAsync(); }
-                                catch { }
-                            });
+                            try { await RefreshChatListAsync(); }
+                            catch { }
                         }
                         catch (TaskCanceledException) { break; }
                         catch (Exception ex)
@@ -259,6 +274,77 @@ namespace Biliardo.App.Pagine_Messaggi
             try { _pollCts?.Dispose(); } catch { }
             _pollCts = null;
         }
+
+        private async Task RefreshChatListAsync()
+        {
+            var ordered = await _vm.FetchChatPreviewsAsync();
+            if (ordered == null)
+                return;
+
+            var signature = ComputeChatSignature(ordered);
+            QueuePendingChatApply(signature, ordered);
+        }
+
+        private static string ComputeChatSignature(IReadOnlyList<ChatPreview> ordered)
+        {
+            var hc = new HashCode();
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var item = ordered[i];
+                hc.Add(item.ChatId);
+                hc.Add(item.WithUserId);
+                hc.Add(item.UltimoMessaggio);
+                hc.Add(item.OraBreve);
+                hc.Add(item.PhotoUrl);
+            }
+            return hc.ToHashCode().ToString("X");
+        }
+
+        private void QueuePendingChatApply(string signature, List<ChatPreview> ordered)
+        {
+            lock (_pendingChatApplyGate)
+            {
+                _pendingChatSignature = signature;
+                _pendingChatOrdered = ordered;
+            }
+
+            _scrollCoordinator.EnqueueUiWork(ApplyPendingChatListAsync, "chatlist-apply");
+        }
+
+        private async Task ApplyPendingChatListAsync()
+        {
+            if (_scrollCoordinator.IsScrolling)
+                return;
+
+            if (!await _chatApplyLock.WaitAsync(0))
+                return;
+
+            try
+            {
+                List<ChatPreview>? ordered = null;
+                string signature = "";
+
+                lock (_pendingChatApplyGate)
+                {
+                    ordered = _pendingChatOrdered;
+                    signature = _pendingChatSignature;
+                    _pendingChatOrdered = null;
+                }
+
+                if (ordered == null || string.IsNullOrWhiteSpace(signature))
+                    return;
+
+                if (string.Equals(signature, _lastChatSignature, StringComparison.Ordinal))
+                    return;
+
+                _lastChatSignature = signature;
+                _vm.ApplyChatListDiff(ordered);
+            }
+            finally
+            {
+                _chatApplyLock.Release();
+            }
+        }
     }
 
     // ===================== ViewModel + Model =====================
@@ -267,7 +353,7 @@ namespace Biliardo.App.Pagine_Messaggi
     {
         public ObservableCollection<ChatPreview> ChatPreviews { get; } = new();
 
-        private bool _isLoading;
+        private int _isLoading;
 
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
 
@@ -278,12 +364,11 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly SemaphoreSlim _deliveredSweepLock = new(1, 1);
         private DateTimeOffset _lastDeliveredSweepUtc = DateTimeOffset.MinValue;
 
-        public async Task CaricaAsync()
+        public async Task<List<ChatPreview>?> FetchChatPreviewsAsync()
         {
-            if (_isLoading)
-                return;
+            if (Interlocked.Exchange(ref _isLoading, 1) == 1)
+                return null;
 
-            _isLoading = true;
             try
             {
                 var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
@@ -303,7 +388,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 // Pre-carica profili peer (best-effort)
                 await PrefetchProfilesAsync(ordered.Select(x => x.PeerUid).Distinct());
 
-                ChatPreviews.Clear();
+                var previews = new List<ChatPreview>(ordered.Count);
 
                 foreach (var c in ordered)
                 {
@@ -337,7 +422,8 @@ namespace Biliardo.App.Pagine_Messaggi
                         };
                     }
 
-                    ChatPreviews.Add(new ChatPreview(
+                    previews.Add(new ChatPreview(
+                        chatId: c.ChatId ?? "",
                         withUserId: peerUid,
                         nickname: nickname,
                         fullName: fullName,
@@ -349,11 +435,63 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 // Sweep delivered best-effort (come tuo codice)
                 _ = SweepDeliveredFromListBestEffortAsync(myUid, ordered);
+
+                return previews;
             }
             finally
             {
-                _isLoading = false;
+                Interlocked.Exchange(ref _isLoading, 0);
             }
+        }
+
+        public void ApplyChatListDiff(IReadOnlyList<ChatPreview> ordered)
+        {
+            var currentByKey = new Dictionary<string, ChatPreview>(StringComparer.Ordinal);
+            foreach (var existing in ChatPreviews)
+            {
+                var key = GetChatKey(existing);
+                if (!string.IsNullOrWhiteSpace(key))
+                    currentByKey[key] = existing;
+            }
+
+            var desiredKeys = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var incoming = ordered[i];
+                var key = GetChatKey(incoming);
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                desiredKeys.Add(key);
+
+                if (currentByKey.TryGetValue(key, out var existing))
+                {
+                    existing.UpdateFrom(incoming);
+                    var currentIndex = ChatPreviews.IndexOf(existing);
+                    if (currentIndex != i && currentIndex >= 0)
+                        ChatPreviews.Move(currentIndex, i);
+                }
+                else
+                {
+                    ChatPreviews.Insert(i, incoming);
+                    currentByKey[key] = incoming;
+                }
+            }
+
+            for (int i = ChatPreviews.Count - 1; i >= 0; i--)
+            {
+                var item = ChatPreviews[i];
+                var key = GetChatKey(item);
+                if (!desiredKeys.Contains(key))
+                    ChatPreviews.RemoveAt(i);
+            }
+        }
+
+        private static string GetChatKey(ChatPreview preview)
+        {
+            if (!string.IsNullOrWhiteSpace(preview.ChatId))
+                return preview.ChatId;
+            return preview.WithUserId;
         }
 
         private FirestoreDirectoryService.UserPublicItem? TryGetProfile(string uid)
@@ -500,19 +638,88 @@ namespace Biliardo.App.Pagine_Messaggi
         }
     }
 
-    public sealed class ChatPreview
+    public sealed class ChatPreview : BindableObject
     {
-        public string WithUserId { get; }
+        private string _chatId;
+        private string _withUserId;
+        private string _nickname;
+        private string _fullName;
+        private string _photoUrl;
+        private string _ultimoMessaggio;
+        private string _oraBreve;
+        private int _nonLetti;
 
-        public string Nickname { get; }
-        public string FullName { get; }
-        public string PhotoUrl { get; }
+        public string ChatId
+        {
+            get => _chatId;
+            private set { _chatId = value ?? ""; OnPropertyChanged(); }
+        }
+
+        public string WithUserId
+        {
+            get => _withUserId;
+            private set { _withUserId = value ?? ""; OnPropertyChanged(); }
+        }
+
+        public string Nickname
+        {
+            get => _nickname;
+            private set
+            {
+                _nickname = value ?? "";
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(DisplayTitle));
+                OnPropertyChanged(nameof(Iniziale));
+            }
+        }
+
+        public string FullName
+        {
+            get => _fullName;
+            private set
+            {
+                _fullName = string.IsNullOrWhiteSpace(value) ? "xxxxx xxxxx" : value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(DisplayTitle));
+            }
+        }
+
+        public string PhotoUrl
+        {
+            get => _photoUrl;
+            private set
+            {
+                _photoUrl = value ?? "";
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(HasPhoto));
+                OnPropertyChanged(nameof(HasNoPhoto));
+            }
+        }
 
         public string DisplayTitle => $"{Nickname} ({FullName})";
 
-        public string UltimoMessaggio { get; }
-        public string OraBreve { get; }
-        public int NonLetti { get; }
+        public string UltimoMessaggio
+        {
+            get => _ultimoMessaggio;
+            private set { _ultimoMessaggio = value ?? ""; OnPropertyChanged(); }
+        }
+
+        public string OraBreve
+        {
+            get => _oraBreve;
+            private set { _oraBreve = value ?? ""; OnPropertyChanged(); }
+        }
+
+        public int NonLetti
+        {
+            get => _nonLetti;
+            private set
+            {
+                _nonLetti = Math.Max(0, value);
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(NonLettiVisibile));
+            }
+        }
 
         public string Iniziale =>
             string.IsNullOrWhiteSpace(Nickname) ? "?" : Nickname[..1].ToUpperInvariant();
@@ -523,6 +730,7 @@ namespace Biliardo.App.Pagine_Messaggi
         public bool NonLettiVisibile => NonLetti > 0;
 
         public ChatPreview(
+            string chatId,
             string withUserId,
             string nickname,
             string fullName,
@@ -531,17 +739,37 @@ namespace Biliardo.App.Pagine_Messaggi
             DateTime dataOra,
             int nonLetti)
         {
-            WithUserId = withUserId;
-            Nickname = nickname;
-            FullName = string.IsNullOrWhiteSpace(fullName) ? "xxxxx xxxxx" : fullName;
-            PhotoUrl = photoUrl ?? "";
-            UltimoMessaggio = ultimoMessaggio ?? "";
-            NonLetti = nonLetti;
+            _chatId = chatId ?? "";
+            _withUserId = withUserId ?? "";
+            _nickname = nickname ?? "";
+            _fullName = string.IsNullOrWhiteSpace(fullName) ? "xxxxx xxxxx" : fullName;
+            _photoUrl = photoUrl ?? "";
+            _ultimoMessaggio = ultimoMessaggio ?? "";
+            _oraBreve = BuildOraBreve(dataOra);
+            _nonLetti = Math.Max(0, nonLetti);
+        }
 
+        public void UpdateFrom(ChatPreview other)
+        {
+            if (other == null)
+                return;
+
+            if (!string.IsNullOrWhiteSpace(other.ChatId))
+                ChatId = other.ChatId;
+            WithUserId = other.WithUserId;
+            Nickname = other.Nickname;
+            FullName = other.FullName;
+            PhotoUrl = other.PhotoUrl;
+            UltimoMessaggio = other.UltimoMessaggio;
+            OraBreve = other.OraBreve;
+            NonLetti = other.NonLetti;
+        }
+
+        private static string BuildOraBreve(DateTime dataOra)
+        {
             if (dataOra.Date == DateTime.Today)
-                OraBreve = dataOra.ToString("HH:mm");
-            else
-                OraBreve = dataOra.ToString("dd/MM");
+                return dataOra.ToString("HH:mm");
+            return dataOra.ToString("dd/MM");
         }
     }
 }
