@@ -13,6 +13,8 @@ namespace Biliardo.App.Infrastructure
 
         static partial void AttachPlatform(CollectionView view, ScrollWorkCoordinator coordinator)
         {
+            using var _trace = PerfettoTrace.Section("CHAT_NATIVE_ATTACH_PLATFORM");
+
             if (TryAttach(view, coordinator))
                 return;
 
@@ -22,6 +24,8 @@ namespace Biliardo.App.Infrastructure
             EventHandler? handler = null;
             handler = (_, __) =>
             {
+                using var _traceH = PerfettoTrace.Section("CHAT_NATIVE_HANDLER_CHANGED");
+
                 if (!TryAttach(view, coordinator))
                     return;
 
@@ -35,6 +39,8 @@ namespace Biliardo.App.Infrastructure
 
         static partial void DetachPlatform(CollectionView view, ScrollWorkCoordinator coordinator)
         {
+            using var _trace = PerfettoTrace.Section("CHAT_NATIVE_DETACH_PLATFORM");
+
             if (HandlerChangedHandlers.TryGetValue(view, out var handler))
             {
                 view.HandlerChanged -= handler;
@@ -42,7 +48,10 @@ namespace Biliardo.App.Infrastructure
             }
 
             if (view.Handler?.PlatformView is not RecyclerView recycler)
+            {
+                coordinator.SetNativeTrackingActive(false);
                 return;
+            }
 
             if (Listeners.TryGetValue(recycler, out var listener))
             {
@@ -55,6 +64,8 @@ namespace Biliardo.App.Infrastructure
 
         private static bool TryAttach(CollectionView view, ScrollWorkCoordinator coordinator)
         {
+            using var _trace = PerfettoTrace.Section("CHAT_NATIVE_TRY_ATTACH");
+
             if (view.Handler?.PlatformView is not RecyclerView recycler)
                 return false;
 
@@ -89,7 +100,15 @@ namespace Biliardo.App.Infrastructure
 
             public override void OnScrollStateChanged(RecyclerView recyclerView, int newState)
             {
+                using var _trace = newState switch
+                {
+                    RecyclerView.ScrollStateDragging => PerfettoTrace.Section("CHAT_NATIVE_SCROLL_DRAGGING"),
+                    RecyclerView.ScrollStateSettling => PerfettoTrace.Section("CHAT_NATIVE_SCROLL_SETTLING"),
+                    _ => PerfettoTrace.Section("CHAT_NATIVE_SCROLL_IDLE")
+                };
+
                 base.OnScrollStateChanged(recyclerView, newState);
+
                 var state = newState switch
                 {
                     RecyclerView.ScrollStateDragging => "DRAGGING",

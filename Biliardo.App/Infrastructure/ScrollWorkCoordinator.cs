@@ -60,6 +60,8 @@ namespace Biliardo.App.Infrastructure
 
         public void EnterIdle()
         {
+            using var _trace = PerfettoTrace.Section("CHAT_SCROLLWORK_ENTER_IDLE");
+
             if (!IsScrolling && string.Equals(LastScrollState, "Idle", StringComparison.Ordinal))
                 return;
 
@@ -71,6 +73,8 @@ namespace Biliardo.App.Infrastructure
 
         public void EnqueueUiWork(Func<Task> work, string label)
         {
+            using var _trace = PerfettoTrace.Section($"CHAT_SCROLLWORK_ENQUEUE:{label}");
+
             if (work == null)
                 return;
 
@@ -78,11 +82,13 @@ namespace Biliardo.App.Infrastructure
             {
                 if (!IsScrolling && !_isFlushing && _pending.Count == 0)
                 {
+                    using var _traceImmediate = PerfettoTrace.Section($"CHAT_SCROLLWORK_ENQUEUE_IMMEDIATE:{label}");
                     _isFlushing = true;
                     _ = ExecuteOnUiAsync(work, label);
                     return;
                 }
 
+                using var _traceQueued = PerfettoTrace.Section($"CHAT_SCROLLWORK_ENQUEUE_QUEUE:{label}");
                 _pending.Enqueue(new PendingWork(label, work));
             }
         }
@@ -97,10 +103,13 @@ namespace Biliardo.App.Infrastructure
 
         public Task FlushIfIdleAsync()
         {
+            using var _trace = PerfettoTrace.Section("CHAT_SCROLLWORK_FLUSH_IF_IDLE");
+
             if (IsScrolling)
                 return Task.CompletedTask;
 
             PendingWork? next = null;
+            string nextLabel = "";
             lock (_gate)
             {
                 if (_isFlushing)
@@ -111,8 +120,10 @@ namespace Biliardo.App.Infrastructure
 
                 _isFlushing = true;
                 next = _pending.Dequeue();
+                nextLabel = next.Value.Label ?? "";
             }
 
+            using var _traceNext = PerfettoTrace.Section($"CHAT_SCROLLWORK_DEQUEUE:{nextLabel}");
             return ExecuteOnUiAsync(next.Value.Work, next.Value.Label);
         }
 
@@ -123,6 +134,7 @@ namespace Biliardo.App.Infrastructure
             {
                 try
                 {
+                    using var _trace = PerfettoTrace.Section($"CHAT_SCROLLWORK_FLUSH:{label}");
                     await work();
                 }
                 finally
@@ -133,8 +145,10 @@ namespace Biliardo.App.Infrastructure
                 return;
             }
 
+            using var _traceDispatch = PerfettoTrace.Section($"CHAT_SCROLLWORK_DISPATCH:{label}");
             await _dispatcher.DispatchAsync(async () =>
             {
+                using var _trace = PerfettoTrace.Section($"CHAT_SCROLLWORK_FLUSH:{label}");
                 try
                 {
                     Debug.WriteLine($"[ScrollWorkCoordinator] Running work={label}");
@@ -168,6 +182,7 @@ namespace Biliardo.App.Infrastructure
             if (DateTime.UtcNow - _lastActivityUtc < _idleDelay)
                 return;
 
+            using var _trace = PerfettoTrace.Section("CHAT_SCROLLWORK_IDLE_TICK_TRIGGER");
             EnterIdle();
         }
 

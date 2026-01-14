@@ -19,6 +19,8 @@ namespace Biliardo.App.Infrastructure
 
         public static CollectionViewNativeScrollStateTracker Attach(CollectionView view, ScrollWorkCoordinator coordinator, TimeSpan idleDelay)
         {
+            using var _trace = PerfettoTrace.Section("CHAT_NATIVE_SCROLLTRACKER_ATTACH");
+
             var tracker = new CollectionViewNativeScrollStateTracker(view, coordinator, idleDelay);
             tracker.AttachCore();
             return tracker;
@@ -26,6 +28,8 @@ namespace Biliardo.App.Infrastructure
 
         private void AttachCore()
         {
+            using var _trace = PerfettoTrace.Section("CHAT_NATIVE_SCROLLTRACKER_ATTACH_CORE");
+
             if (_attached)
                 return;
 
@@ -36,6 +40,8 @@ namespace Biliardo.App.Infrastructure
 
         public void Dispose()
         {
+            using var _trace = PerfettoTrace.Section("CHAT_NATIVE_SCROLLTRACKER_DISPOSE");
+
             if (!_attached)
                 return;
 

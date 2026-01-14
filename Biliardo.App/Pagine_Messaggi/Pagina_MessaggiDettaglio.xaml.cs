@@ -487,6 +487,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void OnMessagesScrolled(object sender, ItemsViewScrolledEventArgs e)
         {
+            using var _trace = PerfettoTrace.Section("CHAT_ONSCROLLED");
+
             _scrollCoordinator.NotifyActivity();
             _userNearBottom = e.LastVisibleItemIndex >= (Messaggi.Count - 2);
             _lastFirstVisibleIndex = e.FirstVisibleItemIndex;
@@ -1391,16 +1393,22 @@ namespace Biliardo.App.Pagine_Messaggi
 
             var cacheKey = _localCache.GetCacheKey(_chatIdCached, peerId);
             var swCache = Stopwatch.StartNew();
-            var cached = await _localCache.TryReadAsync(cacheKey, CancellationToken.None);
-            swCache.Stop();
-            Debug.WriteLine($"[ChatLoad] Cache read {cached.Count} in {swCache.ElapsedMilliseconds}ms");
 
-            if (cached.Count > 0)
+            using (PerfettoTrace.Section("CHAT_CACHE_READ"))
             {
-                var ordered = cached.OrderBy(m => m.CreatedAtUtc).ToList();
-                var sig = ComputeUiSignature(ordered);
-                await ApplyMessageDiffAsync(ordered, sig, idToken: "", myUid!, peerId, chatId: "", ct: CancellationToken.None, allowTrim: true, applyReceipts: false, source: "cache");
-                await MarkInitialRenderReadyAsync();
+                var cached = await _localCache.TryReadAsync(cacheKey, CancellationToken.None);
+                swCache.Stop();
+                Debug.WriteLine($"[ChatLoad] Cache read {cached.Count} in {swCache.ElapsedMilliseconds}ms");
+
+                if (cached.Count > 0)
+                {
+                    var ordered = cached.OrderBy(m => m.CreatedAtUtc).ToList();
+                    var sig = ComputeUiSignature(ordered);
+
+                    using var _traceApply = PerfettoTrace.Section("CHAT_CACHE_APPLY");
+                    await ApplyMessageDiffAsync(ordered, sig, idToken: "", myUid!, peerId, chatId: "", ct: CancellationToken.None, allowTrim: true, applyReceipts: false, source: "cache");
+                    await MarkInitialRenderReadyAsync();
+                }
             }
 
             try
@@ -1420,14 +1428,24 @@ namespace Biliardo.App.Pagine_Messaggi
                 _lastChatId = chatId;
 
                 var swFetch = Stopwatch.StartNew();
-                var latest = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: FastInitialLimit, ct: CancellationToken.None);
+                IReadOnlyList<FirestoreChatService.MessageItem> latest;
+
+                using (PerfettoTrace.Section("CHAT_FAST_FETCH"))
+                {
+                    latest = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: FastInitialLimit, ct: CancellationToken.None);
+                }
+
                 swFetch.Stop();
                 Debug.WriteLine($"[ChatLoad] Fast fetch {latest.Count} in {swFetch.ElapsedMilliseconds}ms");
 
                 var ordered = latest.OrderBy(m => m.CreatedAtUtc).ToList();
                 var sig = ComputeUiSignature(ordered);
-                await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "fast");
-                await MarkInitialRenderReadyAsync();
+
+                using (PerfettoTrace.Section("CHAT_FAST_APPLY"))
+                {
+                    await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "fast");
+                    await MarkInitialRenderReadyAsync();
+                }
 
                 if (!_backfillStarted)
                 {
@@ -1449,6 +1467,7 @@ namespace Biliardo.App.Pagine_Messaggi
             _hasRenderedInitialMessages = true;
             return MainThread.InvokeOnMainThreadAsync(() =>
             {
+                using var _trace = PerfettoTrace.Section("CHAT_INITIAL_RENDER_READY_UI");
                 IsLoadingMessages = false;
                 StartPolling();
             });
@@ -1457,15 +1476,28 @@ namespace Biliardo.App.Pagine_Messaggi
         private async Task StartBackfillAsync(string idToken, string myUid, string peerId, string chatId)
         {
             var swFetch = Stopwatch.StartNew();
-            var msgs = await _fsChat.GetLastMessagesAsync(idToken, chatId, limit: BackfillLimit, ct: CancellationToken.None);
+            IReadOnlyList<FirestoreChatService.MessageItem> msgs;
+
+            using (PerfettoTrace.Section("CHAT_BACKFILL_FETCH"))
+            {
+                msgs = await _fsChat.GetLastMessagesAsync(idToken, chatId, limit: BackfillLimit, ct: CancellationToken.None);
+            }
+
             swFetch.Stop();
             Debug.WriteLine($"[ChatLoad] Backfill fetch {msgs.Count} in {swFetch.ElapsedMilliseconds}ms");
 
             var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
             var sig = ComputeUiSignature(ordered);
-            await ApplyMessageDiffAsync(ordered, sig, idToken, myUid, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "backfill");
 
-            _ = _localCache.WriteAsync(_localCache.GetCacheKey(chatId, peerId), ordered, CacheMaxMessages, CancellationToken.None);
+            using (PerfettoTrace.Section("CHAT_BACKFILL_APPLY"))
+            {
+                await ApplyMessageDiffAsync(ordered, sig, idToken, myUid, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: true, source: "backfill");
+            }
+
+            using (PerfettoTrace.Section("CHAT_CACHE_WRITE_CALL"))
+            {
+                _ = _localCache.WriteAsync(_localCache.GetCacheKey(chatId, peerId), ordered, CacheMaxMessages, CancellationToken.None);
+            }
         }
 
         private void ScheduleOlderPagingIfNeeded()
@@ -1514,7 +1546,13 @@ namespace Biliardo.App.Pagine_Messaggi
             try
             {
                 var swFetch = Stopwatch.StartNew();
-                var older = await _fsChat.GetMessagesBeforeAsync(idToken!, chatId, _oldestMessageUtc.Value, limit: OlderPageSize, ct: CancellationToken.None);
+                IReadOnlyList<FirestoreChatService.MessageItem> older;
+
+                using (PerfettoTrace.Section("CHAT_OLDER_FETCH"))
+                {
+                    older = await _fsChat.GetMessagesBeforeAsync(idToken!, chatId, _oldestMessageUtc.Value, limit: OlderPageSize, ct: CancellationToken.None);
+                }
+
                 swFetch.Stop();
                 Debug.WriteLine($"[ChatLoad] Older fetch {older.Count} in {swFetch.ElapsedMilliseconds}ms");
 
@@ -1523,7 +1561,11 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 var ordered = older.OrderBy(m => m.CreatedAtUtc).ToList();
                 var sig = ComputeUiSignature(ordered);
-                await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: false, source: "older");
+
+                using (PerfettoTrace.Section("CHAT_OLDER_APPLY"))
+                {
+                    await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, CancellationToken.None, allowTrim: true, applyReceipts: false, source: "older");
+                }
             }
             finally
             {
@@ -1540,6 +1582,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
+                using var _trace = PerfettoTrace.Section($"CHAT_APPLY_UI:{source}");
+
                 var swApply = Stopwatch.StartNew();
 
                 var existingById = new Dictionary<string, ChatMessageVm>(StringComparer.Ordinal);
@@ -1601,7 +1645,10 @@ namespace Biliardo.App.Pagine_Messaggi
                 CleanupDateSeparators();
 
                 if (appended && _userNearBottom)
+                {
+                    using var _traceScroll = PerfettoTrace.Section("CHAT_SCROLL_TO_END");
                     ScrollToEnd();
+                }
 
                 if (!_hasRenderedInitialMessages && Messaggi.Count > 0)
                 {
@@ -1779,7 +1826,13 @@ namespace Biliardo.App.Pagine_Messaggi
                 _lastChatId = chatId;
 
                 var swFetch = Stopwatch.StartNew();
-                var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: BackfillLimit, ct: ct);
+                IReadOnlyList<FirestoreChatService.MessageItem> msgs;
+
+                using (PerfettoTrace.Section("CHAT_POLL_FETCH"))
+                {
+                    msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: BackfillLimit, ct: ct);
+                }
+
                 swFetch.Stop();
                 Debug.WriteLine($"[ChatLoad] Poll fetch {msgs.Count} in {swFetch.ElapsedMilliseconds}ms");
 
@@ -1792,7 +1845,10 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
                 }
 
-                await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct, allowTrim: true, applyReceipts: true, source: "poll");
+                using (PerfettoTrace.Section("CHAT_POLL_APPLY"))
+                {
+                    await ApplyMessageDiffAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct, allowTrim: true, applyReceipts: true, source: "poll");
+                }
             }
             finally
             {
@@ -1825,6 +1881,8 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 _ = Task.Run(async () =>
                 {
+                    using var _trace = PerfettoTrace.Section("CHAT_RECEIPTS_BG");
+
                     foreach (var m in ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)))
                     {
                         try
@@ -1847,6 +1905,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             if (!string.Equals(source, "cache", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(chatId))
             {
+                using var _trace = PerfettoTrace.Section("CHAT_CACHE_WRITE_CALL");
                 _ = _localCache.WriteAsync(_localCache.GetCacheKey(chatId, peerId), ordered, CacheMaxMessages, ct);
             }
         }
@@ -1902,6 +1961,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
+                using var _trace = PerfettoTrace.Section("CHAT_PREFETCH_COLLECT_UI");
+
                 if (Messaggi.Count == 0) return;
                 var last = Math.Min(lastIndex, Messaggi.Count - 1);
                 for (int i = firstIndex; i <= last; i++)
@@ -1927,6 +1988,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _ = Task.Run(async () =>
             {
+                using var _trace = PerfettoTrace.Section("CHAT_PREFETCH_WORK_BG");
+
                 try
                 {
                     var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(token);
@@ -1954,10 +2017,14 @@ namespace Biliardo.App.Pagine_Messaggi
                                 if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
                                 var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{vm.Id}_{Guid.NewGuid():N}{ext}");
 
-                                await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
+                                using (PerfettoTrace.Section("CHAT_PREFETCH_DOWNLOAD"))
+                                {
+                                    await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
+                                }
 
                                 MainThread.BeginInvokeOnMainThread(() =>
                                 {
+                                    using var _traceAssign = PerfettoTrace.Section("CHAT_IMAGE_ASSIGN");
                                     vm.MediaLocalPath = local;
                                 });
                             }
@@ -2062,10 +2129,14 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{m.Id}_{Guid.NewGuid():N}{ext}");
 
-                await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, m.StoragePath!, local);
+                using (PerfettoTrace.Section("CHAT_MEDIA_DOWNLOAD"))
+                {
+                    await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, m.StoragePath!, local);
+                }
 
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
+                    using var _traceAssign = PerfettoTrace.Section("CHAT_MEDIA_ASSIGN");
                     m.MediaLocalPath = local;
                 });
 
