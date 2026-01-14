@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
@@ -13,6 +14,7 @@ using Microsoft.Maui.Devices.Sensors;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
@@ -51,14 +53,8 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 3) PERFORMANCE / SCROLL
         // ============================================================
-        private long _scrollBusyUntilUtcTicks;
-        private const int ScrollBusyHoldMs = 450;
-
-        private bool IsScrollBusy()
-            => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
-
-        private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+        private readonly ScrollWorkCoordinator _scrollCoordinator = new(TimeSpan.FromMilliseconds(320));
+        private CollectionViewNativeScrollStateTracker? _scrollTracker;
 
         // ============================================================
         // VM/UI state
@@ -156,11 +152,11 @@ namespace Biliardo.App.Pagine_Messaggi
         private string? _lastPeerId;
         private string? _lastChatId;
 
+        private readonly object _pendingApplyGate = new();
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
-        private string? _pendingSignature;
-        private CancellationTokenSource? _pendingApplyCts;
-        private readonly object _pendingLock = new();
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
+        private string _pendingSignature = "";
+        private int _pendingApplyVersion;
+        private readonly SemaphoreSlim _applyLock = new(1, 1);
 
         private CancellationTokenSource? _pollCts;
         private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
@@ -171,8 +167,15 @@ namespace Biliardo.App.Pagine_Messaggi
         private string? _chatIdCached;
 
         // Prefetch foto (visibili + 5)
-        private readonly HashSet<string> _prefetchPhotoMessageIds = new(StringComparer.Ordinal);
-        private CancellationTokenSource? _prefetchCts;
+        private int _prefetchFirst;
+        private int _prefetchLast;
+        private int _prefetchReqId;
+        private Task? _prefetchWorkerTask;
+        private readonly object _prefetchWorkerGate = new();
+        private readonly HashSet<string> _prefetchRequestedIds = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, string> _prefetchedLocalByMsgId = new(StringComparer.Ordinal);
+        private int _lastFirstVisibleIndex;
+        private int _lastLastVisibleIndex;
 
         // ============================================================
         // Voice (WhatsApp-like)
@@ -229,6 +232,7 @@ namespace Biliardo.App.Pagine_Messaggi
             DisplayNomeCompleto = "";
 
             ChatScrollTuning.Apply(CvMessaggi);
+            _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(CvMessaggi, _scrollCoordinator);
 
             AllegatiSelezionati.CollectionChanged += (_, __) =>
             {
@@ -262,6 +266,9 @@ namespace Biliardo.App.Pagine_Messaggi
         protected override void OnAppearing()
         {
             base.OnAppearing();
+
+            if (_scrollTracker == null)
+                _scrollTracker = CollectionViewNativeScrollStateTracker.Attach(CvMessaggi, _scrollCoordinator);
 
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
@@ -465,68 +472,76 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void OnMessagesScrolled(object sender, ItemsViewScrolledEventArgs e)
         {
-            MarkScrollBusy();
+            _scrollCoordinator.NotifyActivity();
             _userNearBottom = e.LastVisibleItemIndex >= (Messaggi.Count - 2);
+
+            _lastFirstVisibleIndex = e.FirstVisibleItemIndex;
+            _lastLastVisibleIndex = e.LastVisibleItemIndex;
 
             var first = Math.Max(0, e.FirstVisibleItemIndex);
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
-            _ = SchedulePrefetchPhotosAsync(first, last);
+            Volatile.Write(ref _prefetchFirst, first);
+            Volatile.Write(ref _prefetchLast, last);
+            Interlocked.Increment(ref _prefetchReqId);
 
-            SchedulePendingApply();
+            _scrollCoordinator.EnqueueUiWork(PrefetchPumpAsync, "prefetch-pump");
         }
 
-        private void QueuePendingUpdate(string signature, List<FirestoreChatService.MessageItem> ordered)
+        private void QueuePendingApply(string signature, List<FirestoreChatService.MessageItem> ordered)
         {
-            lock (_pendingLock)
+            lock (_pendingApplyGate)
             {
                 _pendingSignature = signature;
                 _pendingOrdered = ordered;
+                _pendingApplyVersion++;
             }
-            SchedulePendingApply();
+            _scrollCoordinator.EnqueueUiWork(ApplyPendingIfAnyAsync, "chat-apply");
         }
 
-        private void SchedulePendingApply()
+        private async Task ApplyPendingIfAnyAsync()
         {
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = new CancellationTokenSource();
-            var token = _pendingApplyCts.Token;
+            if (_scrollCoordinator.IsScrolling)
+                return;
 
-            _ = Task.Run(async () =>
+            if (!await _applyLock.WaitAsync(0))
+                return;
+
+            try
             {
-                try
+                List<FirestoreChatService.MessageItem>? ordered = null;
+                string signature = "";
+                int version = 0;
+
+                lock (_pendingApplyGate)
                 {
-                    await Task.Delay(ScrollIdleDelay, token);
-                    if (token.IsCancellationRequested || IsScrollBusy())
-                        return;
-
-                    List<FirestoreChatService.MessageItem>? ordered = null;
-                    string? signature = null;
-
-                    lock (_pendingLock)
-                    {
-                        ordered = _pendingOrdered;
-                        signature = _pendingSignature;
-                        _pendingOrdered = null;
-                        _pendingSignature = null;
-                    }
-
-                    if (ordered == null || string.IsNullOrWhiteSpace(signature))
-                        return;
-
-                    var idToken = _lastIdToken;
-                    var myUid = _lastMyUid;
-                    var peerId = _lastPeerId;
-                    var chatId = _lastChatId;
-
-                    if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
-                        || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
-                        return;
-
-                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
+                    ordered = _pendingOrdered;
+                    signature = _pendingSignature;
+                    version = _pendingApplyVersion;
+                    _pendingOrdered = null;
                 }
-                catch { }
-            }, token);
+
+                if (ordered == null || string.IsNullOrWhiteSpace(signature) || version <= 0)
+                    return;
+
+                if (_scrollCoordinator.IsScrolling)
+                    return;
+
+                var idToken = _lastIdToken;
+                var myUid = _lastMyUid;
+                var peerId = _lastPeerId;
+                var chatId = _lastChatId;
+
+                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
+                    || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
+                    return;
+
+                await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, CancellationToken.None);
+            }
+            catch { }
+            finally
+            {
+                _applyLock.Release();
+            }
         }
 
         // ============================================================
@@ -1436,15 +1451,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
             }
 
-            if (IsScrollBusy())
-            {
-                QueuePendingUpdate(sig, ordered);
-                if (IsLoadingMessages)
-                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
-                return;
-            }
-
-            await ApplyOrderedMessagesAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct);
+            QueuePendingApply(sig, ordered);
+            if (IsLoadingMessages)
+                MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
         }
 
         private async Task ApplyOrderedMessagesAsync(
@@ -1545,7 +1554,7 @@ namespace Biliardo.App.Pagine_Messaggi
                     }
                 }
 
-                if (appended && _userNearBottom)
+                if (appended && _userNearBottom && !_scrollCoordinator.IsScrolling)
                     ScrollToEnd();
             });
         }
@@ -1583,109 +1592,168 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private void CancelPrefetch()
         {
-            try { _prefetchCts?.Cancel(); } catch { }
-            try { _prefetchCts?.Dispose(); } catch { }
-            _prefetchCts = null;
+            Interlocked.Increment(ref _prefetchReqId);
+            lock (_prefetchRequestedIds)
+                _prefetchRequestedIds.Clear();
+            _prefetchedLocalByMsgId.Clear();
         }
 
         private void CancelPendingApply()
         {
-            lock (_pendingLock)
+            lock (_pendingApplyGate)
             {
                 _pendingOrdered = null;
-                _pendingSignature = null;
+                _pendingSignature = "";
+                _pendingApplyVersion = 0;
             }
-
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = null;
         }
 
-        private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)
+        private async Task PrefetchPumpAsync()
         {
+            if (_scrollCoordinator.IsScrolling)
+                return;
+
+            var firstIndex = Volatile.Read(ref _prefetchFirst);
+            var lastIndex = Volatile.Read(ref _prefetchLast);
+            if (firstIndex < 0 || lastIndex < 0)
+            {
+                firstIndex = _lastFirstVisibleIndex;
+                lastIndex = _lastLastVisibleIndex;
+            }
             if (firstIndex < 0 || lastIndex < 0 || firstIndex > lastIndex)
                 return;
 
-            CancelPrefetch();
-            _prefetchCts = new CancellationTokenSource();
-            var token = _prefetchCts.Token;
-
-            List<ChatMessageVm> targets = new();
-
-            await MainThread.InvokeOnMainThreadAsync(() =>
+            var reqId = Volatile.Read(ref _prefetchReqId);
+            lock (_prefetchWorkerGate)
             {
-                if (Messaggi.Count == 0) return;
-                var last = Math.Min(lastIndex, Messaggi.Count - 1);
-                for (int i = firstIndex; i <= last; i++)
-                {
-                    var vm = Messaggi[i];
-                    if (vm == null || vm.IsDateSeparator) continue;
-                    if (!vm.IsPhoto) continue;
-                    if (string.IsNullOrWhiteSpace(vm.Id)) continue;
-
-                    lock (_prefetchPhotoMessageIds)
-                    {
-                        if (_prefetchPhotoMessageIds.Contains(vm.Id))
-                            continue;
-                        _prefetchPhotoMessageIds.Add(vm.Id);
-                    }
-
-                    targets.Add(vm);
-                }
-            });
-
-            if (targets.Count == 0)
-                return;
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(token);
-                    if (string.IsNullOrWhiteSpace(idToken))
-                        return;
-
-                    using var sem = new SemaphoreSlim(2, 2);
-                    var tasks = new List<Task>();
-
-                    foreach (var vm in targets)
-                    {
-                        if (token.IsCancellationRequested) break;
-
-                        tasks.Add(Task.Run(async () =>
-                        {
-                            await sem.WaitAsync(token);
-                            try
-                            {
-                                if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath) && File.Exists(vm.MediaLocalPath))
-                                    return;
-                                if (string.IsNullOrWhiteSpace(vm.StoragePath))
-                                    return;
-
-                                var ext = Path.GetExtension(vm.FileName ?? "");
-                                if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
-                                var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{vm.Id}_{Guid.NewGuid():N}{ext}");
-
-                                await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
-
-                                MainThread.BeginInvokeOnMainThread(() =>
-                                {
-                                    vm.MediaLocalPath = local;
-                                });
-                            }
-                            catch { }
-                            finally
-                            {
-                                try { sem.Release(); } catch { }
-                            }
-                        }, token));
-                    }
-
-                    await Task.WhenAll(tasks);
-                }
-                catch { }
-            }, token);
+                if (_prefetchWorkerTask == null || _prefetchWorkerTask.IsCompleted)
+                    _prefetchWorkerTask = PrefetchWorkerAsync(reqId, firstIndex, lastIndex);
+            }
         }
+
+        private async Task PrefetchWorkerAsync(int reqId, int firstIndex, int lastIndex)
+        {
+            try
+            {
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                if (string.IsNullOrWhiteSpace(idToken))
+                    return;
+
+                var targets = await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    var list = new List<PrefetchTarget>();
+                    if (Messaggi.Count == 0) return list;
+
+                    var last = Math.Min(lastIndex, Messaggi.Count - 1);
+                    for (int i = firstIndex; i <= last; i++)
+                    {
+                        var vm = Messaggi[i];
+                        if (vm == null || vm.IsDateSeparator) continue;
+                        if (!vm.IsPhoto) continue;
+                        if (string.IsNullOrWhiteSpace(vm.Id)) continue;
+                        if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath) && File.Exists(vm.MediaLocalPath))
+                            continue;
+                        if (string.IsNullOrWhiteSpace(vm.StoragePath))
+                            continue;
+
+                        if (_prefetchedLocalByMsgId.ContainsKey(vm.Id))
+                            continue;
+
+                        lock (_prefetchRequestedIds)
+                        {
+                            if (_prefetchRequestedIds.Contains(vm.Id))
+                                continue;
+                            _prefetchRequestedIds.Add(vm.Id);
+                        }
+
+                        list.Add(new PrefetchTarget(vm.Id, vm.StoragePath, vm.FileName));
+                    }
+
+                    return list;
+                });
+
+                if (targets.Count == 0)
+                    return;
+
+                using var sem = new SemaphoreSlim(2, 2);
+                var tasks = new List<Task>();
+
+                foreach (var target in targets)
+                {
+                    if (reqId != Volatile.Read(ref _prefetchReqId))
+                    {
+                        _scrollCoordinator.EnqueueUiWork(PrefetchPumpAsync, "prefetch-pump");
+                        return;
+                    }
+
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        await sem.WaitAsync();
+                        try
+                        {
+                            var ext = Path.GetExtension(target.FileName ?? "");
+                            if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+                            var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{target.MessageId}_{Guid.NewGuid():N}{ext}");
+
+                            await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, target.StoragePath, local);
+                            _prefetchedLocalByMsgId[target.MessageId] = local;
+                        }
+                        catch { }
+                        finally
+                        {
+                            try { sem.Release(); } catch { }
+                        }
+                    }));
+                }
+
+                await Task.WhenAll(tasks);
+
+                _scrollCoordinator.EnqueueUiWork(ApplyPrefetchToUiAsync, "prefetch-apply");
+            }
+            catch { }
+        }
+
+        private Task ApplyPrefetchToUiAsync()
+        {
+            if (_scrollCoordinator.IsScrolling)
+                return Task.CompletedTask;
+
+            if (_prefetchedLocalByMsgId.IsEmpty)
+                return Task.CompletedTask;
+
+            var byId = new Dictionary<string, ChatMessageVm>(StringComparer.Ordinal);
+            foreach (var vm in Messaggi.Where(x => !x.IsDateSeparator))
+            {
+                if (!string.IsNullOrWhiteSpace(vm.Id))
+                    byId[vm.Id] = vm;
+            }
+
+            var applied = new List<string>();
+            foreach (var kvp in _prefetchedLocalByMsgId)
+            {
+                if (!byId.TryGetValue(kvp.Key, out var vm))
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath))
+                {
+                    applied.Add(kvp.Key);
+                    continue;
+                }
+
+                if (!File.Exists(kvp.Value))
+                    continue;
+
+                vm.MediaLocalPath = kvp.Value;
+                applied.Add(kvp.Key);
+            }
+
+            foreach (var id in applied)
+                _prefetchedLocalByMsgId.TryRemove(id, out _);
+
+            return Task.CompletedTask;
+        }
+
+        private sealed record PrefetchTarget(string MessageId, string StoragePath, string? FileName);
 
         // ============================================================
         // Send attachment (Storage + Firestore)
