@@ -21,6 +21,11 @@ namespace Biliardo.App.Componenti_UI
             var listener = new TuningFlingListener(recycler);
             Listeners.Add(recycler, listener);
             recycler.SetOnFlingListener(listener);
+
+            // Scroll tuning: reduce animations and improve reuse during fast scroll.
+            recycler.ItemAnimator = null;
+            recycler.SetItemViewCacheSize(20);
+            recycler.SetHasFixedSize(true);
         }
 
         private sealed class TuningFlingListener : RecyclerView.OnFlingListener

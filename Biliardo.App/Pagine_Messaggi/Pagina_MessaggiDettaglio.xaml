@@ -4,8 +4,436 @@
     x:Name="ThisPage"
     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:local="clr-namespace:Biliardo.App.Pagine_Messaggi"
     Title="Chat"
     BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=PageBgColor}">
+
+    <ContentPage.Resources>
+        <ResourceDictionary>
+            <DataTemplate x:Key="DateSeparatorTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        HorizontalOptions="Center"
+                        BackgroundColor="#1E1E1E"
+                        StrokeThickness="0"
+                        Padding="10,6">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="16" />
+                        </Border.StrokeShape>
+
+                        <Label Text="{Binding DateSeparatorText}"
+                               TextColor="White"
+                               FontSize="12"
+                               Opacity="0.85" />
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="TextTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        StrokeThickness="0"
+                        Padding="10"
+                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
+                        HorizontalOptions="Start"
+                        MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="14" />
+                        </Border.StrokeShape>
+
+                        <Border.Triggers>
+                            <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                <Setter Property="HorizontalOptions" Value="End" />
+                                <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
+                            </DataTrigger>
+                        </Border.Triggers>
+
+                        <VerticalStackLayout Spacing="8">
+                            <Label Text="{Binding Text}"
+                                   TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                   FontSize="14"
+                                   LineBreakMode="WordWrap" />
+
+                            <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                <Label Text="{Binding TimeLabel}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                                <Label Text="{Binding StatusLabel}"
+                                       IsVisible="{Binding HasStatus}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="PhotoTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        StrokeThickness="0"
+                        Padding="10"
+                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
+                        HorizontalOptions="Start"
+                        MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="14" />
+                        </Border.StrokeShape>
+
+                        <Border.Triggers>
+                            <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                <Setter Property="HorizontalOptions" Value="End" />
+                                <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
+                            </DataTrigger>
+                        </Border.Triggers>
+
+                        <VerticalStackLayout Spacing="8">
+                            <Label Text="{Binding Text}"
+                                   IsVisible="{Binding HasText}"
+                                   TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                   FontSize="14"
+                                   LineBreakMode="WordWrap" />
+
+                            <Border
+                                StrokeThickness="0"
+                                Padding="0"
+                                BackgroundColor="#222222">
+                                <Border.StrokeShape>
+                                    <RoundRectangle CornerRadius="12" />
+                                </Border.StrokeShape>
+
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnPhotoTapped" />
+                                </Border.GestureRecognizers>
+
+                                <Image Source="{Binding MediaLocalPath}"
+                                       HeightRequest="170"
+                                       Aspect="AspectFill" />
+                            </Border>
+
+                            <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                <Label Text="{Binding TimeLabel}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                                <Label Text="{Binding StatusLabel}"
+                                       IsVisible="{Binding HasStatus}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="FileOrVideoTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        StrokeThickness="0"
+                        Padding="10"
+                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
+                        HorizontalOptions="Start"
+                        MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="14" />
+                        </Border.StrokeShape>
+
+                        <Border.Triggers>
+                            <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                <Setter Property="HorizontalOptions" Value="End" />
+                                <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
+                            </DataTrigger>
+                        </Border.Triggers>
+
+                        <VerticalStackLayout Spacing="8">
+                            <Label Text="{Binding Text}"
+                                   IsVisible="{Binding HasText}"
+                                   TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                   FontSize="14"
+                                   LineBreakMode="WordWrap" />
+
+                            <Border
+                                StrokeThickness="0"
+                                Padding="10"
+                                BackgroundColor="#1C1C1C">
+                                <Border.StrokeShape>
+                                    <RoundRectangle CornerRadius="12" />
+                                </Border.StrokeShape>
+
+                                <VerticalStackLayout Spacing="6">
+                                    <Label Text="{Binding FileLabel}"
+                                           TextColor="White"
+                                           FontAttributes="Bold"
+                                           LineBreakMode="TailTruncation" />
+                                    <Border StrokeThickness="0"
+                                            Padding="8,4"
+                                            BackgroundColor="#2A2A2A"
+                                            HorizontalOptions="Start">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="8" />
+                                        </Border.StrokeShape>
+                                        <Border.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnOpenMediaClicked" />
+                                        </Border.GestureRecognizers>
+                                        <Label Text="Apri"
+                                               TextColor="White" />
+                                    </Border>
+                                </VerticalStackLayout>
+                            </Border>
+
+                            <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                <Label Text="{Binding TimeLabel}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                                <Label Text="{Binding StatusLabel}"
+                                       IsVisible="{Binding HasStatus}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="AudioTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        StrokeThickness="0"
+                        Padding="10"
+                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
+                        HorizontalOptions="Start"
+                        MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="14" />
+                        </Border.StrokeShape>
+
+                        <Border.Triggers>
+                            <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                <Setter Property="HorizontalOptions" Value="End" />
+                                <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
+                            </DataTrigger>
+                        </Border.Triggers>
+
+                        <VerticalStackLayout Spacing="8">
+                            <Label Text="{Binding Text}"
+                                   IsVisible="{Binding HasText}"
+                                   TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                   FontSize="14"
+                                   LineBreakMode="WordWrap" />
+
+                            <Border
+                                StrokeThickness="0"
+                                Padding="10"
+                                BackgroundColor="#1C1C1C">
+                                <Border.StrokeShape>
+                                    <RoundRectangle CornerRadius="12" />
+                                </Border.StrokeShape>
+
+                                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                                    <Border StrokeThickness="0"
+                                            Padding="8,4"
+                                            BackgroundColor="#2A2A2A"
+                                            WidthRequest="90"
+                                            HeightRequest="40">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="8" />
+                                        </Border.StrokeShape>
+                                        <Border.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnPlayAudioClicked" />
+                                        </Border.GestureRecognizers>
+                                        <Label Text="{Binding AudioPlayStopLabel}"
+                                               TextColor="White"
+                                               HorizontalTextAlignment="Center"
+                                               VerticalTextAlignment="Center" />
+                                    </Border>
+                                    <VerticalStackLayout Grid.Column="1" Spacing="2">
+                                        <Label Text="{Binding AudioLabel}"
+                                               TextColor="White"
+                                               LineBreakMode="TailTruncation" />
+                                        <Label Text="{Binding DurationLabel}"
+                                               TextColor="White"
+                                               FontSize="12"
+                                               Opacity="0.7" />
+                                    </VerticalStackLayout>
+                                </Grid>
+                            </Border>
+
+                            <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                <Label Text="{Binding TimeLabel}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                                <Label Text="{Binding StatusLabel}"
+                                       IsVisible="{Binding HasStatus}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="LocationTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        StrokeThickness="0"
+                        Padding="10"
+                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
+                        HorizontalOptions="Start"
+                        MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="14" />
+                        </Border.StrokeShape>
+
+                        <Border.Triggers>
+                            <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                <Setter Property="HorizontalOptions" Value="End" />
+                                <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
+                            </DataTrigger>
+                        </Border.Triggers>
+
+                        <VerticalStackLayout Spacing="8">
+                            <Label Text="{Binding Text}"
+                                   IsVisible="{Binding HasText}"
+                                   TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                   FontSize="14"
+                                   LineBreakMode="WordWrap" />
+
+                            <Border
+                                StrokeThickness="0"
+                                Padding="10"
+                                BackgroundColor="#1C1C1C">
+                                <Border.StrokeShape>
+                                    <RoundRectangle CornerRadius="12" />
+                                </Border.StrokeShape>
+                                <VerticalStackLayout Spacing="6">
+                                    <Label Text="📍 Posizione"
+                                           TextColor="White"
+                                           FontAttributes="Bold" />
+                                    <Label Text="{Binding LocationLabel}"
+                                           TextColor="White"
+                                           FontSize="12"
+                                           Opacity="0.7" />
+                                    <Border StrokeThickness="0"
+                                            Padding="8,4"
+                                            BackgroundColor="#2A2A2A"
+                                            HorizontalOptions="Start">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="8" />
+                                        </Border.StrokeShape>
+                                        <Border.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnOpenLocationClicked" />
+                                        </Border.GestureRecognizers>
+                                        <Label Text="Apri su Mappe"
+                                               TextColor="White" />
+                                    </Border>
+                                </VerticalStackLayout>
+                            </Border>
+
+                            <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                <Label Text="{Binding TimeLabel}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                                <Label Text="{Binding StatusLabel}"
+                                       IsVisible="{Binding HasStatus}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <DataTemplate x:Key="ContactTemplate" x:DataType="local:Pagina_MessaggiDettaglio+ChatMessageVm">
+                <Grid Padding="0,2">
+                    <Border
+                        StrokeThickness="0"
+                        Padding="10"
+                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
+                        HorizontalOptions="Start"
+                        MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="14" />
+                        </Border.StrokeShape>
+
+                        <Border.Triggers>
+                            <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
+                                <Setter Property="HorizontalOptions" Value="End" />
+                                <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
+                            </DataTrigger>
+                        </Border.Triggers>
+
+                        <VerticalStackLayout Spacing="8">
+                            <Label Text="{Binding Text}"
+                                   IsVisible="{Binding HasText}"
+                                   TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                   FontSize="14"
+                                   LineBreakMode="WordWrap" />
+
+                            <Border
+                                StrokeThickness="0"
+                                Padding="10"
+                                BackgroundColor="#1C1C1C">
+                                <Border.StrokeShape>
+                                    <RoundRectangle CornerRadius="12" />
+                                </Border.StrokeShape>
+                                <VerticalStackLayout Spacing="6">
+                                    <Label Text="👤 Contatto"
+                                           TextColor="White"
+                                           FontAttributes="Bold" />
+                                    <Label Text="{Binding ContactLabel}"
+                                           TextColor="White"
+                                           LineBreakMode="TailTruncation" />
+                                    <Border StrokeThickness="0"
+                                            Padding="8,4"
+                                            BackgroundColor="#2A2A2A"
+                                            HorizontalOptions="Start">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="8" />
+                                        </Border.StrokeShape>
+                                        <Border.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnCallContactClicked" />
+                                        </Border.GestureRecognizers>
+                                        <Label Text="Chiama"
+                                               TextColor="White" />
+                                    </Border>
+                                </VerticalStackLayout>
+                            </Border>
+
+                            <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                <Label Text="{Binding TimeLabel}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                                <Label Text="{Binding StatusLabel}"
+                                       IsVisible="{Binding HasStatus}"
+                                       TextColor="White"
+                                       FontSize="10"
+                                       Opacity="0.7" />
+                            </HorizontalStackLayout>
+                        </VerticalStackLayout>
+                    </Border>
+                </Grid>
+            </DataTemplate>
+
+            <local:ChatMessageTemplateSelector x:Key="ChatMessageTemplateSelector"
+                                               DateSeparatorTemplate="{StaticResource DateSeparatorTemplate}"
+                                               TextTemplate="{StaticResource TextTemplate}"
+                                               PhotoTemplate="{StaticResource PhotoTemplate}"
+                                               FileOrVideoTemplate="{StaticResource FileOrVideoTemplate}"
+                                               AudioTemplate="{StaticResource AudioTemplate}"
+                                               LocationTemplate="{StaticResource LocationTemplate}"
+                                               ContactTemplate="{StaticResource ContactTemplate}" />
+        </ResourceDictionary>
+    </ContentPage.Resources>
 
     <Grid RowDefinitions="Auto,*,Auto,Auto"
           Padding="10"
@@ -45,196 +473,11 @@
                             SelectionMode="None"
                             ItemsUpdatingScrollMode="KeepScrollOffset"
                             ItemSizingStrategy="MeasureFirstItem"
-                            Scrolled="OnMessagesScrolled">
+                            Scrolled="OnMessagesScrolled"
+                            ItemTemplate="{StaticResource ChatMessageTemplateSelector}">
                 <CollectionView.ItemsLayout>
                     <LinearItemsLayout Orientation="Vertical" ItemSpacing="6" />
                 </CollectionView.ItemsLayout>
-
-                <CollectionView.ItemTemplate>
-                    <DataTemplate>
-                        <Grid Padding="0,2">
-
-                            <Border x:Name="DateSep"
-                                    IsVisible="False"
-                                    HorizontalOptions="Center"
-                                    BackgroundColor="#1E1E1E"
-                                    StrokeThickness="0"
-                                    Padding="10,6">
-                                <Border.StrokeShape>
-                                    <RoundRectangle CornerRadius="16" />
-                                </Border.StrokeShape>
-
-                                <Label Text="{Binding DateSeparatorText}"
-                                       TextColor="White"
-                                       FontSize="12"
-                                       Opacity="0.85" />
-
-                                <Border.Triggers>
-                                    <DataTrigger TargetType="Border" Binding="{Binding IsDateSeparator}" Value="True">
-                                        <Setter Property="IsVisible" Value="True" />
-                                    </DataTrigger>
-                                </Border.Triggers>
-                            </Border>
-
-                            <Border x:Name="Bubble"
-                                    IsVisible="True"
-                                    StrokeThickness="0"
-                                    Padding="10"
-                                    BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
-                                    HorizontalOptions="Start"
-                                    MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
-                                <Border.StrokeShape>
-                                    <RoundRectangle CornerRadius="14" />
-                                </Border.StrokeShape>
-
-                                <Border.Triggers>
-                                    <DataTrigger TargetType="Border" Binding="{Binding IsDateSeparator}" Value="True">
-                                        <Setter Property="IsVisible" Value="False" />
-                                    </DataTrigger>
-
-                                    <DataTrigger TargetType="Border" Binding="{Binding IsMine}" Value="True">
-                                        <Setter Property="HorizontalOptions" Value="End" />
-                                        <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
-                                    </DataTrigger>
-                                </Border.Triggers>
-
-                                <VerticalStackLayout Spacing="8">
-
-                                    <Label Text="{Binding Text}"
-                                           IsVisible="{Binding HasText}"
-                                           TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
-                                           FontSize="14"
-                                           LineBreakMode="WordWrap" />
-
-                                    <Border IsVisible="{Binding IsPhoto}"
-                                            StrokeThickness="0"
-                                            Padding="0"
-                                            BackgroundColor="#222222">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-
-                                        <Border.GestureRecognizers>
-                                            <TapGestureRecognizer Tapped="OnPhotoTapped" />
-                                        </Border.GestureRecognizers>
-
-                                        <Image Source="{Binding MediaLocalPath}"
-                                               HeightRequest="170"
-                                               Aspect="AspectFill" />
-                                    </Border>
-
-                                    <Border IsVisible="{Binding IsFileOrVideo}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-
-                                        <VerticalStackLayout Spacing="6">
-                                            <Label Text="{Binding FileLabel}"
-                                                   TextColor="White"
-                                                   FontAttributes="Bold"
-                                                   LineBreakMode="TailTruncation" />
-                                            <Button Text="Apri"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnOpenMediaClicked"
-                                                    CommandParameter="{Binding}" />
-                                        </VerticalStackLayout>
-                                    </Border>
-
-                                    <Border IsVisible="{Binding IsAudio}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-
-                                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
-                                            <Button Text="{Binding AudioPlayStopLabel}"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnPlayAudioClicked"
-                                                    CommandParameter="{Binding}"
-                                                    WidthRequest="90"
-                                                    HeightRequest="40" />
-                                            <VerticalStackLayout Grid.Column="1" Spacing="2">
-                                                <Label Text="{Binding AudioLabel}"
-                                                       TextColor="White"
-                                                       LineBreakMode="TailTruncation" />
-                                                <Label Text="{Binding DurationLabel}"
-                                                       TextColor="White"
-                                                       FontSize="12"
-                                                       Opacity="0.7" />
-                                            </VerticalStackLayout>
-                                        </Grid>
-                                    </Border>
-
-                                    <Border IsVisible="{Binding IsLocation}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-                                        <VerticalStackLayout Spacing="6">
-                                            <Label Text="📍 Posizione"
-                                                   TextColor="White"
-                                                   FontAttributes="Bold" />
-                                            <Label Text="{Binding LocationLabel}"
-                                                   TextColor="White"
-                                                   FontSize="12"
-                                                   Opacity="0.7" />
-                                            <Button Text="Apri su Mappe"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnOpenLocationClicked"
-                                                    CommandParameter="{Binding}" />
-                                        </VerticalStackLayout>
-                                    </Border>
-
-                                    <Border IsVisible="{Binding IsContact}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-                                        <VerticalStackLayout Spacing="6">
-                                            <Label Text="👤 Contatto"
-                                                   TextColor="White"
-                                                   FontAttributes="Bold" />
-                                            <Label Text="{Binding ContactLabel}"
-                                                   TextColor="White"
-                                                   LineBreakMode="TailTruncation" />
-                                            <Button Text="Chiama"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnCallContactClicked"
-                                                    CommandParameter="{Binding}" />
-                                        </VerticalStackLayout>
-                                    </Border>
-
-                                    <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
-                                        <Label Text="{Binding TimeLabel}"
-                                               TextColor="White"
-                                               FontSize="10"
-                                               Opacity="0.7" />
-                                        <Label Text="{Binding StatusLabel}"
-                                               IsVisible="{Binding HasStatus}"
-                                               TextColor="White"
-                                               FontSize="10"
-                                               Opacity="0.7" />
-                                    </HorizontalStackLayout>
-
-                                </VerticalStackLayout>
-                            </Border>
-
-                        </Grid>
-                    </DataTemplate>
-                </CollectionView.ItemTemplate>
             </CollectionView>
 
             <Grid IsVisible="{Binding Source={x:Reference ThisPage}, Path=IsLoadingMessages}"
