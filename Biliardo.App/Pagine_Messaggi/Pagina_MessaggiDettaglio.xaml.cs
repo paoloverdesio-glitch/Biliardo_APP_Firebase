@@ -637,7 +637,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
-                if (sender is not Button b || b.CommandParameter is not ChatMessageVm m)
+                var m = GetMessageFromSender(sender);
+                if (m is null)
                     return;
 
                 if (!m.IsPhoto && !m.IsFileOrVideo)
@@ -667,7 +668,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
-                if (sender is not Button b || b.CommandParameter is not ChatMessageVm m)
+                var m = GetMessageFromSender(sender);
+                if (m is null)
                     return;
 
                 if (!m.IsLocation || m.Latitude == null || m.Longitude == null)
@@ -689,7 +691,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
-                if (sender is not Button b || b.CommandParameter is not ChatMessageVm m)
+                var m = GetMessageFromSender(sender);
+                if (m is null)
                     return;
 
                 if (!m.IsContact || string.IsNullOrWhiteSpace(m.ContactPhone))
@@ -707,7 +710,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
-                if (sender is not Button b || b.CommandParameter is not ChatMessageVm m)
+                var m = GetMessageFromSender(sender);
+                if (m is null)
                     return;
 
                 if (!m.IsAudio)
@@ -738,6 +742,17 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 await DisplayAlert("Errore", ex.Message, "OK");
             }
+        }
+
+        private static ChatMessageVm? GetMessageFromSender(object sender)
+        {
+            if (sender is Button button && button.CommandParameter is ChatMessageVm buttonMessage)
+                return buttonMessage;
+
+            if (sender is BindableObject bindable && bindable.BindingContext is ChatMessageVm boundMessage)
+                return boundMessage;
+
+            return null;
         }
 
         // ============================================================
