@@ -9,6 +9,9 @@ using Android.Views;
 using AndroidX.Core.App;
 using AndroidX.Core.Content;
 using Plugin.Firebase.CloudMessaging;
+using System.Diagnostics;
+using Biliardo.App.Platforms.Android.Bluetooth;
+using Biliardo.App.Infrastructure;
 
 namespace Biliardo.App
 {
@@ -27,6 +30,7 @@ namespace Biliardo.App
     {
         private const int RequestPostNotificationsCode = 1001;
         private const string DefaultAndroidChannelId = "biliardo_default";
+        private const int RequestBluetoothConnectCode = 1102;
 
         protected override void OnCreate(Bundle? savedInstanceState)
         {
@@ -43,9 +47,13 @@ namespace Biliardo.App
 
             EnsureNotificationChannel();
             RequestPostNotificationsIfNeeded();
+            RequestBluetoothConnectIfNeeded();
 
             // Gestisce il tap su notifica quando l'app viene lanciata "da fredda"
             FirebaseCloudMessagingImplementation.OnNewIntent(Intent);
+
+            if (HasBluetoothConnectPermission())
+                BtPerfLogServer.TryStart(this);
         }
 
         protected override void OnNewIntent(Intent? intent)
@@ -57,6 +65,14 @@ namespace Biliardo.App
                 // Gestisce il tap su notifica quando l'app è già in memoria (SingleTop)
                 FirebaseCloudMessagingImplementation.OnNewIntent(intent);
             }
+        }
+
+        public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
+        {
+            base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
+
+            if (requestCode == RequestBluetoothConnectCode && HasBluetoothConnectPermission())
+                BtPerfLogServer.TryStart(this);
         }
 
         private void EnsureNotificationChannel()
@@ -95,6 +111,39 @@ namespace Biliardo.App
                 this,
                 new[] { Manifest.Permission.PostNotifications },
                 RequestPostNotificationsCode);
+        }
+
+        private void RequestBluetoothConnectIfNeeded()
+        {
+            if (Build.VERSION.SdkInt < BuildVersionCodes.S)
+                return;
+
+            if (ContextCompat.CheckSelfPermission(this, Manifest.Permission.BluetoothConnect) == Permission.Granted)
+                return;
+
+            ActivityCompat.RequestPermissions(
+                this,
+                new[] { Manifest.Permission.BluetoothConnect },
+                RequestBluetoothConnectCode);
+        }
+
+        private bool HasBluetoothConnectPermission()
+        {
+            if (Build.VERSION.SdkInt < BuildVersionCodes.S)
+                return true;
+
+            if (ContextCompat.CheckSelfPermission(this, Manifest.Permission.BluetoothConnect) == Permission.Granted)
+                return true;
+
+            Debug.WriteLine("[MainActivity] Missing BLUETOOTH_CONNECT permission; perf log server not started.");
+            return false;
+        }
+
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            BtPerfLogServer.Stop();
+            PerfLogSession.Stop();
         }
     }
 }

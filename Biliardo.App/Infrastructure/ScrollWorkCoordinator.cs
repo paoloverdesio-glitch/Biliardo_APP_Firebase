@@ -56,6 +56,7 @@ namespace Biliardo.App.Infrastructure
             IsScrolling = true;
             LastScrollState = state;
             Debug.WriteLine($"[ScrollWorkCoordinator] EnterScrolling state={state}");
+            PerfLog.Note("SCROLL_STATE", state);
         }
 
         public void EnterIdle()
@@ -68,6 +69,7 @@ namespace Biliardo.App.Infrastructure
             IsScrolling = false;
             LastScrollState = "Idle";
             Debug.WriteLine("[ScrollWorkCoordinator] EnterIdle -> flush");
+            PerfLog.Note("SCROLL_STATE", "Idle");
             _ = FlushIfIdleAsync();
         }
 
@@ -77,6 +79,8 @@ namespace Biliardo.App.Infrastructure
 
             if (work == null)
                 return;
+
+            PerfLog.Note("SCROLLWORK_ENQUEUE", label);
 
             lock (_gate)
             {
@@ -135,6 +139,7 @@ namespace Biliardo.App.Infrastructure
                 try
                 {
                     using var _trace = PerfettoTrace.Section($"CHAT_SCROLLWORK_FLUSH:{label}");
+                    using var _span = PerfLog.Span("SCROLLWORK_FLUSH", $"label={label}");
                     await work();
                 }
                 finally
@@ -149,6 +154,7 @@ namespace Biliardo.App.Infrastructure
             await _dispatcher.DispatchAsync(async () =>
             {
                 using var _trace = PerfettoTrace.Section($"CHAT_SCROLLWORK_FLUSH:{label}");
+                using var _span = PerfLog.Span("SCROLLWORK_FLUSH", $"label={label}");
                 try
                 {
                     Debug.WriteLine($"[ScrollWorkCoordinator] Running work={label}");
