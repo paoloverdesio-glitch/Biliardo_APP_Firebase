@@ -21,6 +21,18 @@ namespace Biliardo.App.Componenti_UI
             var listener = new TuningFlingListener(recycler);
             Listeners.Add(recycler, listener);
             recycler.SetOnFlingListener(listener);
+
+            // Riduce jank: disabilita change animations / animator (su AndroidX non è una property, sono metodi Get/Set)
+            try
+            {
+                var itemAnimator = recycler.GetItemAnimator();
+                if (itemAnimator is SimpleItemAnimator simple)
+                    simple.SupportsChangeAnimations = false;
+
+                // Disabilita del tutto l'animator per evitare animazioni che alterano misura/layout durante scroll
+                recycler.SetItemAnimator(null);
+            }
+            catch { }
         }
 
         private sealed class TuningFlingListener : RecyclerView.OnFlingListener
