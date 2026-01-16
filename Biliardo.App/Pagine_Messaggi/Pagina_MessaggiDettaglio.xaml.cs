@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.ApplicationModel.Communication;
 using Microsoft.Maui.Controls;
@@ -51,14 +52,11 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 3) PERFORMANCE / SCROLL
         // ============================================================
-        private long _scrollBusyUntilUtcTicks;
-        private const int ScrollBusyHoldMs = 450;
-
-        private bool IsScrollBusy()
-            => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
-
-        private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+        private readonly ScrollStateGate _scrollGate = new();
+        private DateTime? _lastScrollUtc;
+        private int _lastFirstVisibleIndex = -1;
+        private int _lastLastVisibleIndex = -1;
+        private readonly SemaphoreSlim _applyLock = new(1, 1);
 
         // ============================================================
         // VM/UI state
@@ -158,9 +156,10 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
         private string? _pendingSignature;
-        private CancellationTokenSource? _pendingApplyCts;
         private readonly object _pendingLock = new();
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
+        private readonly List<FirestoreChatService.MessageItem> _bufferedNewMessages = new();
+        private readonly HashSet<string> _bufferedMessageIds = new(StringComparer.Ordinal);
+        private readonly object _bufferedLock = new();
 
         private CancellationTokenSource? _pollCts;
         private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
@@ -229,6 +228,8 @@ namespace Biliardo.App.Pagine_Messaggi
             DisplayNomeCompleto = "";
 
             ChatScrollTuning.Apply(CvMessaggi);
+            _scrollGate.Attach(CvMessaggi);
+            _scrollGate.ScrollBecameIdle += OnScrollBecameIdle;
 
             AllegatiSelezionati.CollectionChanged += (_, __) =>
             {
@@ -263,6 +264,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             base.OnAppearing();
 
+            _scrollGate.Attach(CvMessaggi);
+
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
 
@@ -286,6 +289,7 @@ namespace Biliardo.App.Pagine_Messaggi
             _playback.StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
+            _scrollGate.Detach();
 
             // sicurezza: se esco mentre registro, cancello
             _ = Task.Run(async () =>
@@ -465,14 +469,20 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void OnMessagesScrolled(object sender, ItemsViewScrolledEventArgs e)
         {
-            MarkScrollBusy();
+            _lastScrollUtc = DateTime.UtcNow;
+            _lastFirstVisibleIndex = e.FirstVisibleItemIndex;
+            _lastLastVisibleIndex = e.LastVisibleItemIndex;
             _userNearBottom = e.LastVisibleItemIndex >= (Messaggi.Count - 2);
 
-            var first = Math.Max(0, e.FirstVisibleItemIndex);
-            var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
-            _ = SchedulePrefetchPhotosAsync(first, last);
+            if (!_scrollGate.IsScrolling)
+            {
+                var first = Math.Max(0, e.FirstVisibleItemIndex);
+                var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
+                _ = SchedulePrefetchPhotosAsync(first, last);
+            }
 
-            SchedulePendingApply();
+            if (!_scrollGate.IsScrolling && _userNearBottom)
+                _ = FlushBufferedMessagesIfPossibleAsync("scroll");
         }
 
         private void QueuePendingUpdate(string signature, List<FirestoreChatService.MessageItem> ordered)
@@ -482,51 +492,63 @@ namespace Biliardo.App.Pagine_Messaggi
                 _pendingSignature = signature;
                 _pendingOrdered = ordered;
             }
-            SchedulePendingApply();
+            TryApplyPendingUpdate("queue");
         }
 
-        private void SchedulePendingApply()
+        private void TryApplyPendingUpdate(string reason)
         {
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = new CancellationTokenSource();
-            var token = _pendingApplyCts.Token;
+            if (_scrollGate.IsScrolling)
+                return;
 
-            _ = Task.Run(async () =>
+            _ = ApplyPendingUpdateAsync(reason);
+        }
+
+        private async Task ApplyPendingUpdateAsync(string reason)
+        {
+            await _applyLock.WaitAsync();
+            try
             {
-                try
+                if (_scrollGate.IsScrolling)
+                    return;
+
+                List<FirestoreChatService.MessageItem>? ordered = null;
+                string? signature = null;
+
+                lock (_pendingLock)
                 {
-                    await Task.Delay(ScrollIdleDelay, token);
-                    if (token.IsCancellationRequested || IsScrollBusy())
-                        return;
+                    ordered = _pendingOrdered;
+                    signature = _pendingSignature;
+                    _pendingOrdered = null;
+                    _pendingSignature = null;
+                }
 
-                    List<FirestoreChatService.MessageItem>? ordered = null;
-                    string? signature = null;
+                if (ordered == null || string.IsNullOrWhiteSpace(signature))
+                    return;
 
+                var idToken = _lastIdToken;
+                var myUid = _lastMyUid;
+                var peerId = _lastPeerId;
+                var chatId = _lastChatId;
+
+                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
+                    || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
+                {
                     lock (_pendingLock)
                     {
-                        ordered = _pendingOrdered;
-                        signature = _pendingSignature;
-                        _pendingOrdered = null;
-                        _pendingSignature = null;
+                        _pendingOrdered ??= ordered;
+                        _pendingSignature ??= signature;
                     }
-
-                    if (ordered == null || string.IsNullOrWhiteSpace(signature))
-                        return;
-
-                    var idToken = _lastIdToken;
-                    var myUid = _lastMyUid;
-                    var peerId = _lastPeerId;
-                    var chatId = _lastChatId;
-
-                    if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid)
-                        || string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(chatId))
-                        return;
-
-                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
+                    return;
                 }
-                catch { }
-            }, token);
+
+                LogApplyStart(reason);
+                await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, CancellationToken.None);
+            }
+            catch { }
+            finally
+            {
+                _applyLock.Release();
+            }
         }
 
         // ============================================================
@@ -1433,10 +1455,12 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 if (IsLoadingMessages)
                     MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
+                if (!_scrollGate.IsScrolling && _userNearBottom)
+                    _ = FlushBufferedMessagesIfPossibleAsync("poll-same-signature");
                 return;
             }
 
-            if (IsScrollBusy())
+            if (_scrollGate.IsScrolling)
             {
                 QueuePendingUpdate(sig, ordered);
                 if (IsLoadingMessages)
@@ -1491,6 +1515,9 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 bool appended = false;
 
+                if (_userNearBottom)
+                    appended |= AppendBufferedMessagesIfNeeded(byId, myUid, peerId);
+
                 if (Messaggi.Count == 0)
                 {
                     DateTime? lastDay = null;
@@ -1533,6 +1560,12 @@ namespace Biliardo.App.Pagine_Messaggi
                             continue;
                         }
 
+                        if (!_userNearBottom)
+                        {
+                            BufferNewMessage(m);
+                            continue;
+                        }
+
                         var d = m.CreatedAtUtc.ToLocalTime().Date;
                         if (lastDay == null || d != lastDay.Value)
                         {
@@ -1542,6 +1575,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
                         Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
                         appended = true;
+                        byId[id] = Messaggi[^1];
+                        RemoveBufferedMessage(id);
                     }
                 }
 
@@ -1595,14 +1630,133 @@ namespace Biliardo.App.Pagine_Messaggi
                 _pendingOrdered = null;
                 _pendingSignature = null;
             }
+        }
 
-            try { _pendingApplyCts?.Cancel(); } catch { }
-            try { _pendingApplyCts?.Dispose(); } catch { }
-            _pendingApplyCts = null;
+        private void OnScrollBecameIdle(object? sender, EventArgs e)
+        {
+            TryApplyPendingUpdate("scroll-idle");
+            _ = FlushBufferedMessagesIfPossibleAsync("scroll-idle");
+
+            if (_lastFirstVisibleIndex >= 0 && _lastLastVisibleIndex >= 0)
+            {
+                var first = Math.Max(0, _lastFirstVisibleIndex);
+                var last = Math.Min(Messaggi.Count - 1, _lastLastVisibleIndex + 5);
+                _ = SchedulePrefetchPhotosAsync(first, last);
+            }
+        }
+
+        private void LogApplyStart(string reason)
+        {
+            var deltaMs = _lastScrollUtc == null
+                ? "n/a"
+                : (DateTime.UtcNow - _lastScrollUtc.Value).TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture);
+
+            Debug.WriteLine($"[ChatApply] reason={reason} ts={DateTime.UtcNow:O} isScrolling={_scrollGate.IsScrolling} userNearBottom={_userNearBottom} deltaMs={deltaMs}");
+        }
+
+        private void BufferNewMessage(FirestoreChatService.MessageItem message)
+        {
+            var id = message.MessageId ?? "";
+            if (string.IsNullOrWhiteSpace(id))
+                return;
+
+            lock (_bufferedLock)
+            {
+                if (_bufferedMessageIds.Add(id))
+                    _bufferedNewMessages.Add(message);
+            }
+        }
+
+        private void RemoveBufferedMessage(string messageId)
+        {
+            if (string.IsNullOrWhiteSpace(messageId))
+                return;
+
+            lock (_bufferedLock)
+            {
+                if (_bufferedMessageIds.Remove(messageId))
+                    _bufferedNewMessages.RemoveAll(m => string.Equals(m.MessageId, messageId, StringComparison.Ordinal));
+            }
+        }
+
+        private bool AppendBufferedMessagesIfNeeded(Dictionary<string, ChatMessageVm> byId, string myUid, string peerId)
+        {
+            List<FirestoreChatService.MessageItem> buffered;
+
+            lock (_bufferedLock)
+            {
+                if (_bufferedNewMessages.Count == 0)
+                    return false;
+
+                buffered = _bufferedNewMessages
+                    .OrderBy(m => m.CreatedAtUtc)
+                    .ToList();
+
+                _bufferedNewMessages.Clear();
+                _bufferedMessageIds.Clear();
+            }
+
+            if (buffered.Count == 0)
+                return false;
+
+            var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
+            var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
+            var appended = false;
+
+            foreach (var m in buffered)
+            {
+                var id = m.MessageId ?? "";
+                if (string.IsNullOrWhiteSpace(id) || byId.ContainsKey(id))
+                    continue;
+
+                var d = m.CreatedAtUtc.ToLocalTime().Date;
+                if (lastDay == null || d != lastDay.Value)
+                {
+                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(d));
+                    lastDay = d;
+                }
+
+                var vm = ChatMessageVm.FromFirestore(m, myUid, peerId);
+                Messaggi.Add(vm);
+                byId[id] = vm;
+                appended = true;
+            }
+
+            return appended;
+        }
+
+        private async Task FlushBufferedMessagesIfPossibleAsync(string reason)
+        {
+            if (!_userNearBottom || _scrollGate.IsScrolling)
+                return;
+
+            var myUid = _lastMyUid;
+            var peerId = _lastPeerId;
+            if (string.IsNullOrWhiteSpace(myUid) || string.IsNullOrWhiteSpace(peerId))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var byId = new Dictionary<string, ChatMessageVm>(StringComparer.Ordinal);
+                foreach (var vm in Messaggi.Where(x => !x.IsDateSeparator))
+                {
+                    if (!string.IsNullOrWhiteSpace(vm.Id))
+                        byId[vm.Id] = vm;
+                }
+
+                if (AppendBufferedMessagesIfNeeded(byId, myUid!, peerId!))
+                {
+                    Debug.WriteLine($"[ChatApply] reason={reason} flushedBuffered=true ts={DateTime.UtcNow:O}");
+                    ScrollToEnd();
+                }
+            });
         }
 
         private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)
         {
+            if (_scrollGate.IsScrolling)
+                return;
+
             if (firstIndex < 0 || lastIndex < 0 || firstIndex > lastIndex)
                 return;
 
@@ -1611,6 +1765,7 @@ namespace Biliardo.App.Pagine_Messaggi
             var token = _prefetchCts.Token;
 
             List<ChatMessageVm> targets = new();
+            var targetIds = new HashSet<string>(StringComparer.Ordinal);
 
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
@@ -1630,6 +1785,7 @@ namespace Biliardo.App.Pagine_Messaggi
                         _prefetchPhotoMessageIds.Add(vm.Id);
                     }
 
+                    targetIds.Add(vm.Id);
                     targets.Add(vm);
                 }
             });
@@ -1668,9 +1824,21 @@ namespace Biliardo.App.Pagine_Messaggi
 
                                 await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
 
+                                if (_scrollGate.IsScrolling)
+                                    await _scrollGate.WaitForIdleAsync(token);
+
+                                if (token.IsCancellationRequested)
+                                    return;
+
                                 MainThread.BeginInvokeOnMainThread(() =>
                                 {
+                                    if (_scrollGate.IsScrolling)
+                                        return;
+                                    if (string.IsNullOrWhiteSpace(vm.Id) || !targetIds.Contains(vm.Id))
+                                        return;
+
                                     vm.MediaLocalPath = local;
+                                    Debug.WriteLine($"[ChatPrefetch] commit messageId={vm.Id} ts={DateTime.UtcNow:O}");
                                 });
                             }
                             catch { }
