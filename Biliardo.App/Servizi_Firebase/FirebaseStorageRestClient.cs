@@ -15,7 +15,7 @@ namespace Biliardo.App.Servizi_Firebase
     /// Nota: con ID token, Storage applica le Security Rules.
     ///
     /// Upload:
-    /// POST https://firebasestorage.googleapis.com/v0/b/{bucket}/o?uploadType=media&name={objectPathUrlEncoded}
+    /// POST https://firebasestorage.googleapis.com/v0/b/{bucket}/o?uploadType=media&amp;name={objectPathUrlEncoded}
     ///
     /// Download (autenticato):
     /// GET  https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{objectPathUrlEncoded}?alt=media

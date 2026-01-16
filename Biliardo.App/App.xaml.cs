@@ -127,7 +127,8 @@ namespace Biliardo.App
 
                     if (!needBio)
                     {
-                        Application.Current.MainPage = new NavigationPage(new Pagina_Home());
+                        if (Application.Current is { } appCurrent)
+                            appCurrent.MainPage = new NavigationPage(new Pagina_Home());
                         DiagLog.Step("Navigation", "AutoToHome");
 
                         await TryHandlePendingPushAsync();
@@ -135,7 +136,8 @@ namespace Biliardo.App
                     }
                 }
 
-                Application.Current.MainPage = new NavigationPage(new Pagina_Login());
+                if (Application.Current is { } appCurrent)
+                    appCurrent.MainPage = new NavigationPage(new Pagina_Login());
                 DiagLog.Step("Navigation", "ToLogin");
 
                 await TryHandlePendingPushAsync();
@@ -143,7 +145,8 @@ namespace Biliardo.App
             catch (Exception ex)
             {
                 DiagLog.Exception("Auth.BootstrapAndRoute", ex);
-                Application.Current.MainPage = new NavigationPage(new Pagina_Login());
+                if (Application.Current is { } appCurrent)
+                    appCurrent.MainPage = new NavigationPage(new Pagina_Login());
                 await TryHandlePendingPushAsync();
             }
         }
