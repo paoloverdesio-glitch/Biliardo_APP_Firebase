@@ -9,6 +9,7 @@ using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.ApplicationModel.DataTransfer;
 using Microsoft.Maui.Controls;
 using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Pagine_Autenticazione;
@@ -235,7 +236,11 @@ namespace Biliardo.App.Pagine_Messaggi
 
                             await MainThread.InvokeOnMainThreadAsync(async () =>
                             {
-                                try { await _vm.CaricaAsync(); }
+                                try
+                                {
+                                    using var _span = PerfLog.Span("CHATLIST_REFRESH");
+                                    await _vm.CaricaAsync();
+                                }
                                 catch { }
                             });
                         }

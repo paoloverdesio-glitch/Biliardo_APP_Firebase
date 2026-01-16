@@ -86,6 +86,7 @@ namespace Biliardo.App.Infrastructure
 
             recycler.SetItemViewCacheSize(20);
             recycler.HasFixedSize = true;
+            PerfLog.Note("RV_TUNING_APPLIED", "cache=20;fixedSize=1;animOff=1");
             return true;
         }
 
@@ -115,6 +116,8 @@ namespace Biliardo.App.Infrastructure
                     RecyclerView.ScrollStateSettling => "SETTLING",
                     _ => "IDLE"
                 };
+
+                PerfLog.Note("RV_SCROLL_STATE", state);
 
                 if (state == "IDLE")
                     _coordinator.EnterIdle();

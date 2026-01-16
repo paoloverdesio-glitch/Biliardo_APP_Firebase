@@ -13,6 +13,7 @@ using Microsoft.Maui.Devices.Sensors;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
@@ -472,6 +473,7 @@ namespace Biliardo.App.Pagine_Messaggi
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
             _ = SchedulePrefetchPhotosAsync(first, last);
 
+            PerfLog.Note("CHAT_SCROLLED", $"first={e.FirstVisibleItemIndex};last={e.LastVisibleItemIndex};count={Messaggi.Count}");
             SchedulePendingApply();
         }
 
@@ -1396,7 +1398,13 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             while (!ct.IsCancellationRequested)
             {
-                try { await LoadOnceAsync(ct); } catch { }
+                PerfLog.Note("CHAT_POLL_TICK", $"interval_ms={(int)_pollInterval.TotalMilliseconds}");
+                try
+                {
+                    using var _span = PerfLog.Span("CHAT_POLL_FETCH_APPLY", $"interval_ms={(int)_pollInterval.TotalMilliseconds}");
+                    await LoadOnceAsync(ct);
+                }
+                catch { }
 
                 try { await Task.Delay(_pollInterval, ct); }
                 catch { break; }
@@ -1471,6 +1479,8 @@ namespace Biliardo.App.Pagine_Messaggi
             string chatId,
             CancellationToken ct)
         {
+            using var _span = PerfLog.Span("CHAT_APPLY_MESSAGES", $"count_before={Messaggi.Count};incoming={ordered.Count}");
+
             if (string.Equals(signature, _lastUiSignature, StringComparison.Ordinal))
             {
                 if (IsLoadingMessages)
