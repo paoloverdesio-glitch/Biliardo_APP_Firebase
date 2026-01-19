@@ -4,10 +4,12 @@
     x:Name="ThisPage"
     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:composer="clr-namespace:Biliardo.App.Componenti_UI.Composer"
+    xmlns:ui="clr-namespace:Biliardo.App.Componenti_UI"
     Title="Chat"
     BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=PageBgColor}">
 
-    <Grid RowDefinitions="Auto,*,Auto,Auto"
+    <Grid RowDefinitions="Auto,*,Auto"
           Padding="10"
           RowSpacing="8">
 
@@ -83,6 +85,9 @@
                                     BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
                                     HorizontalOptions="Start"
                                     MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Tapped="OnMessageActionTapped" />
+                                </Border.GestureRecognizers>
                                 <Border.StrokeShape>
                                     <RoundRectangle CornerRadius="14" />
                                 </Border.StrokeShape>
@@ -96,9 +101,19 @@
                                         <Setter Property="HorizontalOptions" Value="End" />
                                         <Setter Property="BackgroundColor" Value="{Binding Source={x:Reference ThisPage}, Path=BubbleMineColor}" />
                                     </DataTrigger>
+
+                                    <DataTrigger TargetType="Border" Binding="{Binding IsHiddenForMe}" Value="True">
+                                        <Setter Property="IsVisible" Value="False" />
+                                    </DataTrigger>
                                 </Border.Triggers>
 
                                 <VerticalStackLayout Spacing="8">
+
+                                    <Label Text="Questo messaggio è stato eliminato"
+                                           IsVisible="{Binding IsDeletedPlaceholder}"
+                                           TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                           FontAttributes="Italic"
+                                           FontSize="12" />
 
                                     <Label Text="{Binding Text}"
                                            IsVisible="{Binding HasText}"
@@ -172,28 +187,10 @@
                                         </Grid>
                                     </Border>
 
-                                    <Border IsVisible="{Binding IsLocation}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-                                        <VerticalStackLayout Spacing="6">
-                                            <Label Text="📍 Posizione"
-                                                   TextColor="White"
-                                                   FontAttributes="Bold" />
-                                            <Label Text="{Binding LocationLabel}"
-                                                   TextColor="White"
-                                                   FontSize="12"
-                                                   Opacity="0.7" />
-                                            <Button Text="Apri su Mappe"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnOpenLocationClicked"
-                                                    CommandParameter="{Binding}" />
-                                        </VerticalStackLayout>
-                                    </Border>
+                                    <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
+                                                            Latitude="{Binding Latitude}"
+                                                            Longitude="{Binding Longitude}"
+                                                            Address="{Binding LocationLabel}" />
 
                                     <Border IsVisible="{Binding IsContact}"
                                             StrokeThickness="0"
@@ -250,254 +247,22 @@
             </Grid>
         </Grid>
 
-        <!-- ROW 2: allegati + emoji -->
-        <Grid Grid.Row="2" RowDefinitions="Auto,Auto" RowSpacing="8">
-            <Border Grid.Row="0"
-                    IsVisible="{Binding Source={x:Reference ThisPage}, Path=HasSelectedAttachments}"
-                    StrokeThickness="0"
-                    Padding="10"
-                    BackgroundColor="#1C1C1C">
-                <Border.StrokeShape>
-                    <RoundRectangle CornerRadius="12" />
-                </Border.StrokeShape>
-
-                <VerticalStackLayout Spacing="8">
-                    <Label Text="Allegati selezionati"
-                           TextColor="White"
-                           FontAttributes="Bold" />
-
-                    <CollectionView ItemsSource="{Binding Source={x:Reference ThisPage}, Path=AllegatiSelezionati}"
-                                    SelectionMode="None"
-                                    HeightRequest="130">
-                        <CollectionView.ItemsLayout>
-                            <LinearItemsLayout Orientation="Horizontal" ItemSpacing="8" />
-                        </CollectionView.ItemsLayout>
-
-                        <CollectionView.ItemTemplate>
-                            <DataTemplate>
-                                <Border StrokeThickness="0" Padding="8" BackgroundColor="#2A2A2A">
-                                    <Border.StrokeShape>
-                                        <RoundRectangle CornerRadius="10" />
-                                    </Border.StrokeShape>
-
-                                    <VerticalStackLayout Spacing="4" WidthRequest="240">
-                                        <Label Text="{Binding KindLabel}" TextColor="White" FontAttributes="Bold" FontSize="12" />
-                                        <Label Text="{Binding DisplayName}" TextColor="White" FontSize="12" LineBreakMode="TailTruncation" />
-                                        <Button Text="Rimuovi"
-                                                BackgroundColor="#3A3A3A"
-                                                TextColor="White"
-                                                FontSize="12"
-                                                HeightRequest="32"
-                                                Clicked="OnRemoveAttachmentClicked"
-                                                CommandParameter="{Binding}" />
-                                    </VerticalStackLayout>
-                                </Border>
-                            </DataTemplate>
-                        </CollectionView.ItemTemplate>
-                    </CollectionView>
-                </VerticalStackLayout>
-            </Border>
-
-            <Border Grid.Row="1"
-                    IsVisible="{Binding Source={x:Reference ThisPage}, Path=IsEmojiPanelVisible}"
-                    StrokeThickness="0"
-                    Padding="10"
-                    BackgroundColor="#1C1C1C">
-                <Border.StrokeShape>
-                    <RoundRectangle CornerRadius="12" />
-                </Border.StrokeShape>
-
-                <CollectionView ItemsSource="{Binding Source={x:Reference ThisPage}, Path=EmojiItems}"
-                                SelectionMode="None">
-                    <CollectionView.ItemsLayout>
-                        <GridItemsLayout Orientation="Vertical" Span="8"
-                                         HorizontalItemSpacing="6"
-                                         VerticalItemSpacing="6" />
-                    </CollectionView.ItemsLayout>
-
-                    <CollectionView.ItemTemplate>
-                        <DataTemplate>
-                            <Button Text="{Binding .}"
-                                    FontSize="18"
-                                    BackgroundColor="#2A2A2A"
-                                    TextColor="White"
-                                    HeightRequest="38"
-                                    CornerRadius="10"
-                                    Clicked="OnEmojiSelected"
-                                    CommandParameter="{Binding .}" />
-                        </DataTemplate>
-                    </CollectionView.ItemTemplate>
-                </CollectionView>
-            </Border>
-        </Grid>
-
         <!-- COMPOSER -->
-        <Grid Grid.Row="3" ColumnDefinitions="*,Auto" ColumnSpacing="10" VerticalOptions="Center">
+        <composer:ComposerBarView Grid.Row="2"
+                                  x:Name="ComposerBar"
+                                  SendRequested="OnComposerSendRequested"
+                                  PendingItemSendRequested="OnComposerPendingItemSendRequested"
+                                  PendingItemRemoved="OnComposerPendingItemRemoved"
+                                  AttachmentActionRequested="OnComposerAttachmentRequested" />
 
-            <Border Grid.Column="0"
-                    IsVisible="{Binding Source={x:Reference ThisPage}, Path=IsNormalComposerVisible}"
-                    StrokeThickness="0"
-                    BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=ComposerBarBgColor}"
-                    Padding="10,6">
-                <Border.StrokeShape>
-                    <RoundRectangle CornerRadius="20" />
-                </Border.StrokeShape>
-
-                <Border.GestureRecognizers>
-                    <TapGestureRecognizer Tapped="OnComposerTapped" />
-                </Border.GestureRecognizers>
-
-                <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" VerticalOptions="Center">
-
-                    <ImageButton Grid.Column="0"
-                                 WidthRequest="28"
-                                 HeightRequest="28"
-                                 BackgroundColor="#00000000"
-                                 Opacity="0.80"
-                                 Source="{Binding Source={x:Reference ThisPage}, Path=EmojiButtonIcon}"
-                                 Clicked="OnEmojiToggleClicked" />
-
-                    <Entry x:Name="EntryText"
-                           Grid.Column="1"
-                           Placeholder="Messaggio"
-                           PlaceholderColor="#6E6E73"
-                           TextColor="White"
-                           BackgroundColor="Transparent"
-                           Text="{Binding Source={x:Reference ThisPage}, Path=TestoMessaggio}"
-                           Focused="OnEntryFocused" />
-
-                    <ImageButton Grid.Column="2"
-                                 WidthRequest="28"
-                                 HeightRequest="28"
-                                 BackgroundColor="#00000000"
-                                 Opacity="0.80"
-                                 Source="ic_clip.png"
-                                 Clicked="OnClipClicked" />
-
-                    <ImageButton Grid.Column="3"
-                                 WidthRequest="28"
-                                 HeightRequest="28"
-                                 BackgroundColor="#00000000"
-                                 Opacity="0.80"
-                                 Source="ic_camera.png"
-                                 Clicked="OnCameraClicked" />
-                </Grid>
-            </Border>
-
-            <Border Grid.Column="0"
-                    IsVisible="{Binding Source={x:Reference ThisPage}, Path=IsVoiceHoldStripVisible}"
-                    StrokeThickness="0"
-                    BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=ComposerBarBgColor}"
-                    Padding="10,6">
-                <Border.StrokeShape>
-                    <RoundRectangle CornerRadius="20" />
-                </Border.StrokeShape>
-
-                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10" VerticalOptions="Center">
-                    <Label Grid.Column="0"
-                           Text="{Binding Source={x:Reference ThisPage}, Path=VoiceTimeLabel}"
-                           TextColor="White"
-                           FontAttributes="Bold"
-                           VerticalTextAlignment="Center" />
-
-                    <GraphicsView x:Name="VoiceWaveHoldView"
-                                  Grid.Column="1"
-                                  HeightRequest="24" />
-                </Grid>
-            </Border>
-
-            <!-- RIGHT: SEND / MIC -->
-            <Grid Grid.Column="1" WidthRequest="52" HeightRequest="52" VerticalOptions="Center">
-
-                <Button x:Name="BtnSend"
-                        IsVisible="{Binding Source={x:Reference ThisPage}, Path=CanSendTextOrAttachments}"
-                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=AccentGreenColor}"
-                        CornerRadius="26"
-                        WidthRequest="52"
-                        HeightRequest="52"
-                        ImageSource="ic_send.png"
-                        Clicked="OnInviaClicked" />
-
-                <!-- MODIFICATO: niente Pressed/Released e niente PanGestureRecognizer -->
-                <Button x:Name="BtnMic"
-                        IsVisible="{Binding Source={x:Reference ThisPage}, Path=CanShowMic}"
-                        BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=AccentGreenColor}"
-                        CornerRadius="26"
-                        WidthRequest="52"
-                        HeightRequest="52"
-                        ImageSource="ic_mic.png" />
-
-            </Grid>
-        </Grid>
-
-        <!-- LOCK PANEL VOCALE -->
-        <Grid Grid.Row="0"
-              Grid.RowSpan="4"
-              IsVisible="{Binding Source={x:Reference ThisPage}, Path=IsVoiceLockPanelVisible}"
-              BackgroundColor="#00000000"
-              ZIndex="999">
-
-            <Border VerticalOptions="End"
-                    HeightRequest="{Binding Source={x:Reference ThisPage}, Path=VoiceLockPanelHeight}"
-                    StrokeThickness="0"
-                    BackgroundColor="#111111"
-                    Padding="18">
-
-                <Grid RowDefinitions="Auto,Auto" RowSpacing="14">
-
-                    <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-                        <Label Grid.Column="0"
-                               Text="{Binding Source={x:Reference ThisPage}, Path=VoiceTimeLabel}"
-                               TextColor="White"
-                               FontSize="34"
-                               FontAttributes="Bold"
-                               VerticalTextAlignment="Center" />
-
-                        <GraphicsView x:Name="VoiceWaveLockView"
-                                      Grid.Column="1"
-                                      HeightRequest="36"
-                                      VerticalOptions="Center" />
-
-                        <Label Grid.Column="2"
-                               Text="1×"
-                               TextColor="#9A9A9A"
-                               FontSize="18"
-                               VerticalTextAlignment="Center"
-                               HorizontalTextAlignment="End" />
-                    </Grid>
-
-                    <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12" VerticalOptions="End">
-
-                        <ImageButton Grid.Column="0"
-                                     WidthRequest="44"
-                                     HeightRequest="44"
-                                     BackgroundColor="#00000000"
-                                     Opacity="0.95"
-                                     Source="ic_trash.png"
-                                     Clicked="OnVoiceTrashClicked" />
-
-                        <Button Grid.Column="1"
-                                Text="{Binding Source={x:Reference ThisPage}, Path=VoicePauseResumeLabel}"
-                                FontSize="24"
-                                FontAttributes="Bold"
-                                TextColor="#FF3B30"
-                                BackgroundColor="Transparent"
-                                Clicked="OnVoicePauseResumeClicked"
-                                HorizontalOptions="Center"
-                                VerticalOptions="Center" />
-
-                        <Button Grid.Column="2"
-                                BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=AccentGreenColor}"
-                                WidthRequest="72"
-                                HeightRequest="72"
-                                CornerRadius="36"
-                                ImageSource="ic_send.png"
-                                Clicked="OnVoiceSendClicked" />
-                    </Grid>
-
-                </Grid>
-            </Border>
-        </Grid>
+        <!-- Placeholder per compatibilità legacy -->
+        <ContentView IsVisible="False">
+            <VerticalStackLayout>
+                <Entry x:Name="EntryText" />
+                <GraphicsView x:Name="VoiceWaveHoldView" />
+                <GraphicsView x:Name="VoiceWaveLockView" />
+            </VerticalStackLayout>
+        </ContentView>
 
     </Grid>
 </ContentPage>

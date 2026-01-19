@@ -37,6 +37,9 @@ namespace Biliardo.App.Servizi_Firebase
             DateTimeOffset CreatedAtUtc,
             IReadOnlyList<string> DeliveredTo,
             IReadOnlyList<string> ReadBy,
+            bool DeletedForAll,
+            IReadOnlyList<string> DeletedFor,
+            DateTimeOffset? DeletedAtUtc,
 
             // media
             string? StoragePath,
@@ -252,6 +255,9 @@ namespace Biliardo.App.Servizi_Firebase
 
                 var deliveredTo = ReadStringArray(fields, "deliveredTo");
                 var readBy = ReadStringArray(fields, "readBy");
+                var deletedForAll = ReadBoolField(fields, "deletedForAll") ?? false;
+                var deletedFor = ReadStringArray(fields, "deletedFor");
+                var deletedAt = ReadTimestampField(fields, "deletedAt");
 
                 string text = "";
 
@@ -291,6 +297,9 @@ namespace Biliardo.App.Servizi_Firebase
                     CreatedAtUtc: createdAt,
                     DeliveredTo: deliveredTo,
                     ReadBy: readBy,
+                    DeletedForAll: deletedForAll,
+                    DeletedFor: deletedFor,
+                    DeletedAtUtc: deletedAt,
                     StoragePath: storagePath,
                     DurationMs: durationMs,
                     FileName: fileName,
@@ -334,6 +343,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
+                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -394,6 +404,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
+                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -451,6 +462,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
+                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -491,6 +503,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
+                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -502,6 +515,47 @@ namespace Biliardo.App.Servizi_Firebase
                 ct: ct);
 
             await PatchChatPreviewAsync(idToken, chatId, senderUid, "contact", "👤 Contatto", ct);
+        }
+
+        public async Task DeleteMessageForAllAsync(string chatId, string messageId, CancellationToken ct = default)
+        {
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var fields = new Dictionary<string, object>
+            {
+                ["deletedForAll"] = FirestoreRestClient.VBool(true),
+                ["deletedAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
+                ["text"] = FirestoreRestClient.VString(string.Empty),
+                ["payload"] = FirestoreRestClient.VMap(new Dictionary<string, object>())
+            };
+
+            await FirestoreRestClient.PatchDocumentAsync(
+                $"chats/{chatId}/messages/{messageId}",
+                fields,
+                new[] { "deletedForAll", "deletedAt", "text", "payload" },
+                idToken,
+                ct);
+        }
+
+        public async Task DeleteMessageForMeAsync(string chatId, string messageId, string uid, CancellationToken ct = default)
+        {
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            await FirestoreRestClient.CommitAsync(
+                $"chats/{chatId}/messages/{messageId}",
+                new[]
+                {
+                    FirestoreRestClient.TransformAppendMissingElements("deletedFor", new object[]
+                    {
+                        FirestoreRestClient.VString(uid)
+                    })
+                },
+                idToken,
+                ct);
         }
 
         private static async Task PatchChatPreviewAsync(
@@ -646,6 +700,21 @@ namespace Biliardo.App.Servizi_Firebase
 
             if (DateTimeOffset.TryParse(ts, out var dto))
                 return dto;
+
+            return null;
+        }
+
+        private static bool? ReadBoolField(JsonElement fields, string fieldName)
+        {
+            if (fields.ValueKind != JsonValueKind.Object) return null;
+            if (!fields.TryGetProperty(fieldName, out var v)) return null;
+            if (v.ValueKind != JsonValueKind.Object) return null;
+
+            if (v.TryGetProperty("booleanValue", out var b))
+            {
+                if (b.ValueKind == JsonValueKind.True) return true;
+                if (b.ValueKind == JsonValueKind.False) return false;
+            }
 
             return null;
         }
