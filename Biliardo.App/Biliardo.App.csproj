@@ -102,6 +102,15 @@
 		<MauiXaml Update="Componenti_UI\BottomSheetAllegatiPage.xaml">
 		  <Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\Composer\ComposerBarView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\UserAvatarView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\LocationPreviewView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\SelettoreUtenteAutocomplete.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
@@ -121,6 +130,9 @@
 		</MauiXaml>
 
 		<MauiXaml Update="Pagine_Home\Pagina_Home.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Pagine_Home\PostDetailPage.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 

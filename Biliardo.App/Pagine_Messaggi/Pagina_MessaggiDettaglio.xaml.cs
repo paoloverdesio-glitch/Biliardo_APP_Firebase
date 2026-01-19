@@ -13,6 +13,12 @@ using Microsoft.Maui.Devices.Sensors;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 using Biliardo.App.Componenti_UI;
+using Biliardo.App.Componenti_UI.Composer;
+
+#if WINDOWS
+using Windows.Media.Core;
+using Windows.Media.Playback;
+#endif
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
@@ -532,6 +538,111 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // Invio testo/allegati
         // ============================================================
+        private async void OnComposerAttachmentRequested(object sender, EventArgs e)
+        {
+            try
+            {
+                _suppressStopPollingOnce = true;
+                var sheet = new BottomSheetAllegatiPage();
+                sheet.AzioneSelezionata += async (_, az) =>
+                {
+                    await HandleAttachmentActionAsync(az);
+                };
+
+                await Navigation.PushModalAsync(sheet);
+            }
+            catch { }
+        }
+
+        private async void OnComposerSendRequested(object sender, ComposerSendPayload payload)
+        {
+            if (_isSending) return;
+            await SendComposerPayloadAsync(payload, null);
+        }
+
+        private async void OnComposerPendingItemSendRequested(object sender, PendingItemVm item)
+        {
+            if (_isSending) return;
+            await SendComposerPayloadAsync(new ComposerSendPayload("", new[] { item }), item.LocalId);
+        }
+
+        private void OnComposerPendingItemRemoved(object sender, PendingItemVm item)
+        {
+            if (!string.IsNullOrWhiteSpace(item.LocalFilePath))
+            {
+                try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
+            }
+        }
+
+        private async Task SendComposerPayloadAsync(ComposerSendPayload payload, string? sentSingleLocalId)
+        {
+            if (_isSending) return;
+
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(peerId))
+            {
+                await DisplayAlert("Errore", "Peer non valido (userId mancante).", "OK");
+                return;
+            }
+
+            _isSending = true;
+
+            try
+            {
+                var provider = await SessionePersistente.GetProviderAsync();
+                if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Questa pagina è implementata per provider Firebase.");
+
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                var myUid = FirebaseSessionePersistente.GetLocalId();
+
+                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
+                    throw new InvalidOperationException("Sessione Firebase assente/scaduta. Rifai login.");
+
+                var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
+
+                if (!string.IsNullOrWhiteSpace(payload.Text))
+                {
+                    var msgId = Guid.NewGuid().ToString("N");
+                    await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId, msgId, myUid!, payload.Text);
+                }
+
+                var items = payload.PendingItems ?? Array.Empty<PendingItemVm>();
+                foreach (var item in items)
+                {
+                    var attachment = ToAttachmentVm(item);
+                    if (attachment == null) continue;
+                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment);
+                    if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
+                    {
+                        try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
+                    }
+                }
+
+                if (sentSingleLocalId != null)
+                {
+                    var pending = ComposerBar.PendingItems.FirstOrDefault(x => x.LocalId == sentSingleLocalId);
+                    if (pending != null)
+                        ComposerBar.PendingItems.Remove(pending);
+                }
+                else
+                {
+                    ComposerBar.ClearComposer();
+                }
+
+                _userNearBottom = true;
+                await LoadOnceAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                await DisplayAlert("Errore", $"Invio non riuscito: {ex.Message}", "OK");
+            }
+            finally
+            {
+                _isSending = false;
+            }
+        }
+
         private async void OnInviaClicked(object sender, EventArgs e)
         {
             if (_isSending) return;
@@ -823,6 +934,29 @@ namespace Biliardo.App.Pagine_Messaggi
                 }
             }
             catch { }
+        }
+
+        private async void OnMessageActionTapped(object sender, TappedEventArgs e)
+        {
+            if (sender is not BindableObject bo || bo.BindingContext is not ChatMessageVm m)
+                return;
+
+            if (m.IsDateSeparator || m.IsHiddenForMe)
+                return;
+
+            var choice = await DisplayActionSheet("Messaggio", "Annulla", null, "Elimina per me", "Elimina per tutti");
+            if (choice == "Elimina per me")
+            {
+                if (!string.IsNullOrWhiteSpace(_lastChatId) && !string.IsNullOrWhiteSpace(_lastMyUid))
+                    await _fsChat.DeleteMessageForMeAsync(_lastChatId, m.Id, _lastMyUid);
+                await LoadOnceAsync(CancellationToken.None);
+            }
+            else if (choice == "Elimina per tutti")
+            {
+                if (!string.IsNullOrWhiteSpace(_lastChatId))
+                    await _fsChat.DeleteMessageForAllAsync(_lastChatId, m.Id);
+                await LoadOnceAsync(CancellationToken.None);
+            }
         }
 
         private async Task HandleMicPointerUpAsync()
@@ -1168,6 +1302,22 @@ namespace Biliardo.App.Pagine_Messaggi
                 case BottomSheetAllegatiPage.AllegatoAzione.Contact:
                     await AttachContactAsync();
                     break;
+
+                case BottomSheetAllegatiPage.AllegatoAzione.Poll:
+                    ComposerBar.TryAddPendingItem(new PendingItemVm
+                    {
+                        Kind = PendingKind.Poll,
+                        DisplayName = "Sondaggio"
+                    });
+                    break;
+
+                case BottomSheetAllegatiPage.AllegatoAzione.Event:
+                    ComposerBar.TryAddPendingItem(new PendingItemVm
+                    {
+                        Kind = PendingKind.Event,
+                        DisplayName = "Evento"
+                    });
+                    break;
             }
         }
 
@@ -1180,12 +1330,11 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (fr == null) return;
 
                 var local = await CopyToCacheAsync(fr, "photo");
-                AllegatiSelezionati.Add(new AttachmentVm
+                ComposerBar.TryAddPendingItem(new PendingItemVm
                 {
-                    Kind = AttachmentKind.Photo,
+                    Kind = PendingKind.Image,
                     DisplayName = Path.GetFileName(local),
-                    LocalPath = local,
-                    ContentType = fr.ContentType ?? MediaMetadataHelper.GuessContentType(local),
+                    LocalFilePath = local,
                     SizeBytes = new FileInfo(local).Length
                 });
             }
@@ -1195,12 +1344,11 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (fr == null) return;
 
                 var local = await CopyToCacheAsync(fr, "video");
-                AllegatiSelezionati.Add(new AttachmentVm
+                ComposerBar.TryAddPendingItem(new PendingItemVm
                 {
-                    Kind = AttachmentKind.Video,
+                    Kind = PendingKind.Video,
                     DisplayName = Path.GetFileName(local),
-                    LocalPath = local,
-                    ContentType = fr.ContentType ?? MediaMetadataHelper.GuessContentType(local),
+                    LocalFilePath = local,
                     SizeBytes = new FileInfo(local).Length,
                     DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
                 });
@@ -1220,12 +1368,11 @@ namespace Biliardo.App.Pagine_Messaggi
             if (fr == null) return;
 
             var local = await CopyToCacheAsync(fr, "camera_photo");
-            AllegatiSelezionati.Add(new AttachmentVm
+            ComposerBar.TryAddPendingItem(new PendingItemVm
             {
-                Kind = AttachmentKind.Photo,
+                Kind = PendingKind.Image,
                 DisplayName = Path.GetFileName(local),
-                LocalPath = local,
-                ContentType = fr.ContentType ?? MediaMetadataHelper.GuessContentType(local),
+                LocalFilePath = local,
                 SizeBytes = new FileInfo(local).Length
             });
         }
@@ -1243,12 +1390,11 @@ namespace Biliardo.App.Pagine_Messaggi
             if (fr == null) return;
 
             var local = await CopyToCacheAsync(fr, "camera_video");
-            AllegatiSelezionati.Add(new AttachmentVm
+            ComposerBar.TryAddPendingItem(new PendingItemVm
             {
-                Kind = AttachmentKind.Video,
+                Kind = PendingKind.Video,
                 DisplayName = Path.GetFileName(local),
-                LocalPath = local,
-                ContentType = fr.ContentType ?? MediaMetadataHelper.GuessContentType(local),
+                LocalFilePath = local,
                 SizeBytes = new FileInfo(local).Length,
                 DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
             });
@@ -1260,12 +1406,11 @@ namespace Biliardo.App.Pagine_Messaggi
             if (res == null) return;
 
             var local = await CopyToCacheAsync(res, "doc");
-            AllegatiSelezionati.Add(new AttachmentVm
+            ComposerBar.TryAddPendingItem(new PendingItemVm
             {
-                Kind = AttachmentKind.File,
+                Kind = PendingKind.File,
                 DisplayName = Path.GetFileName(local),
-                LocalPath = local,
-                ContentType = res.ContentType ?? MediaMetadataHelper.GuessContentType(local),
+                LocalFilePath = local,
                 SizeBytes = new FileInfo(local).Length
             });
         }
@@ -1283,9 +1428,9 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
                 }
 
-                AllegatiSelezionati.Add(new AttachmentVm
+                ComposerBar.TryAddPendingItem(new PendingItemVm
                 {
-                    Kind = AttachmentKind.Location,
+                    Kind = PendingKind.Location,
                     DisplayName = "Posizione",
                     Latitude = loc.Latitude,
                     Longitude = loc.Longitude
@@ -1326,9 +1471,9 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
                 }
 
-                AllegatiSelezionati.Add(new AttachmentVm
+                ComposerBar.TryAddPendingItem(new PendingItemVm
                 {
-                    Kind = AttachmentKind.Contact,
+                    Kind = PendingKind.Contact,
                     DisplayName = name,
                     ContactName = name,
                     ContactPhone = phone
@@ -1399,6 +1544,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 hc.Add(m.Type);
                 hc.Add(m.DeliveredTo?.Count ?? 0);
                 hc.Add(m.ReadBy?.Count ?? 0);
+                hc.Add(m.DeletedForAll);
+                hc.Add(m.DeletedFor?.Count ?? 0);
             }
             return hc.ToHashCode().ToString("X");
         }
@@ -1496,6 +1643,9 @@ namespace Biliardo.App.Pagine_Messaggi
                     DateTime? lastDay = null;
                     foreach (var m in ordered)
                     {
+                        if (m.DeletedFor != null && m.DeletedFor.Contains(myUid, StringComparer.Ordinal))
+                            continue;
+
                         var d = m.CreatedAtUtc.ToLocalTime().Date;
                         if (lastDay == null || d != lastDay.Value)
                         {
@@ -1515,6 +1665,9 @@ namespace Biliardo.App.Pagine_Messaggi
 
                     foreach (var m in ordered)
                     {
+                        if (m.DeletedFor != null && m.DeletedFor.Contains(myUid, StringComparer.Ordinal))
+                            continue;
+
                         var id = m.MessageId ?? "";
                         if (string.IsNullOrWhiteSpace(id))
                             continue;
@@ -1792,6 +1945,56 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // VM classes
         // ============================================================
+        private static AttachmentVm? ToAttachmentVm(PendingItemVm item)
+        {
+            if (item == null) return null;
+
+            return item.Kind switch
+            {
+                PendingKind.Image => new AttachmentVm
+                {
+                    Kind = AttachmentKind.Photo,
+                    DisplayName = item.DisplayName,
+                    LocalPath = item.LocalFilePath ?? ""
+                },
+                PendingKind.Video => new AttachmentVm
+                {
+                    Kind = AttachmentKind.Video,
+                    DisplayName = item.DisplayName,
+                    LocalPath = item.LocalFilePath ?? ""
+                },
+                PendingKind.File => new AttachmentVm
+                {
+                    Kind = AttachmentKind.File,
+                    DisplayName = item.DisplayName,
+                    LocalPath = item.LocalFilePath ?? ""
+                },
+                PendingKind.AudioDraft => new AttachmentVm
+                {
+                    Kind = AttachmentKind.Audio,
+                    DisplayName = item.DisplayName,
+                    LocalPath = item.LocalFilePath ?? "",
+                    DurationMs = item.DurationMs,
+                    SizeBytes = item.SizeBytes
+                },
+                PendingKind.Location => new AttachmentVm
+                {
+                    Kind = AttachmentKind.Location,
+                    DisplayName = item.DisplayName,
+                    Latitude = item.Latitude,
+                    Longitude = item.Longitude
+                },
+                PendingKind.Contact => new AttachmentVm
+                {
+                    Kind = AttachmentKind.Contact,
+                    DisplayName = item.DisplayName,
+                    ContactName = item.ContactName ?? item.DisplayName,
+                    ContactPhone = item.ContactPhone
+                },
+                _ => null
+            };
+        }
+
         public enum AttachmentKind { Audio, Photo, Video, File, Location, Contact }
 
         public sealed class AttachmentVm
@@ -1828,6 +2031,11 @@ namespace Biliardo.App.Pagine_Messaggi
             public bool IsMine { get; set; }
 
             public string Type { get; set; } = "text";
+
+            public bool DeletedForAll { get; set; }
+            public IReadOnlyList<string> DeletedFor { get; set; } = Array.Empty<string>();
+            public bool IsHiddenForMe { get; set; }
+            public bool IsDeletedPlaceholder => DeletedForAll;
 
             public bool IsDateSeparator => string.Equals(Type, "date", StringComparison.OrdinalIgnoreCase);
             public string DateSeparatorText { get; set; } = "";
@@ -1877,17 +2085,17 @@ namespace Biliardo.App.Pagine_Messaggi
             public string AudioLabel => string.IsNullOrWhiteSpace(FileName) ? "Audio" : FileName!;
             public string DurationLabel => DurationMs > 0 ? TimeSpan.FromMilliseconds(DurationMs).ToString(@"mm\:ss") : "";
 
-            public bool IsAudio => string.Equals(Type, "audio", StringComparison.OrdinalIgnoreCase);
-            public bool IsPhoto => string.Equals(Type, "photo", StringComparison.OrdinalIgnoreCase);
-            public bool IsVideo => string.Equals(Type, "video", StringComparison.OrdinalIgnoreCase);
-            public bool IsFile => string.Equals(Type, "file", StringComparison.OrdinalIgnoreCase);
+            public bool IsAudio => !DeletedForAll && string.Equals(Type, "audio", StringComparison.OrdinalIgnoreCase);
+            public bool IsPhoto => !DeletedForAll && string.Equals(Type, "photo", StringComparison.OrdinalIgnoreCase);
+            public bool IsVideo => !DeletedForAll && string.Equals(Type, "video", StringComparison.OrdinalIgnoreCase);
+            public bool IsFile => !DeletedForAll && string.Equals(Type, "file", StringComparison.OrdinalIgnoreCase);
             public bool IsFileOrVideo => IsFile || IsVideo;
 
             public string FileLabel => IsVideo ? $"🎬 {FileName}" : $"📎 {FileName}";
 
             public double? Latitude { get; set; }
             public double? Longitude { get; set; }
-            public bool IsLocation => string.Equals(Type, "location", StringComparison.OrdinalIgnoreCase);
+            public bool IsLocation => !DeletedForAll && string.Equals(Type, "location", StringComparison.OrdinalIgnoreCase);
 
             public string LocationLabel
             {
@@ -1900,7 +2108,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             public string? ContactName { get; set; }
             public string? ContactPhone { get; set; }
-            public bool IsContact => string.Equals(Type, "contact", StringComparison.OrdinalIgnoreCase);
+            public bool IsContact => !DeletedForAll && string.Equals(Type, "contact", StringComparison.OrdinalIgnoreCase);
             public string ContactLabel => $"{ContactName} - {ContactPhone}";
 
             public static ChatMessageVm CreateDateSeparator(DateTime dayLocalDate)
@@ -1934,6 +2142,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     IsMine = string.Equals(m.SenderId, myUid, StringComparison.Ordinal),
                     Type = string.IsNullOrWhiteSpace(m.Type) ? "text" : m.Type,
                     Text = m.Text ?? "",
+                    DeletedForAll = m.DeletedForAll,
+                    DeletedFor = m.DeletedFor ?? Array.Empty<string>(),
                     CreatedAt = m.CreatedAtUtc,
                     StoragePath = m.StoragePath,
                     FileName = m.FileName,
@@ -1945,6 +2155,12 @@ namespace Biliardo.App.Pagine_Messaggi
                     ContactName = m.ContactName,
                     ContactPhone = m.ContactPhone
                 };
+
+                vm.IsHiddenForMe = vm.DeletedFor?.Contains(myUid, StringComparer.Ordinal) ?? false;
+                if (vm.DeletedForAll)
+                {
+                    vm.Text = "";
+                }
 
                 if (vm.IsMine)
                 {
@@ -2086,6 +2302,8 @@ namespace Biliardo.App.Pagine_Messaggi
             {
 #if ANDROID
                 return new AndroidAudioPlayback();
+#elif WINDOWS
+                return new WindowsAudioPlayback();
 #else
                 return new NoopAudioPlayback();
 #endif
@@ -2094,7 +2312,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private sealed class NoopAudioPlayback : IAudioPlayback
         {
-            public Task PlayAsync(string filePath) => throw new NotSupportedException("Playback audio supportato solo su Android (per ora).");
+            public Task PlayAsync(string filePath) => throw new NotSupportedException("Playback audio supportato solo su Android/Windows (per ora).");
             public void StopPlaybackSafe() { }
         }
 
@@ -2124,6 +2342,37 @@ namespace Biliardo.App.Pagine_Messaggi
                     {
                         try { _player.Stop(); } catch { }
                         try { _player.Release(); } catch { }
+                        _player = null;
+                    }
+                }
+                catch { }
+            }
+        }
+#endif
+
+#if WINDOWS
+        private sealed class WindowsAudioPlayback : IAudioPlayback
+        {
+            private MediaPlayer? _player;
+
+            public Task PlayAsync(string filePath)
+            {
+                StopPlaybackSafe();
+                _player = new MediaPlayer();
+                _player.Source = MediaSource.CreateFromUri(new Uri(filePath));
+                _player.MediaEnded += (_, __) => StopPlaybackSafe();
+                _player.Play();
+                return Task.CompletedTask;
+            }
+
+            public void StopPlaybackSafe()
+            {
+                try
+                {
+                    if (_player != null)
+                    {
+                        _player.Pause();
+                        _player.Dispose();
                         _player = null;
                     }
                 }
