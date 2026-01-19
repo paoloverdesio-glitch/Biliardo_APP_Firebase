@@ -16,6 +16,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
+using System.Reflection;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.ApplicationModel.DataTransfer;
@@ -67,6 +68,37 @@ namespace Biliardo.App.Pagine_Home
             await LoadFeedAsync();
         }
 
+        private static Exception UnwrapException(Exception ex)
+        {
+            if (ex is TargetInvocationException tie && tie.InnerException != null)
+                return UnwrapException(tie.InnerException);
+
+            if (ex is AggregateException ae)
+            {
+                var flat = ae.Flatten();
+                if (flat.InnerExceptions.Count == 1)
+                    return UnwrapException(flat.InnerExceptions[0]);
+                if (flat.InnerExceptions.Count > 1)
+                    return flat;
+            }
+
+            return ex;
+        }
+
+        private static string FormatExceptionForPopup(Exception ex)
+        {
+            var core = UnwrapException(ex);
+
+            // Messaggio utente: se è TargetInvocationException, mostriamo l'inner.
+            var msg = core.Message;
+
+#if DEBUG
+            // In debug aggiungiamo dettagli per diagnosi (senza dipendenze esterne).
+            msg += "\n\n" + core.ToString();
+#endif
+            return msg;
+        }
+
         private async Task LoadFeedAsync()
         {
             try
@@ -78,7 +110,7 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await ShowPopupAsync(ex.Message, "Errore feed");
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore feed");
             }
         }
 
@@ -94,7 +126,9 @@ namespace Biliardo.App.Pagine_Home
 
                 await Navigation.PushModalAsync(sheet);
             }
-            catch { }
+            catch
+            {
+            }
         }
 
         private async Task HandleHomeAttachmentActionAsync(Componenti_UI.BottomSheetAllegatiPage.AllegatoAzione az)
@@ -181,7 +215,7 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await ShowPopupAsync(ex.Message, "Errore invio");
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore invio");
             }
         }
 
@@ -372,7 +406,7 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await DisplayAlert("Errore", FormatExceptionForPopup(ex), "OK");
             }
         }
 
@@ -404,7 +438,7 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await DisplayAlert("Errore", FormatExceptionForPopup(ex), "OK");
             }
         }
 
@@ -422,7 +456,7 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await ShowPopupAsync(ex.Message, "Errore like");
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore like");
             }
         }
 
@@ -487,7 +521,7 @@ namespace Biliardo.App.Pagine_Home
             catch (Exception ex)
             {
                 att.IsPlaying = false;
-                await ShowPopupAsync(ex.Message, "Errore audio");
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore audio");
             }
         }
 
@@ -525,7 +559,6 @@ namespace Biliardo.App.Pagine_Home
 
             return dest;
         }
-
 
         // ===================== 4) MENU LATERALE SINISTRO =================
         // 4.1 Toggle del menu laterale sinistro (Tap su icona 3 palle o overlay)
@@ -626,7 +659,6 @@ namespace Biliardo.App.Pagine_Home
         }
         // =================================================================
 
-
         // ===================== 5) MENU LATERALE DESTRO (ACCOUNT) =========
         // 5.1 Toggle menu destro (icona freccia o tap overlay destro)
         private async void OnLogoutMenu(object? sender, TappedEventArgs e)
@@ -693,7 +725,6 @@ namespace Biliardo.App.Pagine_Home
         }
         // =================================================================
 
-
         // ===================== 6) POPUP PERSONALIZZATO HOME ===============
         private Task ShowPopupAsync(string message, string title)
         {
@@ -746,7 +777,6 @@ namespace Biliardo.App.Pagine_Home
         }
         // =================================================================
 
-
         // ===================== 7) MESSAGGI (CHAT) =========================
         private async void OnApriMessaggi(object? sender, EventArgs e)
         {
@@ -756,11 +786,10 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await ShowPopupAsync(ex.Message, "Errore");
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore");
             }
         }
         // =================================================================
-
 
         // ===================== 8) AZIONI (ICONA SFIDA, MERCATINO) =========
         private async void OnMercatino(object? sender, TappedEventArgs e)
@@ -774,7 +803,6 @@ namespace Biliardo.App.Pagine_Home
         }
         // =================================================================
 
-
         // ===================== 9) LOGOUT (LOGICA) ==========================
         private async Task EseguiLogoutAsync()
         {
@@ -782,7 +810,6 @@ namespace Biliardo.App.Pagine_Home
             await Task.CompletedTask;
         }
         // =================================================================
-
 
         // ===================== 10) ACCESSO OSPITE (STUB) ==================
         private async void OnEntraComeOspite(object? sender, EventArgs e)
