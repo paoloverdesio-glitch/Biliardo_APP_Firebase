@@ -227,11 +227,14 @@ namespace Biliardo.App.Pagine_Home
 
             var fileName = Path.GetFileName(item.LocalFilePath);
             var objectPath = $"home_posts/media/{Guid.NewGuid():N}/{fileName}";
+
+            // FIX: named args per disambiguare l'overload (build/runtime issue)
             var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
-                idToken,
-                objectPath,
-                item.LocalFilePath,
-                FirebaseStorageRestClient.GuessContentTypeFromPath(item.LocalFilePath));
+                idToken: idToken,
+                objectPath: objectPath,
+                localFilePath: item.LocalFilePath,
+                contentType: FirebaseStorageRestClient.GuessContentTypeFromPath(item.LocalFilePath),
+                ct: default);
 
             if (item.Kind == PendingKind.AudioDraft)
             {

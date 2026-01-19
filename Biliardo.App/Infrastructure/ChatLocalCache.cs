@@ -108,7 +108,7 @@ namespace Biliardo.App.Infrastructure
 
                 Directory.CreateDirectory(dir);
 
-                // Write su file temporaneo nello stesso folder (commit più affidabile)
+                // Write su file temporaneo nello stesso folder (commit piÃ¹ affidabile)
                 var tmpPath = path + ".tmp";
                 var bakPath = path + ".bak";
 
@@ -125,7 +125,7 @@ namespace Biliardo.App.Infrastructure
                         await JsonSerializer.SerializeAsync(stream, payload, cancellationToken: ct);
                         await stream.FlushAsync(ct);
 
-                        // Su alcune piattaforme Flush(true) può non essere supportato -> fallback silenzioso.
+                        // Su alcune piattaforme Flush(true) puÃ² non essere supportato -> fallback silenzioso.
                         try { stream.Flush(flushToDisk: true); } catch { }
                     }
 
@@ -133,7 +133,7 @@ namespace Biliardo.App.Infrastructure
                 }
                 finally
                 {
-                    // Se per qualche motivo il tmp non è stato spostato, lo elimino.
+                    // Se per qualche motivo il tmp non Ã¨ stato spostato, lo elimino.
                     TryDeleteFile(tmpPath);
                 }
             }
@@ -149,7 +149,7 @@ namespace Biliardo.App.Infrastructure
 
         private static void CommitReplace(string tmpPath, string finalPath, string backupPath)
         {
-            // 1) Provo File.Replace (quando supportato). È la scelta migliore dove disponibile.
+            // 1) Provo File.Replace (quando supportato). Ãˆ la scelta migliore dove disponibile.
             // 2) Fallback a File.Move(overwrite:true).
             try
             {
@@ -214,6 +214,9 @@ namespace Biliardo.App.Infrastructure
                 CreatedAtUtc = m.CreatedAtUtc,
                 DeliveredTo = m.DeliveredTo?.ToArray() ?? Array.Empty<string>(),
                 ReadBy = m.ReadBy?.ToArray() ?? Array.Empty<string>(),
+                DeletedForAll = m.DeletedForAll,
+                DeletedFor = m.DeletedFor?.ToArray() ?? Array.Empty<string>(),
+                DeletedAtUtc = m.DeletedAtUtc,
                 StoragePath = m.StoragePath,
                 DurationMs = m.DurationMs,
                 FileName = m.FileName,
@@ -236,6 +239,9 @@ namespace Biliardo.App.Infrastructure
                 CreatedAtUtc: m.CreatedAtUtc,
                 DeliveredTo: m.DeliveredTo ?? Array.Empty<string>(),
                 ReadBy: m.ReadBy ?? Array.Empty<string>(),
+                DeletedForAll: m.DeletedForAll,
+                DeletedFor: m.DeletedFor ?? Array.Empty<string>(),
+                DeletedAtUtc: m.DeletedAtUtc,
                 StoragePath: m.StoragePath,
                 DurationMs: m.DurationMs,
                 FileName: m.FileName,
@@ -264,6 +270,9 @@ namespace Biliardo.App.Infrastructure
             public DateTimeOffset CreatedAtUtc { get; set; }
             public string[]? DeliveredTo { get; set; }
             public string[]? ReadBy { get; set; }
+            public bool DeletedForAll { get; set; }
+            public string[]? DeletedFor { get; set; }
+            public DateTimeOffset? DeletedAtUtc { get; set; }
             public string? StoragePath { get; set; }
             public long DurationMs { get; set; }
             public string? FileName { get; set; }
