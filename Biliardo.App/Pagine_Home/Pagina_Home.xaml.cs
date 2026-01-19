@@ -26,6 +26,7 @@ using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Componenti_UI.Composer;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
+using Biliardo.App.Infrastructure;
 
 #if WINDOWS
 using Windows.Media.Core;
@@ -64,7 +65,21 @@ namespace Biliardo.App.Pagine_Home
         protected override async void OnAppearing()
         {
             base.OnAppearing();
-            await LoadFeedAsync();
+            try
+            {
+                await LoadFeedAsync();
+            }
+            catch (Exception ex)
+            {
+                ExceptionFormatter.Log(ex);
+                var userMsg = ExceptionFormatter.FormatUserMessage(ex);
+#if DEBUG
+                var debug = ExceptionFormatter.FormatDebugDetails(ex);
+                if (!string.IsNullOrWhiteSpace(debug))
+                    userMsg += "\n\n" + debug;
+#endif
+                await ShowPopupAsync(userMsg, "Errore feed");
+            }
         }
 
         private async Task LoadFeedAsync()
@@ -78,7 +93,14 @@ namespace Biliardo.App.Pagine_Home
             }
             catch (Exception ex)
             {
-                await ShowPopupAsync(ex.Message, "Errore feed");
+                ExceptionFormatter.Log(ex);
+                var userMsg = ExceptionFormatter.FormatUserMessage(ex);
+#if DEBUG
+                var debug = ExceptionFormatter.FormatDebugDetails(ex);
+                if (!string.IsNullOrWhiteSpace(debug))
+                    userMsg += "\n\n" + debug;
+#endif
+                await ShowPopupAsync(userMsg, "Errore feed");
             }
         }
 
