@@ -13,8 +13,11 @@
         </Border.StrokeShape>
 
         <Grid RowDefinitions="120,Auto">
-            <Grid>
-                <Image x:Name="TileImage" Aspect="AspectFill" />
+
+            <!-- Tile immagine + overlay icona -->
+            <Grid Grid.Row="0">
+                <Image x:Name="TileImage"
+                       Aspect="AspectFill" />
                 <Image Source="ic_location.svg"
                        WidthRequest="28"
                        HeightRequest="28"
@@ -22,11 +25,13 @@
                        VerticalOptions="Center" />
             </Grid>
 
+            <!-- Etichetta indirizzo / fallback coordinate -->
             <Label Grid.Row="1"
                    Text="{Binding AddressLabel, Source={x:Reference ThisView}}"
                    TextColor="#EAEAEA"
                    FontSize="12"
                    Padding="10,6" />
+
         </Grid>
     </Border>
 </ContentView>

@@ -1,8 +1,9 @@
 using System;
 using System.Threading.Tasks;
 using Biliardo.App.Servizi_Locali;
-using Microsoft.Maui.Controls;
 using Microsoft.Maui.ApplicationModel;
+using Microsoft.Maui.Controls;
+using Microsoft.Maui.Devices.Sensors;
 
 namespace Biliardo.App.Componenti_UI
 {
@@ -11,6 +12,7 @@ namespace Biliardo.App.Componenti_UI
         public LocationPreviewView()
         {
             InitializeComponent();
+
             var tap = new TapGestureRecognizer();
             tap.Tapped += async (_, __) => await OpenMapsAsync();
             GestureRecognizers.Add(tap);
@@ -57,7 +59,10 @@ namespace Biliardo.App.Componenti_UI
             typeof(string),
             typeof(LocationPreviewView),
             default(string),
-            propertyChanged: (_, __, ___) => ((LocationPreviewView) _).OnPropertyChanged(nameof(AddressLabel)));
+            propertyChanged: (bindable, _, __) =>
+            {
+                ((LocationPreviewView)bindable).OnPropertyChanged(nameof(AddressLabel));
+            });
 
         public string? Address
         {
@@ -71,8 +76,10 @@ namespace Biliardo.App.Componenti_UI
             {
                 if (!string.IsNullOrWhiteSpace(Address))
                     return Address!;
+
                 if (Latitude.HasValue && Longitude.HasValue)
                     return $"{Latitude:0.0000}, {Longitude:0.0000}";
+
                 return "Posizione";
             }
         }
@@ -94,13 +101,14 @@ namespace Biliardo.App.Componenti_UI
 
             var location = new Location(Latitude.Value, Longitude.Value);
             var options = new MapLaunchOptions { Name = AddressLabel };
+
             try
             {
                 await Map.Default.OpenAsync(location, options);
             }
             catch
             {
-                // ignore
+                // best-effort
             }
         }
     }

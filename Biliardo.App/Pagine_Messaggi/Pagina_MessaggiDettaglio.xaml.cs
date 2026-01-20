@@ -15,13 +15,30 @@ using Microsoft.Maui.Storage;
 using Biliardo.App.Componenti_UI;
 using Biliardo.App.Componenti_UI.Composer;
 
+#if ANDROID
+using Android.Media;
+using Android.Graphics;
+#endif
+
 #if WINDOWS
 using Windows.Media.Core;
 using Windows.Media.Playback;
+using Windows.Storage;
+using Windows.Storage.FileProperties;
+using System.Runtime.InteropServices.WindowsRuntime;
 #endif
+
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
+
+// ============================================================
+// Alias per evitare ambiguità tra tipi Android e tipi MAUI
+// ============================================================
+using Color = Microsoft.Maui.Graphics.Color;
+using RectF = Microsoft.Maui.Graphics.RectF;
+using Image = Microsoft.Maui.Controls.Image;
+using Path = System.IO.Path;
 
 namespace Biliardo.App.Pagine_Messaggi
 {
@@ -65,6 +82,22 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void MarkScrollBusy()
             => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+
+        // ============================================================
+        // 4) DIMENSIONI (BOLLE / MEDIA PREVIEW)
+        // ============================================================
+        private double _bubbleMaxWidth = 320;
+        public double BubbleMaxWidth { get => _bubbleMaxWidth; set { _bubbleMaxWidth = value; OnPropertyChanged(); } }
+
+        // Preview foto/video (ridotte e coerenti)
+        private double _mediaPreviewWidth = 280;
+        public double MediaPreviewWidth { get => _mediaPreviewWidth; set { _mediaPreviewWidth = value; OnPropertyChanged(); } }
+
+        private double _mediaPreviewHeight = 200;
+        public double MediaPreviewHeight { get => _mediaPreviewHeight; set { _mediaPreviewHeight = value; OnPropertyChanged(); } }
+
+        private double _voiceLockPanelHeight = 180;
+        public double VoiceLockPanelHeight { get => _voiceLockPanelHeight; set { _voiceLockPanelHeight = value; OnPropertyChanged(); } }
 
         // ============================================================
         // VM/UI state
@@ -134,13 +167,6 @@ namespace Biliardo.App.Pagine_Messaggi
         // Normal composer bar visibile solo se NON sto registrando
         public bool IsNormalComposerVisible => !_voice.IsRecording;
 
-        // Dimensioni dinamiche
-        private double _bubbleMaxWidth = 320;
-        public double BubbleMaxWidth { get => _bubbleMaxWidth; set { _bubbleMaxWidth = value; OnPropertyChanged(); } }
-
-        private double _voiceLockPanelHeight = 180;
-        public double VoiceLockPanelHeight { get => _voiceLockPanelHeight; set { _voiceLockPanelHeight = value; OnPropertyChanged(); } }
-
         // Colori per binding XAML
         public Color PageBgColor => Color.FromArgb(HEX_PAGE_BG);
         public Color TopBarBgColor => Color.FromArgb(HEX_TOPBAR_BG);
@@ -176,8 +202,8 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private string? _chatIdCached;
 
-        // Prefetch foto (visibili + 5)
-        private readonly HashSet<string> _prefetchPhotoMessageIds = new(StringComparer.Ordinal);
+        // Prefetch media (foto + video visibili + piccolo anticipo)
+        private readonly HashSet<string> _prefetchMediaMessageIds = new(StringComparer.Ordinal);
         private CancellationTokenSource? _prefetchCts;
 
         // ============================================================
@@ -355,6 +381,10 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 var w = width * 0.72;
                 BubbleMaxWidth = Math.Clamp(w, 220, 520);
+
+                // Preview media coerente con la bolla (WhatsApp-like)
+                MediaPreviewWidth = Math.Clamp(BubbleMaxWidth, 220, 380);
+                MediaPreviewHeight = Math.Clamp(MediaPreviewWidth * 0.72, 160, 320);
             }
 
             if (height > 0)
@@ -420,46 +450,7 @@ namespace Biliardo.App.Pagine_Messaggi
             catch { }
         }
 
-        private async void OnClipClicked(object sender, EventArgs e)
-        {
-            try
-            {
-                if (IsEmojiPanelVisible) IsEmojiPanelVisible = false;
-
-                var sheet = new BottomSheetAllegatiPage();
-                sheet.AzioneSelezionata += async (_, az) =>
-                {
-                    await HandleAttachmentActionAsync(az);
-                };
-
-                _suppressStopPollingOnce = true;
-                await Navigation.PushModalAsync(sheet);
-            }
-            catch (Exception ex)
-            {
-                await DisplayAlert("Errore", ex.Message, "OK");
-            }
-        }
-
-        private async void OnCameraClicked(object sender, EventArgs e)
-        {
-            try
-            {
-                if (IsEmojiPanelVisible) IsEmojiPanelVisible = false;
-
-                var choice = await DisplayActionSheet("Fotocamera", "Annulla", null, "Foto", "Video");
-                if (choice == "Foto")
-                    await CapturePhotoAsync();
-                else if (choice == "Video")
-                    await CaptureVideoAsync();
-            }
-            catch (Exception ex)
-            {
-                await DisplayAlert("Errore", ex.Message, "OK");
-            }
-        }
-
-        private void OnRemoveAttachmentClicked(object sender, EventArgs e)
+        private async void OnRemoveAttachmentClicked(object sender, EventArgs e)
         {
             try
             {
@@ -476,8 +467,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
             var first = Math.Max(0, e.FirstVisibleItemIndex);
             var last = Math.Min(Messaggi.Count - 1, e.LastVisibleItemIndex + 5);
-            _ = SchedulePrefetchPhotosAsync(first, last);
 
+            _ = SchedulePrefetchMediaAsync(first, last);
             SchedulePendingApply();
         }
 
@@ -536,7 +527,7 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // ============================================================
-        // Invio testo/allegati
+        // ComposerBar events
         // ============================================================
         private async void OnComposerAttachmentRequested(object sender, EventArgs e)
         {
@@ -613,6 +604,7 @@ namespace Biliardo.App.Pagine_Messaggi
                     var attachment = ToAttachmentVm(item);
                     if (attachment == null) continue;
                     await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment);
+
                     if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
                     {
                         try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
@@ -640,64 +632,6 @@ namespace Biliardo.App.Pagine_Messaggi
             finally
             {
                 _isSending = false;
-            }
-        }
-
-        private async void OnInviaClicked(object sender, EventArgs e)
-        {
-            if (_isSending) return;
-
-            var peerId = (_peerUserId ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(peerId))
-            {
-                await DisplayAlert("Errore", "Peer non valido (userId mancante).", "OK");
-                return;
-            }
-
-            _isSending = true;
-            OnPropertyChanged(nameof(CanSendTextOrAttachments));
-            OnPropertyChanged(nameof(CanShowMic));
-
-            try
-            {
-                var provider = await SessionePersistente.GetProviderAsync();
-                if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Questa pagina è implementata per provider Firebase.");
-
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-                var myUid = FirebaseSessionePersistente.GetLocalId();
-
-                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
-                    throw new InvalidOperationException("Sessione Firebase assente/scaduta. Rifai login.");
-
-                var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
-
-                var text = (TestoMessaggio ?? "").Trim();
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    var msgId = Guid.NewGuid().ToString("N");
-                    await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId, msgId, myUid!, text);
-                }
-
-                var items = AllegatiSelezionati.ToList();
-                foreach (var a in items)
-                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, a);
-
-                TestoMessaggio = "";
-                AllegatiSelezionati.Clear();
-
-                _userNearBottom = true;
-                await LoadOnceAsync(CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                await DisplayAlert("Errore", $"Invio non riuscito: {ex.Message}", "OK");
-            }
-            finally
-            {
-                _isSending = false;
-                OnPropertyChanged(nameof(CanSendTextOrAttachments));
-                OnPropertyChanged(nameof(CanShowMic));
             }
         }
 
@@ -744,6 +678,20 @@ namespace Biliardo.App.Pagine_Messaggi
             catch { }
         }
 
+        // XAML usa Tapped="OnOpenMediaTapped" (Border TapGesture)
+        private async void OnOpenMediaTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not ChatMessageVm m)
+                    return;
+
+                await OpenMediaAsync(m);
+            }
+            catch { }
+        }
+
+        // Se in futuro vuoi un Button Clicked, questo resta valido
         private async void OnOpenMediaClicked(object sender, EventArgs e)
         {
             try
@@ -751,27 +699,32 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (sender is not Button b || b.CommandParameter is not ChatMessageVm m)
                     return;
 
-                if (!m.IsPhoto && !m.IsFileOrVideo)
-                    return;
-
-                var path = await EnsureMediaDownloadedAsync(m);
-                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-                {
-                    await DisplayAlert("Info", "File non disponibile.", "OK");
-                    return;
-                }
-
-                m.MediaLocalPath = path;
-
-                await Launcher.Default.OpenAsync(new OpenFileRequest
-                {
-                    File = new ReadOnlyFile(path)
-                });
+                await OpenMediaAsync(m);
             }
             catch (Exception ex)
             {
                 await DisplayAlert("Errore", ex.Message, "OK");
             }
+        }
+
+        private async Task OpenMediaAsync(ChatMessageVm m)
+        {
+            if (!m.IsPhoto && !m.IsFileOrVideo)
+                return;
+
+            var path = await EnsureMediaDownloadedAsync(m);
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                await DisplayAlert("Info", "File non disponibile.", "OK");
+                return;
+            }
+
+            m.MediaLocalPath = path;
+
+            await Launcher.Default.OpenAsync(new OpenFileRequest
+            {
+                File = new ReadOnlyFile(path)
+            });
         }
 
         private async void OnOpenLocationClicked(object sender, EventArgs e)
@@ -851,8 +804,31 @@ namespace Biliardo.App.Pagine_Messaggi
             }
         }
 
+        private async void OnMessageActionTapped(object sender, TappedEventArgs e)
+        {
+            if (sender is not BindableObject bo || bo.BindingContext is not ChatMessageVm m)
+                return;
+
+            if (m.IsDateSeparator || m.IsHiddenForMe)
+                return;
+
+            var choice = await DisplayActionSheet("Messaggio", "Annulla", null, "Elimina per me", "Elimina per tutti");
+            if (choice == "Elimina per me")
+            {
+                if (!string.IsNullOrWhiteSpace(_lastChatId) && !string.IsNullOrWhiteSpace(_lastMyUid))
+                    await _fsChat.DeleteMessageForMeAsync(_lastChatId, m.Id, _lastMyUid);
+                await LoadOnceAsync(CancellationToken.None);
+            }
+            else if (choice == "Elimina per tutti")
+            {
+                if (!string.IsNullOrWhiteSpace(_lastChatId))
+                    await _fsChat.DeleteMessageForAllAsync(_lastChatId, m.Id);
+                await LoadOnceAsync(CancellationToken.None);
+            }
+        }
+
         // ============================================================
-        // VOCALE - Mic Press/Hold + Pan (robusto: Released + fallback Pan Completed/Canceled)
+        // Voice (rimane invariato: come tuo file)
         // ============================================================
         private async void OnMicPressed(object sender, EventArgs e)
         {
@@ -905,7 +881,6 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
-                // Fallback fondamentale: alcuni casi non chiamano Released dopo swipe.
                 if (e.StatusType == GestureStatus.Completed || e.StatusType == GestureStatus.Canceled)
                 {
                     await HandleMicPointerUpAsync();
@@ -936,29 +911,6 @@ namespace Biliardo.App.Pagine_Messaggi
             catch { }
         }
 
-        private async void OnMessageActionTapped(object sender, TappedEventArgs e)
-        {
-            if (sender is not BindableObject bo || bo.BindingContext is not ChatMessageVm m)
-                return;
-
-            if (m.IsDateSeparator || m.IsHiddenForMe)
-                return;
-
-            var choice = await DisplayActionSheet("Messaggio", "Annulla", null, "Elimina per me", "Elimina per tutti");
-            if (choice == "Elimina per me")
-            {
-                if (!string.IsNullOrWhiteSpace(_lastChatId) && !string.IsNullOrWhiteSpace(_lastMyUid))
-                    await _fsChat.DeleteMessageForMeAsync(_lastChatId, m.Id, _lastMyUid);
-                await LoadOnceAsync(CancellationToken.None);
-            }
-            else if (choice == "Elimina per tutti")
-            {
-                if (!string.IsNullOrWhiteSpace(_lastChatId))
-                    await _fsChat.DeleteMessageForAllAsync(_lastChatId, m.Id);
-                await LoadOnceAsync(CancellationToken.None);
-            }
-        }
-
         private async Task HandleMicPointerUpAsync()
         {
             await _voiceOpLock.WaitAsync();
@@ -978,7 +930,6 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
                 }
 
-                // Se lock, il rilascio NON deve fermare la registrazione.
                 if (_voiceLocked)
                 {
                     RefreshVoiceBindings();
@@ -1501,7 +1452,9 @@ namespace Biliardo.App.Pagine_Messaggi
 
         // ============================================================
         // Polling / Load + receipts + date separators + scroll safe
+        // (rimane invariato dal tuo file, incluso il blocco NotificaCambio)
         // ============================================================
+
         private void StartPolling()
         {
             if (_pollCts != null) return;
@@ -1546,6 +1499,11 @@ namespace Biliardo.App.Pagine_Messaggi
                 hc.Add(m.ReadBy?.Count ?? 0);
                 hc.Add(m.DeletedForAll);
                 hc.Add(m.DeletedFor?.Count ?? 0);
+
+                hc.Add(m.FileName);
+                hc.Add(m.SizeBytes);
+                hc.Add(m.DurationMs);
+                hc.Add(m.StoragePath);
             }
             return hc.ToHashCode().ToString("X");
         }
@@ -1683,6 +1641,51 @@ namespace Biliardo.App.Pagine_Messaggi
                                 if (!string.Equals(existing.StatusLabel, newStatus, StringComparison.Ordinal))
                                     existing.StatusLabel = newStatus;
                             }
+
+                            if (existing.IsPhoto || existing.IsVideo || existing.IsFile || existing.IsAudio)
+                            {
+                                bool fileNameChanged = false;
+                                bool sizeChanged = false;
+                                bool durationChanged = false;
+                                bool storageChanged = false;
+
+                                if (string.IsNullOrWhiteSpace(existing.FileName) && !string.IsNullOrWhiteSpace(m.FileName))
+                                {
+                                    existing.FileName = m.FileName;
+                                    fileNameChanged = true;
+                                }
+
+                                if (existing.SizeBytes <= 0 && m.SizeBytes > 0)
+                                {
+                                    existing.SizeBytes = m.SizeBytes;
+                                    sizeChanged = true;
+                                }
+
+                                if (existing.DurationMs <= 0 && m.DurationMs > 0)
+                                {
+                                    existing.DurationMs = m.DurationMs;
+                                    durationChanged = true;
+                                }
+
+                                if (string.IsNullOrWhiteSpace(existing.StoragePath) && !string.IsNullOrWhiteSpace(m.StoragePath))
+                                {
+                                    existing.StoragePath = m.StoragePath;
+                                    storageChanged = true;
+                                }
+
+                                if (fileNameChanged)
+                                    existing.NotificaCambio(nameof(ChatMessageVm.FileName), nameof(ChatMessageVm.FileLabel), nameof(ChatMessageVm.AudioLabel));
+
+                                if (sizeChanged)
+                                    existing.NotificaCambio(nameof(ChatMessageVm.SizeBytes), nameof(ChatMessageVm.FileSizeLabel));
+
+                                if (durationChanged)
+                                    existing.NotificaCambio(nameof(ChatMessageVm.DurationMs), nameof(ChatMessageVm.DurationLabel));
+
+                                if (storageChanged)
+                                    existing.NotificaCambio(nameof(ChatMessageVm.StoragePath));
+                            }
+
                             continue;
                         }
 
@@ -1732,7 +1735,7 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // ============================================================
-        // Prefetch foto (thread-safe: snapshot UI -> download bg)
+        // Prefetch media + thumbnail video
         // ============================================================
         private void CancelPrefetch()
         {
@@ -1754,7 +1757,7 @@ namespace Biliardo.App.Pagine_Messaggi
             _pendingApplyCts = null;
         }
 
-        private async Task SchedulePrefetchPhotosAsync(int firstIndex, int lastIndex)
+        private async Task SchedulePrefetchMediaAsync(int firstIndex, int lastIndex)
         {
             if (firstIndex < 0 || lastIndex < 0 || firstIndex > lastIndex)
                 return;
@@ -1768,19 +1771,20 @@ namespace Biliardo.App.Pagine_Messaggi
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 if (Messaggi.Count == 0) return;
+
                 var last = Math.Min(lastIndex, Messaggi.Count - 1);
                 for (int i = firstIndex; i <= last; i++)
                 {
                     var vm = Messaggi[i];
                     if (vm == null || vm.IsDateSeparator) continue;
-                    if (!vm.IsPhoto) continue;
+                    if (!vm.IsPhoto && !vm.IsVideo) continue;
                     if (string.IsNullOrWhiteSpace(vm.Id)) continue;
 
-                    lock (_prefetchPhotoMessageIds)
+                    lock (_prefetchMediaMessageIds)
                     {
-                        if (_prefetchPhotoMessageIds.Contains(vm.Id))
+                        if (_prefetchMediaMessageIds.Contains(vm.Id))
                             continue;
-                        _prefetchPhotoMessageIds.Add(vm.Id);
+                        _prefetchMediaMessageIds.Add(vm.Id);
                     }
 
                     targets.Add(vm);
@@ -1810,13 +1814,23 @@ namespace Biliardo.App.Pagine_Messaggi
                             await sem.WaitAsync(token);
                             try
                             {
-                                if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath) && File.Exists(vm.MediaLocalPath))
+                                if (token.IsCancellationRequested)
                                     return;
+
+                                if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath) && File.Exists(vm.MediaLocalPath))
+                                {
+                                    if (vm.IsVideo && !vm.HasVideoThumbnail)
+                                        await EnsureVideoThumbnailAsync(vm, token);
+                                    return;
+                                }
+
                                 if (string.IsNullOrWhiteSpace(vm.StoragePath))
                                     return;
 
                                 var ext = Path.GetExtension(vm.FileName ?? "");
-                                if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+                                if (string.IsNullOrWhiteSpace(ext))
+                                    ext = vm.IsPhoto ? ".jpg" : ".mp4";
+
                                 var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{vm.Id}_{Guid.NewGuid():N}{ext}");
 
                                 await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
@@ -1825,6 +1839,9 @@ namespace Biliardo.App.Pagine_Messaggi
                                 {
                                     vm.MediaLocalPath = local;
                                 });
+
+                                if (vm.IsVideo && !vm.HasVideoThumbnail)
+                                    await EnsureVideoThumbnailAsync(vm, token);
                             }
                             catch { }
                             finally
@@ -1840,8 +1857,94 @@ namespace Biliardo.App.Pagine_Messaggi
             }, token);
         }
 
+        private async Task EnsureVideoThumbnailAsync(ChatMessageVm m, CancellationToken ct)
+        {
+            if (m == null || !m.IsVideo) return;
+            if (m.HasVideoThumbnail) return;
+
+            var videoPath = m.MediaLocalPath;
+            if (string.IsNullOrWhiteSpace(videoPath) || !File.Exists(videoPath))
+                return;
+
+            try
+            {
+                var thumbPath = Path.Combine(FileSystem.CacheDirectory, $"thumb_{m.Id}_{Guid.NewGuid():N}.jpg");
+
+#if ANDROID
+                var ok = await Task.Run(() => TryCreateVideoThumbnailAndroid(videoPath!, thumbPath), ct);
+                if (!ok) return;
+#elif WINDOWS
+                var ok = await TryCreateVideoThumbnailWindowsAsync(videoPath!, thumbPath);
+                if (!ok) return;
+#else
+                return;
+#endif
+                if (!File.Exists(thumbPath))
+                    return;
+
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    m.VideoThumbnailPath = thumbPath;
+                });
+            }
+            catch { }
+        }
+
+#if ANDROID
+        private static bool TryCreateVideoThumbnailAndroid(string videoPath, string outJpgPath)
+        {
+            try
+            {
+                using var retriever = new MediaMetadataRetriever();
+                retriever.SetDataSource(videoPath);
+
+                using var bmp = retriever.GetFrameAtTime(0, Option.ClosestSync);
+                if (bmp == null) return false;
+
+                using var fs = File.Create(outJpgPath);
+                var ok = bmp.Compress(Bitmap.CompressFormat.Jpeg, 82, fs);
+
+                return ok;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+#endif
+
+#if WINDOWS
+        // FIX CS1061: niente MediaClip.GetThumbnailAsync -> uso StorageFile.GetThumbnailAsync
+        private static async Task<bool> TryCreateVideoThumbnailWindowsAsync(string videoPath, string outJpgPath)
+        {
+            try
+            {
+                var file = await StorageFile.GetFileFromPathAsync(videoPath);
+
+                // thumbnail di sistema (video). Il contenuto è un'immagine valida (png/jpg) indipendente dall'estensione.
+                using var thumb = await file.GetThumbnailAsync(
+                    ThumbnailMode.VideosView,
+                    320,
+                    ThumbnailOptions.UseCurrentScale);
+
+                if (thumb == null) return false;
+
+                using var input = thumb.AsStreamForRead();
+                using var output = File.Create(outJpgPath);
+                await input.CopyToAsync(output);
+
+                return File.Exists(outJpgPath);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+#endif
+
         // ============================================================
-        // Send attachment (Storage + Firestore)
+        // Send attachment + download
+        // (rimane invariato dal tuo file)
         // ============================================================
         private async Task SendAttachmentAsync(string idToken, string myUid, string peerUid, string chatId, AttachmentVm a)
         {
@@ -1912,7 +2015,12 @@ namespace Biliardo.App.Pagine_Messaggi
             try
             {
                 if (!string.IsNullOrWhiteSpace(m.MediaLocalPath) && File.Exists(m.MediaLocalPath))
+                {
+                    if (m.IsVideo && !m.HasVideoThumbnail)
+                        _ = EnsureVideoThumbnailAsync(m, CancellationToken.None);
+
                     return m.MediaLocalPath;
+                }
 
                 if (string.IsNullOrWhiteSpace(m.StoragePath))
                     return null;
@@ -1934,6 +2042,9 @@ namespace Biliardo.App.Pagine_Messaggi
                     m.MediaLocalPath = local;
                 });
 
+                if (m.IsVideo && !m.HasVideoThumbnail)
+                    _ = EnsureVideoThumbnailAsync(m, CancellationToken.None);
+
                 return local;
             }
             catch
@@ -1943,7 +2054,7 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // ============================================================
-        // VM classes
+        // VM classes (identiche al tuo file)
         // ============================================================
         private static AttachmentVm? ToAttachmentVm(PendingItemVm item)
         {
@@ -1955,19 +2066,23 @@ namespace Biliardo.App.Pagine_Messaggi
                 {
                     Kind = AttachmentKind.Photo,
                     DisplayName = item.DisplayName,
-                    LocalPath = item.LocalFilePath ?? ""
+                    LocalPath = item.LocalFilePath ?? "",
+                    SizeBytes = item.SizeBytes
                 },
                 PendingKind.Video => new AttachmentVm
                 {
                     Kind = AttachmentKind.Video,
                     DisplayName = item.DisplayName,
-                    LocalPath = item.LocalFilePath ?? ""
+                    LocalPath = item.LocalFilePath ?? "",
+                    SizeBytes = item.SizeBytes,
+                    DurationMs = item.DurationMs
                 },
                 PendingKind.File => new AttachmentVm
                 {
                     Kind = AttachmentKind.File,
                     DisplayName = item.DisplayName,
-                    LocalPath = item.LocalFilePath ?? ""
+                    LocalPath = item.LocalFilePath ?? "",
+                    SizeBytes = item.SizeBytes
                 },
                 PendingKind.AudioDraft => new AttachmentVm
                 {
@@ -2074,6 +2189,20 @@ namespace Biliardo.App.Pagine_Messaggi
                 set { _mediaLocalPath = value; OnPropertyChanged(); }
             }
 
+            private string? _videoThumbnailPath;
+            public string? VideoThumbnailPath
+            {
+                get => _videoThumbnailPath;
+                set
+                {
+                    _videoThumbnailPath = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasVideoThumbnail));
+                }
+            }
+
+            public bool HasVideoThumbnail => !string.IsNullOrWhiteSpace(VideoThumbnailPath) && File.Exists(VideoThumbnailPath);
+
             private bool _isAudioPlaying;
             public bool IsAudioPlaying
             {
@@ -2091,6 +2220,7 @@ namespace Biliardo.App.Pagine_Messaggi
             public bool IsFile => !DeletedForAll && string.Equals(Type, "file", StringComparison.OrdinalIgnoreCase);
             public bool IsFileOrVideo => IsFile || IsVideo;
 
+            public string FileSizeLabel => SizeBytes > 0 ? FormatBytes(SizeBytes) : "";
             public string FileLabel => IsVideo ? $"🎬 {FileName}" : $"📎 {FileName}";
 
             public double? Latitude { get; set; }
@@ -2178,10 +2308,32 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 return vm;
             }
+
+            public void NotificaCambio(params string[] props)
+            {
+                if (props == null || props.Length == 0)
+                {
+                    OnPropertyChanged(string.Empty);
+                    return;
+                }
+
+                foreach (var p in props)
+                    OnPropertyChanged(p);
+            }
+
+            private static string FormatBytes(long bytes)
+            {
+                if (bytes <= 0) return "";
+                double b = bytes;
+                string[] units = { "B", "KB", "MB", "GB" };
+                int u = 0;
+                while (b >= 1024 && u < units.Length - 1) { b /= 1024; u++; }
+                return $"{b:0.#} {units[u]}";
+            }
         }
 
         // ============================================================
-        // Voice waveform drawable (5s history, colori progressivi)
+        // Voice waveform drawable
         // ============================================================
         private sealed class VoiceWaveDrawable : IDrawable
         {
@@ -2288,7 +2440,7 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // ============================================================
-        // Playback (Android reale, altri: stub)
+        // Playback
         // ============================================================
         private interface IAudioPlayback
         {

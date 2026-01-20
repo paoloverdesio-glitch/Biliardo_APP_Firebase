@@ -333,6 +333,9 @@ namespace Biliardo.App.Servizi_Firebase
                 ["text"] = FirestoreRestClient.VString(text)
             });
 
+            // NOTE:
+            // Le rules per CREATE messages impongono keys().hasOnly([...]) e NON includono "deletedAt".
+            // Se lo invii anche solo come null, Firestore risponde 403 PERMISSION_DENIED.
             var msgFields = new Dictionary<string, object>
             {
                 ["senderId"] = FirestoreRestClient.VString(senderUid),
@@ -343,7 +346,6 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -394,6 +396,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["contentType"] = FirestoreRestClient.VString(string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType),
             });
 
+            // (vedi nota sopra: niente "deletedAt" in CREATE)
             var msgFields = new Dictionary<string, object>
             {
                 ["senderId"] = FirestoreRestClient.VString(senderUid),
@@ -404,7 +407,6 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -452,6 +454,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["lon"] = new Dictionary<string, object> { ["doubleValue"] = lon },
             });
 
+            // (vedi nota sopra: niente "deletedAt" in CREATE)
             var msgFields = new Dictionary<string, object>
             {
                 ["senderId"] = FirestoreRestClient.VString(senderUid),
@@ -462,7 +465,6 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -493,6 +495,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["contactPhone"] = FirestoreRestClient.VString(contactPhone ?? ""),
             });
 
+            // (vedi nota sopra: niente "deletedAt" in CREATE)
             var msgFields = new Dictionary<string, object>
             {
                 ["senderId"] = FirestoreRestClient.VString(senderUid),
@@ -503,7 +506,6 @@ namespace Biliardo.App.Servizi_Firebase
                 ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
                 ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["deletedAt"] = FirestoreRestClient.VNull(),
                 ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
             };
 
@@ -523,18 +525,19 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
+            // Coerente con le rules:
+            // - in update sono permessi solo: deliveredTo, readBy, deletedFor, deletedForAll, updatedAt
+            // - deletedAt/text/payload NON sono ammessi in update (quindi generano 403).
             var fields = new Dictionary<string, object>
             {
                 ["deletedForAll"] = FirestoreRestClient.VBool(true),
-                ["deletedAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
-                ["text"] = FirestoreRestClient.VString(string.Empty),
-                ["payload"] = FirestoreRestClient.VMap(new Dictionary<string, object>())
+                ["updatedAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
             };
 
             await FirestoreRestClient.PatchDocumentAsync(
                 $"chats/{chatId}/messages/{messageId}",
                 fields,
-                new[] { "deletedForAll", "deletedAt", "text", "payload" },
+                new[] { "deletedForAll", "updatedAt" },
                 idToken,
                 ct);
         }

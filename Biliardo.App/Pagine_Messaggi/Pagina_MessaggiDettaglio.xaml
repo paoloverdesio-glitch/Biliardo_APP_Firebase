@@ -46,7 +46,7 @@
                             ItemsSource="{Binding Source={x:Reference ThisPage}, Path=Messaggi}"
                             SelectionMode="None"
                             ItemsUpdatingScrollMode="KeepScrollOffset"
-                            ItemSizingStrategy="MeasureFirstItem"
+                            ItemSizingStrategy="MeasureAllItems"
                             Scrolled="OnMessagesScrolled">
                 <CollectionView.ItemsLayout>
                     <LinearItemsLayout Orientation="Vertical" ItemSpacing="6" />
@@ -56,6 +56,7 @@
                     <DataTemplate>
                         <Grid Padding="0,2">
 
+                            <!-- Separatore data -->
                             <Border x:Name="DateSep"
                                     IsVisible="False"
                                     HorizontalOptions="Center"
@@ -78,10 +79,11 @@
                                 </Border.Triggers>
                             </Border>
 
+                            <!-- Bolla messaggio -->
                             <Border x:Name="Bubble"
                                     IsVisible="True"
                                     StrokeThickness="0"
-                                    Padding="10"
+                                    Padding="0"
                                     BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=BubblePeerColor}"
                                     HorizontalOptions="Start"
                                     MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
@@ -107,114 +109,221 @@
                                     </DataTrigger>
                                 </Border.Triggers>
 
-                                <VerticalStackLayout Spacing="8">
+                                <!-- Layout WhatsApp-like: contenuto + meta (ora/spunte) con gap minimo -->
+                                <Grid Padding="10,8,10,6"
+                                      RowDefinitions="Auto,Auto"
+                                      RowSpacing="2"
+                                      HorizontalOptions="Start">
 
-                                    <Label Text="Questo messaggio è stato eliminato"
-                                           IsVisible="{Binding IsDeletedPlaceholder}"
-                                           TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
-                                           FontAttributes="Italic"
-                                           FontSize="12" />
+                                    <!-- Contenuto -->
+                                    <VerticalStackLayout Grid.Row="0"
+                                                        Spacing="6"
+                                                        HorizontalOptions="Start">
 
-                                    <Label Text="{Binding Text}"
-                                           IsVisible="{Binding HasText}"
-                                           TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
-                                           FontSize="14"
-                                           LineBreakMode="WordWrap" />
+                                        <Label Text="Questo messaggio è stato eliminato"
+                                               IsVisible="{Binding IsDeletedPlaceholder}"
+                                               TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                               FontAttributes="Italic"
+                                               FontSize="12"
+                                               HorizontalOptions="Start" />
 
-                                    <Border IsVisible="{Binding IsPhoto}"
-                                            StrokeThickness="0"
-                                            Padding="0"
-                                            BackgroundColor="#222222">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
+                                        <!-- Testo -->
+                                        <Label Text="{Binding Text}"
+                                               IsVisible="{Binding HasText}"
+                                               TextColor="{Binding Source={x:Reference ThisPage}, Path=BubbleTextColor}"
+                                               FontSize="14"
+                                               LineBreakMode="WordWrap"
+                                               MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}"
+                                               HorizontalOptions="Start" />
 
-                                        <Border.GestureRecognizers>
-                                            <TapGestureRecognizer Tapped="OnPhotoTapped" />
-                                        </Border.GestureRecognizers>
+                                        <!-- FOTO -->
+                                        <Border IsVisible="{Binding IsPhoto}"
+                                                StrokeThickness="0"
+                                                Padding="0"
+                                                BackgroundColor="#222222"
+                                                HorizontalOptions="Start"
+                                                WidthRequest="{Binding Source={x:Reference ThisPage}, Path=MediaPreviewWidth}"
+                                                HeightRequest="{Binding Source={x:Reference ThisPage}, Path=MediaPreviewHeight}">
+                                            <Border.StrokeShape>
+                                                <RoundRectangle CornerRadius="12" />
+                                            </Border.StrokeShape>
 
-                                        <Image Source="{Binding MediaLocalPath}"
-                                               HeightRequest="170"
-                                               Aspect="AspectFill" />
-                                    </Border>
+                                            <Border.GestureRecognizers>
+                                                <TapGestureRecognizer Tapped="OnPhotoTapped" />
+                                            </Border.GestureRecognizers>
 
-                                    <Border IsVisible="{Binding IsFileOrVideo}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
+                                            <Image Source="{Binding MediaLocalPath}"
+                                                   Aspect="AspectFill" />
+                                        </Border>
 
-                                        <VerticalStackLayout Spacing="6">
-                                            <Label Text="{Binding FileLabel}"
-                                                   TextColor="White"
-                                                   FontAttributes="Bold"
-                                                   LineBreakMode="TailTruncation" />
-                                            <Button Text="Apri"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnOpenMediaClicked"
-                                                    CommandParameter="{Binding}" />
-                                        </VerticalStackLayout>
-                                    </Border>
+                                        <!-- VIDEO: anteprima (primo frame) + play + durata -->
+                                        <Border IsVisible="{Binding IsVideo}"
+                                                StrokeThickness="0"
+                                                Padding="0"
+                                                BackgroundColor="#222222"
+                                                HorizontalOptions="Start"
+                                                WidthRequest="{Binding Source={x:Reference ThisPage}, Path=MediaPreviewWidth}"
+                                                HeightRequest="{Binding Source={x:Reference ThisPage}, Path=MediaPreviewHeight}">
+                                            <Border.StrokeShape>
+                                                <RoundRectangle CornerRadius="12" />
+                                            </Border.StrokeShape>
 
-                                    <Border IsVisible="{Binding IsAudio}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
+                                            <Border.GestureRecognizers>
+                                                <TapGestureRecognizer Tapped="OnOpenMediaTapped" />
+                                            </Border.GestureRecognizers>
 
-                                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
-                                            <Button Text="{Binding AudioPlayStopLabel}"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnPlayAudioClicked"
-                                                    CommandParameter="{Binding}"
-                                                    WidthRequest="90"
-                                                    HeightRequest="40" />
-                                            <VerticalStackLayout Grid.Column="1" Spacing="2">
-                                                <Label Text="{Binding AudioLabel}"
+                                            <Grid>
+                                                <!-- Thumbnail: se non ancora pronto rimane il fondo scuro + play -->
+                                                <Image Source="{Binding VideoThumbnailPath}"
+                                                       IsVisible="{Binding HasVideoThumbnail}"
+                                                       Aspect="AspectFill" />
+
+                                                <!-- Play overlay -->
+                                                <Border BackgroundColor="#66000000"
+                                                        StrokeThickness="0"
+                                                        HorizontalOptions="Center"
+                                                        VerticalOptions="Center"
+                                                        Padding="10">
+                                                    <Border.StrokeShape>
+                                                        <RoundRectangle CornerRadius="24" />
+                                                    </Border.StrokeShape>
+                                                    <Label Text="▶"
+                                                           TextColor="White"
+                                                           FontSize="20"
+                                                           VerticalOptions="Center"
+                                                           HorizontalOptions="Center" />
+                                                </Border>
+
+                                                <!-- Durata -->
+                                                <Border BackgroundColor="#66000000"
+                                                        StrokeThickness="0"
+                                                        HorizontalOptions="End"
+                                                        VerticalOptions="End"
+                                                        Margin="8"
+                                                        Padding="6,2">
+                                                    <Border.StrokeShape>
+                                                        <RoundRectangle CornerRadius="10" />
+                                                    </Border.StrokeShape>
+                                                    <Label Text="{Binding DurationLabel}"
+                                                           TextColor="White"
+                                                           FontSize="10"
+                                                           Opacity="0.9" />
+                                                </Border>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- DOCUMENTO / FILE -->
+                                        <Border IsVisible="{Binding IsFile}"
+                                                StrokeThickness="0"
+                                                Padding="10"
+                                                BackgroundColor="#1C1C1C"
+                                                HorizontalOptions="Start"
+                                                MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                                            <Border.StrokeShape>
+                                                <RoundRectangle CornerRadius="12" />
+                                            </Border.StrokeShape>
+
+                                            <Border.GestureRecognizers>
+                                                <TapGestureRecognizer Tapped="OnOpenMediaTapped" />
+                                            </Border.GestureRecognizers>
+
+                                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                                                <Label Text="📎"
+                                                       FontSize="18"
+                                                       TextColor="White"
+                                                       VerticalOptions="Center" />
+
+                                                <VerticalStackLayout Grid.Column="1" Spacing="2">
+                                                    <Label Text="{Binding FileName}"
+                                                           TextColor="White"
+                                                           FontAttributes="Bold"
+                                                           LineBreakMode="TailTruncation" />
+                                                    <Label Text="{Binding FileSizeLabel}"
+                                                           TextColor="White"
+                                                           FontSize="11"
+                                                           Opacity="0.75"
+                                                           LineBreakMode="TailTruncation" />
+                                                </VerticalStackLayout>
+
+                                                <Label Grid.Column="2"
+                                                       Text="Apri"
+                                                       TextColor="White"
+                                                       Opacity="0.85"
+                                                       VerticalOptions="Center" />
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- AUDIO -->
+                                        <Border IsVisible="{Binding IsAudio}"
+                                                StrokeThickness="0"
+                                                Padding="10"
+                                                BackgroundColor="#1C1C1C"
+                                                HorizontalOptions="Start"
+                                                MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                                            <Border.StrokeShape>
+                                                <RoundRectangle CornerRadius="12" />
+                                            </Border.StrokeShape>
+
+                                            <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="10">
+                                                <Button Text="{Binding AudioPlayStopLabel}"
+                                                        BackgroundColor="#2A2A2A"
+                                                        TextColor="White"
+                                                        Clicked="OnPlayAudioClicked"
+                                                        CommandParameter="{Binding}"
+                                                        WidthRequest="90"
+                                                        HeightRequest="40" />
+                                                <VerticalStackLayout Grid.Column="1" Spacing="2" HorizontalOptions="Start">
+                                                    <Label Text="{Binding AudioLabel}"
+                                                           TextColor="White"
+                                                           LineBreakMode="TailTruncation" />
+                                                    <Label Text="{Binding DurationLabel}"
+                                                           TextColor="White"
+                                                           FontSize="12"
+                                                           Opacity="0.7" />
+                                                </VerticalStackLayout>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- LOCATION -->
+                                        <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
+                                                                Latitude="{Binding Latitude}"
+                                                                Longitude="{Binding Longitude}"
+                                                                Address="{Binding LocationLabel}"
+                                                                HorizontalOptions="Start"
+                                                                MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}" />
+
+                                        <!-- CONTATTO -->
+                                        <Border IsVisible="{Binding IsContact}"
+                                                StrokeThickness="0"
+                                                Padding="10"
+                                                BackgroundColor="#1C1C1C"
+                                                HorizontalOptions="Start"
+                                                MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
+                                            <Border.StrokeShape>
+                                                <RoundRectangle CornerRadius="12" />
+                                            </Border.StrokeShape>
+
+                                            <VerticalStackLayout Spacing="4">
+                                                <Label Text="👤 Contatto"
+                                                       TextColor="White"
+                                                       FontAttributes="Bold" />
+                                                <Label Text="{Binding ContactLabel}"
                                                        TextColor="White"
                                                        LineBreakMode="TailTruncation" />
-                                                <Label Text="{Binding DurationLabel}"
-                                                       TextColor="White"
-                                                       FontSize="12"
-                                                       Opacity="0.7" />
+                                                <Button Text="Chiama"
+                                                        BackgroundColor="#2A2A2A"
+                                                        TextColor="White"
+                                                        Clicked="OnCallContactClicked"
+                                                        CommandParameter="{Binding}" />
                                             </VerticalStackLayout>
-                                        </Grid>
-                                    </Border>
+                                        </Border>
 
-                                    <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
-                                                            Latitude="{Binding Latitude}"
-                                                            Longitude="{Binding Longitude}"
-                                                            Address="{Binding LocationLabel}" />
+                                    </VerticalStackLayout>
 
-                                    <Border IsVisible="{Binding IsContact}"
-                                            StrokeThickness="0"
-                                            Padding="10"
-                                            BackgroundColor="#1C1C1C">
-                                        <Border.StrokeShape>
-                                            <RoundRectangle CornerRadius="12" />
-                                        </Border.StrokeShape>
-                                        <VerticalStackLayout Spacing="6">
-                                            <Label Text="👤 Contatto"
-                                                   TextColor="White"
-                                                   FontAttributes="Bold" />
-                                            <Label Text="{Binding ContactLabel}"
-                                                   TextColor="White"
-                                                   LineBreakMode="TailTruncation" />
-                                            <Button Text="Chiama"
-                                                    BackgroundColor="#2A2A2A"
-                                                    TextColor="White"
-                                                    Clicked="OnCallContactClicked"
-                                                    CommandParameter="{Binding}" />
-                                        </VerticalStackLayout>
-                                    </Border>
-
-                                    <HorizontalStackLayout HorizontalOptions="End" Spacing="10">
+                                    <!-- Meta: ora + spunte (gap minimo, sempre vicino al contenuto) -->
+                                    <HorizontalStackLayout Grid.Row="1"
+                                                          HorizontalOptions="End"
+                                                          Spacing="8">
                                         <Label Text="{Binding TimeLabel}"
                                                TextColor="White"
                                                FontSize="10"
@@ -226,7 +335,7 @@
                                                Opacity="0.7" />
                                     </HorizontalStackLayout>
 
-                                </VerticalStackLayout>
+                                </Grid>
                             </Border>
 
                         </Grid>
