@@ -1,17 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Maui.ApplicationModel;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
-using Microsoft.Maui.Controls;
-using Biliardo.App.Componenti_UI;
+﻿using Biliardo.App.Componenti_UI;
+using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
-using Biliardo.App.Pagine_Autenticazione;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 
 namespace Biliardo.App.Pagine_Messaggi
 {

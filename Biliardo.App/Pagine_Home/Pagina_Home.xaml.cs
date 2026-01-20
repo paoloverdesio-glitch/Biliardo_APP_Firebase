@@ -8,25 +8,15 @@
 //  - Navigazione verso Pagina_MessaggiLista.
 // =======================================================================
 
-using System;
-using System.Threading.Tasks;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Collections.ObjectModel;
-using System.Collections.Generic;
-using System.Linq;
-using System.IO;
-using System.Reflection;
-using Microsoft.Maui.Controls;
-using Microsoft.Maui.ApplicationModel;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
-using Microsoft.Maui.ApplicationModel.Communication;
-using Microsoft.Maui.Storage;
-using Microsoft.Maui.Devices.Sensors;
-using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Componenti_UI.Composer;
+using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
+using System.Collections.ObjectModel;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+
 
 #if WINDOWS
 using Windows.Media.Core;
@@ -522,11 +512,25 @@ namespace Biliardo.App.Pagine_Home
             var choice = await DisplayActionSheet("Condividi", "Annulla", null, "Condividi esterno", "Repost interno");
             if (choice == "Condividi esterno")
             {
-                await Share.Default.RequestAsync(new ShareTextRequest
+                // Valida contenuto: preferisci il testo; se assente, prova il download URL del primo allegato disponibile.
+                var hasText = !string.IsNullOrWhiteSpace(post.Text);
+                string? fallbackUrl = null;
+                if (!hasText)
                 {
-                    Text = post.Text,
-                    Title = "Condividi"
-                });
+                    var att = post.Attachments?.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.DownloadUrl));
+                    fallbackUrl = att?.DownloadUrl;
+                }
+
+                // Usa il ShareHelper centralizzato; se la condivisione non avviene (nessun contenuto o errore), mostriamo popup informativo.
+                var shared = await Biliardo.App.Helpers.ShareHelper.ShareIfNotEmptyAsync(
+                    hasText ? post.Text : null,
+                    fallbackUrl,
+                    "Condividi");
+
+                if (!shared)
+                {
+                    await ShowPopupAsync("Nessun contenuto disponibile da condividere o condivisione non riuscita.", "Info");
+                }
             }
             else if (choice == "Repost interno")
             {
