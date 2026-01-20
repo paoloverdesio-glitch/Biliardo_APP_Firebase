@@ -62,11 +62,20 @@ namespace Biliardo.App.Servizi_Firebase
 
             string? avatarPath = null;
             string? avatarUrl = null;
-            var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
-            if (profile != null)
+
+            // Best-effort: se DirectoryService è protetto da rules, non deve bloccare la creazione post
+            try
             {
-                avatarPath = profile.PhotoUrl;
-                avatarUrl = profile.PhotoUrl;
+                var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
+                if (profile != null)
+                {
+                    avatarPath = profile.PhotoUrl;
+                    avatarUrl = profile.PhotoUrl;
+                }
+            }
+            catch
+            {
+                // ignore
             }
 
             var now = DateTimeOffset.UtcNow;
@@ -93,13 +102,19 @@ namespace Biliardo.App.Servizi_Firebase
             return ExtractLastPathSegment(name);
         }
 
+        /// <summary>
+        /// LISTA FEED.
+        /// FIX 403 (rules): aggiunto filtro query "deleted == false" + limit massimo + orderBy semplificato.
+        /// </summary>
         public async Task<PageResult<HomePostItem>> ListPostsAsync(int pageSize, string? cursor, CancellationToken ct = default)
         {
             var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
+            // Hard cap: molte rules impongono un massimo (es. 20)
             if (pageSize <= 0) pageSize = 20;
+            if (pageSize > 20) pageSize = 20;
 
             var structuredQuery = new Dictionary<string, object>
             {
@@ -107,32 +122,40 @@ namespace Biliardo.App.Servizi_Firebase
                 {
                     new Dictionary<string, object> { ["collectionId"] = "home_posts" }
                 },
+
+                // Molte rules richiedono un filtro per consentire LIST/QUERY
+                ["where"] = new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "deleted" },
+                        ["op"] = "EQUAL",
+                        ["value"] = FirestoreRestClient.VBool(false)
+                    }
+                },
+
+                // OrderBy minimale (spesso le rules vietano __name__)
                 ["orderBy"] = new object[]
                 {
                     new Dictionary<string, object>
                     {
                         ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
                         ["direction"] = "DESCENDING"
-                    },
-                    new Dictionary<string, object>
-                    {
-                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "__name__" },
-                        ["direction"] = "DESCENDING"
                     }
                 },
-                ["limit"] = pageSize + 1
+
+                // Niente +1: se le rules hanno cap stretto, pageSize+1 viene negato.
+                ["limit"] = pageSize
             };
 
             if (!string.IsNullOrWhiteSpace(cursor))
             {
-                var (ts, postId) = ParseCursor(cursor);
-                var docName = $"{GetDocBasePath()}/home_posts/{postId}";
+                var ts = ParseCursorTimestamp(cursor);
                 structuredQuery["startAfter"] = new Dictionary<string, object>
                 {
                     ["values"] = new object[]
                     {
-                        FirestoreRestClient.VTimestamp(ts),
-                        new Dictionary<string, object> { ["referenceValue"] = docName }
+                        FirestoreRestClient.VTimestamp(ts)
                     }
                 };
             }
@@ -140,19 +163,13 @@ namespace Biliardo.App.Servizi_Firebase
             using var json = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
             var items = ParsePosts(json);
 
+            // Con limit=pageSize non posso sapere se esiste "un altro" elemento senza una seconda query.
+            // Heuristica: se ho pageSize elementi, espongo NextCursor.
             string? next = null;
-            if (items.Count > pageSize)
-            {
-                var page = items.Take(pageSize).ToList();
-                var last = page[^1];
-                next = BuildCursor(last.CreatedAtUtc, last.PostId);
-                return new PageResult<HomePostItem>(page, next);
-            }
-
-            if (items.Count > 0)
+            if (items.Count > 0 && items.Count >= pageSize)
             {
                 var last = items[^1];
-                next = BuildCursor(last.CreatedAtUtc, last.PostId);
+                next = BuildCursor(last.CreatedAtUtc);
             }
 
             return new PageResult<HomePostItem>(items, next);
@@ -167,7 +184,7 @@ namespace Biliardo.App.Servizi_Firebase
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
             var likeDoc = $"home_posts/{postId}/likes/{myUid}";
 
-            bool exists = false;
+            bool exists;
             try
             {
                 await FirestoreRestClient.GetDocumentAsync(likeDoc, idToken, ct);
@@ -217,8 +234,16 @@ namespace Biliardo.App.Servizi_Firebase
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
             var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "";
 
-            var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
-            var avatarPath = profile?.PhotoUrl;
+            string? avatarPath = null;
+            try
+            {
+                var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
+                avatarPath = profile?.PhotoUrl;
+            }
+            catch
+            {
+                // ignore
+            }
 
             var fields = new Dictionary<string, object>
             {
@@ -248,6 +273,7 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
             if (pageSize <= 0) pageSize = 20;
+            if (pageSize > 20) pageSize = 20;
 
             var structuredQuery = new Dictionary<string, object>
             {
@@ -263,7 +289,7 @@ namespace Biliardo.App.Servizi_Firebase
                         ["direction"] = "DESCENDING"
                     }
                 },
-                ["limit"] = pageSize + 1
+                ["limit"] = pageSize
             };
 
             if (!string.IsNullOrWhiteSpace(cursor))
@@ -282,14 +308,7 @@ namespace Biliardo.App.Servizi_Firebase
             var items = ParseComments(json);
 
             string? next = null;
-            if (items.Count > pageSize)
-            {
-                var page = items.Take(pageSize).ToList();
-                next = page.Count > 0 ? page[^1].CreatedAtUtc.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture) : null;
-                return new PageResult<HomeCommentItem>(page, next);
-            }
-
-            if (items.Count > 0)
+            if (items.Count > 0 && items.Count >= pageSize)
                 next = items[^1].CreatedAtUtc.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
 
             return new PageResult<HomeCommentItem>(items, next);
@@ -298,6 +317,7 @@ namespace Biliardo.App.Servizi_Firebase
         public async Task<string> CreateRepostAsync(string postId, string? optionalText, CancellationToken ct = default)
         {
             var newPostId = await CreatePostAsync(optionalText ?? "", Array.Empty<HomeAttachment>(), postId, ct);
+
             var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
@@ -310,6 +330,7 @@ namespace Biliardo.App.Servizi_Firebase
                 },
                 idToken,
                 ct);
+
             return newPostId;
         }
 
@@ -437,20 +458,19 @@ namespace Biliardo.App.Servizi_Firebase
             return list;
         }
 
-        private static string? BuildCursor(DateTimeOffset createdAtUtc, string postId)
-            => $"{createdAtUtc.UtcTicks}|{postId}";
+        private static string? BuildCursor(DateTimeOffset createdAtUtc)
+            => createdAtUtc.UtcTicks.ToString(CultureInfo.InvariantCulture);
 
-        private static (DateTimeOffset createdAtUtc, string postId) ParseCursor(string cursor)
+        private static DateTimeOffset ParseCursorTimestamp(string cursor)
         {
-            var parts = (cursor ?? "").Split('|');
-            if (parts.Length != 2) return (DateTimeOffset.UtcNow, "");
-            if (!long.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks))
-                ticks = DateTimeOffset.UtcNow.UtcTicks;
-            return (new DateTimeOffset(ticks, TimeSpan.Zero), parts[1]);
-        }
+            // Compat: accetta anche formato vecchio "ticks|postId"
+            var first = (cursor ?? "").Split('|')[0];
 
-        private static string GetDocBasePath()
-            => $"projects/biliardoapp/databases/(default)/documents";
+            if (!long.TryParse(first, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks))
+                ticks = DateTimeOffset.UtcNow.UtcTicks;
+
+            return new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
 
         private static string ExtractLastPathSegment(string name)
         {
@@ -518,7 +538,8 @@ namespace Biliardo.App.Servizi_Firebase
 
             if (value.TryGetProperty("stringValue", out var s) && s.ValueKind == JsonValueKind.String)
                 return s.GetString();
-            if (value.TryGetProperty("integerValue", out var i) && i.ValueKind == JsonValueKind.String && long.TryParse(i.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
+            if (value.TryGetProperty("integerValue", out var i) && i.ValueKind == JsonValueKind.String &&
+                long.TryParse(i.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
                 return l;
             if (value.TryGetProperty("doubleValue", out var d) && d.ValueKind == JsonValueKind.Number)
                 return d.GetDouble();

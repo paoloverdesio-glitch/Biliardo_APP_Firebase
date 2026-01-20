@@ -85,6 +85,7 @@ namespace Biliardo.App
 
             // Servizio foreground receipts (delivered) per ✓✓ grigie al mittente
             _deliveredSvc = services.GetService<ForegroundDeliveredReceiptsService>();
+            _deliveredSvc?.SetForeground(false); // IMPORTANT: mai attivare prima di avere sessione valida
 
 #if DEBUG
             if (UsaPaginaDebugNotifiche)
@@ -96,13 +97,27 @@ namespace Biliardo.App
 
             MainPage = new NavigationPage(new Pagina_Login());
 
-            // All’avvio l’app è in foreground: abilito subito (poi lifecycle gestirà pause/resume)
-            _deliveredSvc?.SetForeground(true);
-
             MainThread.BeginInvokeOnMainThread(async () =>
             {
                 await BootstrapAndRouteAsync();
             });
+        }
+
+        private static bool IsFirebaseProvider(string? provider)
+            => string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<bool> HasUsableSessionAsync(string? provider)
+        {
+            if (IsFirebaseProvider(provider))
+            {
+                // Nessun accesso Firestore: solo check locale token/refresh
+                var has = await FirebaseSessionePersistente.HaSessioneAsync();
+                var uid = FirebaseSessionePersistente.GetLocalId();
+                return has && !string.IsNullOrWhiteSpace(uid);
+            }
+
+            // Provider legacy/API
+            return await SessionePersistente.HaTokenAsync();
         }
 
         private async Task BootstrapAndRouteAsync()
@@ -110,31 +125,36 @@ namespace Biliardo.App
             try
             {
                 var provider = await SessionePersistente.GetProviderAsync();
-                DiagLog.Note("Auth.Provider", provider);
+                DiagLog.Note("Auth.Provider", provider ?? "");
 
-                var hasSession = await SessionePersistente.HaTokenAsync();
+                var hasSession = await HasUsableSessionAsync(provider);
                 DiagLog.Note("Auth.HasSession", hasSession.ToString());
 
                 if (hasSession)
                 {
+                    // NOTA: finché siamo in login/biometria, NON avviamo servizi che toccano Firestore.
                     var count = await SessionePersistente.IncrementaAccessoSeLoggatoAsync();
                     DiagLog.Note("Auth.AccessCount", count.ToString());
 
                     var needBio = await SessionePersistente.DeveRichiedereBiometriaAsync();
                     DiagLog.Note("Auth.NeedBiometric", needBio.ToString());
 
-                    _ = Task.Run(RegisterPushTokenIfPossibleAsync);
-
                     if (!needBio)
                     {
                         Application.Current.MainPage = new NavigationPage(new Pagina_Home());
                         DiagLog.Step("Navigation", "AutoToHome");
+
+                        // Ora che siamo effettivamente in Home (utente autenticato), abilitiamo i servizi
+                        _deliveredSvc?.SetForeground(true);
+                        _ = Task.Run(RegisterPushTokenIfPossibleAsync);
 
                         await TryHandlePendingPushAsync();
                         return;
                     }
                 }
 
+                // Nessuna sessione (o biometria richiesta): stay/login e nessun accesso a Firestore
+                _deliveredSvc?.SetForeground(false);
                 Application.Current.MainPage = new NavigationPage(new Pagina_Login());
                 DiagLog.Step("Navigation", "ToLogin");
 
@@ -143,6 +163,7 @@ namespace Biliardo.App
             catch (Exception ex)
             {
                 DiagLog.Exception("Auth.BootstrapAndRoute", ex);
+                _deliveredSvc?.SetForeground(false);
                 Application.Current.MainPage = new NavigationPage(new Pagina_Login());
                 await TryHandlePendingPushAsync();
             }
@@ -197,8 +218,17 @@ namespace Biliardo.App
 
             _pendingPushData = null;
 
-            if (!await SessionePersistente.HaTokenAsync())
+            // IMPORTANT: non gestire push se non c’è sessione valida
+            try
+            {
+                var provider = await SessionePersistente.GetProviderAsync();
+                if (!await HasUsableSessionAsync(provider))
+                    return;
+            }
+            catch
+            {
                 return;
+            }
 
             if (Application.Current?.MainPage is not NavigationPage nav)
                 return;

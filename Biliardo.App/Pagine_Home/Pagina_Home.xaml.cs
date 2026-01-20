@@ -65,7 +65,45 @@ namespace Biliardo.App.Pagine_Home
         protected override async void OnAppearing()
         {
             base.OnAppearing();
+
+            // BLOCCO HARD: prima di qualsiasi accesso a Firestore/Storage
+            // Se non c'è sessione Firebase valida in locale, si torna a Login e NON si carica il feed.
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
             await LoadFeedAsync();
+        }
+
+        /// <summary>
+        /// Verifica che esista una sessione Firebase locale (idToken+refreshToken e uid).
+        /// Non fa chiamate di rete. Se manca, torna a Login.
+        /// </summary>
+        private async Task<bool> EnsureFirebaseSessionOrBackToLoginAsync()
+        {
+            try
+            {
+                var has = await FirebaseSessionePersistente.HaSessioneAsync();
+                var uid = FirebaseSessionePersistente.GetLocalId();
+
+                if (!has || string.IsNullOrWhiteSpace(uid))
+                {
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        Application.Current.MainPage = new NavigationPage(new Pagina_Login(showInserisciCredenziali: true));
+                    });
+                    return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    Application.Current.MainPage = new NavigationPage(new Pagina_Login(showInserisciCredenziali: true));
+                });
+                return false;
+            }
         }
 
         private static Exception UnwrapException(Exception ex)
@@ -186,6 +224,10 @@ namespace Biliardo.App.Pagine_Home
         {
             try
             {
+                // SAFETY: evita invii se non loggato (es. Home aperta per errore)
+                if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                    return;
+
                 if (string.IsNullOrWhiteSpace(payload.Text) && !payload.PendingItems.Any())
                     return;
 
@@ -449,6 +491,10 @@ namespace Biliardo.App.Pagine_Home
 
             try
             {
+                // SAFETY: evita chiamate se non loggato
+                if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                    return;
+
                 await _homeFeed.ToggleLikeAsync(post.PostId);
                 post.IsLiked = !post.IsLiked;
                 post.LikeCount += post.IsLiked ? 1 : -1;
@@ -484,6 +530,10 @@ namespace Biliardo.App.Pagine_Home
             }
             else if (choice == "Repost interno")
             {
+                // SAFETY: evita chiamate se non loggato
+                if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                    return;
+
                 await _homeFeed.CreateRepostAsync(post.PostId, null);
                 post.ShareCount += 1;
                 post.NotifyCounters();
@@ -510,6 +560,10 @@ namespace Biliardo.App.Pagine_Home
 
             try
             {
+                // SAFETY: evita download da Storage se non loggato
+                if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                    return;
+
                 var path = await EnsureHomeAudioDownloadedAsync(att);
                 if (string.IsNullOrWhiteSpace(path))
                     return;
@@ -806,6 +860,9 @@ namespace Biliardo.App.Pagine_Home
         // ===================== 9) LOGOUT (LOGICA) ==========================
         private async Task EseguiLogoutAsync()
         {
+            // Logout reale Firebase: altrimenti rimangono token e al riavvio si tenta accesso Firestore.
+            try { await FirebaseSessionePersistente.LogoutAsync(); } catch { }
+
             Application.Current.MainPage = new NavigationPage(new Pagina_Login());
             await Task.CompletedTask;
         }

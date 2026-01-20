@@ -1,8 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
-using System.ComponentModel;
+using System.IO;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Biliardo.App.Servizi_Media;
 using Microsoft.Maui.ApplicationModel;
@@ -13,9 +12,10 @@ using Microsoft.Maui.Storage;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 #endif
+
 namespace Biliardo.App.Componenti_UI.Composer
 {
-    public partial class ComposerBarView : ContentView, INotifyPropertyChanged
+    public partial class ComposerBarView : ContentView
     {
         private readonly IVoiceRecorder _recorder;
         private readonly DraftAudioPlayback _draftPlayback;
@@ -33,7 +33,13 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         public ComposerBarView()
         {
+            // IMPORTANTISSIMO:
+            // inizializza PRIMA del BindingContext, così le binding non leggono campi null.
+            _recorder = VoiceMediaFactory.CreateRecorder();
+            _draftPlayback = new DraftAudioPlayback();
+
             InitializeComponent();
+
             BindingContext = this;
 
             PendingItems.CollectionChanged += (_, __) =>
@@ -42,9 +48,6 @@ namespace Biliardo.App.Componenti_UI.Composer
                 OnPropertyChanged(nameof(CanSend));
                 OnPropertyChanged(nameof(CanShowMic));
             };
-
-            _recorder = VoiceMediaFactory.CreateRecorder();
-            _draftPlayback = new DraftAudioPlayback();
         }
 
         public ObservableCollection<PendingItemVm> PendingItems { get; } = new();
@@ -65,7 +68,13 @@ namespace Biliardo.App.Componenti_UI.Composer
         }
 
         public bool CanSend => !_isSending && (!string.IsNullOrWhiteSpace(ComposerText) || PendingItems.Count > 0);
-        public bool CanShowMic => !_isSending && !HasPendingItems && string.IsNullOrWhiteSpace(ComposerText) && !_isRecording && !_micDisabled;
+
+        public bool CanShowMic =>
+            !_isSending &&
+            !HasPendingItems &&
+            string.IsNullOrWhiteSpace(ComposerText) &&
+            !_isRecording &&
+            !_micDisabled;
 
         public bool IsVoiceHoldStripVisible => _isRecording && !_isLocked;
         public bool IsVoiceLockPanelVisible => _isRecording && _isLocked;
@@ -74,16 +83,27 @@ namespace Biliardo.App.Componenti_UI.Composer
         public string VoiceTimeLabel
         {
             get => _voiceTimeLabel;
-            private set { _voiceTimeLabel = value; OnPropertyChanged(); }
+            private set
+            {
+                if (_voiceTimeLabel == value) return;
+                _voiceTimeLabel = value;
+                OnPropertyChanged();
+            }
         }
 
         public string VoiceHintLabel
         {
             get => _voiceHintLabel;
-            private set { _voiceHintLabel = value; OnPropertyChanged(); }
+            private set
+            {
+                if (_voiceHintLabel == value) return;
+                _voiceHintLabel = value;
+                OnPropertyChanged();
+            }
         }
 
-        public string VoicePauseResumeLabel => _recorder.IsPaused ? "PLAY" : "STOP";
+        // Null-safe: evita crash in fase di costruzione/binding
+        public string VoicePauseResumeLabel => (_recorder?.IsPaused ?? false) ? "PLAY" : "STOP";
 
         public event EventHandler? AttachmentActionRequested;
         public event EventHandler<ComposerSendPayload>? SendRequested;
@@ -99,7 +119,10 @@ namespace Biliardo.App.Componenti_UI.Composer
                 var count = PendingItems.Count(x => x.Kind != PendingKind.AudioDraft);
                 if (count >= maxNonTextItems.Value)
                 {
-                    _ = Application.Current?.MainPage?.DisplayAlert("Limite allegati", $"Puoi allegare al massimo {maxNonTextItems.Value} elementi.", "OK");
+                    _ = Application.Current?.MainPage?.DisplayAlert(
+                        "Limite allegati",
+                        $"Puoi allegare al massimo {maxNonTextItems.Value} elementi.",
+                        "OK");
                     return false;
                 }
             }
@@ -338,7 +361,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         {
             try
             {
-                var info = new System.IO.FileInfo(path);
+                var info = new FileInfo(path);
                 return info.Exists ? info.Length : 0;
             }
             catch
@@ -350,7 +373,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         private static string BuildDraftPath()
         {
             var fileName = $"voice_draft_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.m4a";
-            return System.IO.Path.Combine(FileSystem.CacheDirectory, fileName);
+            return Path.Combine(FileSystem.CacheDirectory, fileName);
         }
 
         private void RefreshVoiceBindings()
@@ -361,11 +384,6 @@ namespace Biliardo.App.Componenti_UI.Composer
             OnPropertyChanged(nameof(VoicePauseResumeLabel));
             OnPropertyChanged(nameof(CanShowMic));
         }
-
-        public new event PropertyChangedEventHandler? PropertyChanged;
-
-        private void OnPropertyChanged([CallerMemberName] string? name = null)
-            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
         private interface IAudioPlayback
         {

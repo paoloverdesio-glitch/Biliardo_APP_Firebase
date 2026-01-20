@@ -34,8 +34,11 @@ namespace Biliardo.App.Servizi_Firebase
             PropertyNameCaseInsensitive = true
         };
 
+        private static string DocumentsResourceRoot =>
+            $"projects/{ProjectId}/databases/{DatabaseId}/documents";
+
         private static string BaseDocumentsUrl =>
-            $"https://firestore.googleapis.com/v1/projects/{ProjectId}/databases/{DatabaseId}/documents";
+            $"https://firestore.googleapis.com/v1/{DocumentsResourceRoot}";
 
         // Root runQuery (parent = .../documents)
         private static string RunQueryUrlRoot =>
@@ -43,6 +46,9 @@ namespace Biliardo.App.Servizi_Firebase
 
         private static string CommitUrl =>
             $"{BaseDocumentsUrl}:commit";
+
+        private static string BuildDocumentResourceName(string documentPath)
+            => $"{DocumentsResourceRoot}/{documentPath.TrimStart('/')}";
 
         // =========================================================
         // [1] API di base
@@ -196,7 +202,11 @@ namespace Biliardo.App.Servizi_Firebase
             if (transforms == null || transforms.Count == 0) throw new ArgumentException("transforms vuoti", nameof(transforms));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            var docName = $"{BaseDocumentsUrl}/{documentPath.TrimStart('/')}";
+            // FIX CRITICO:
+            // Firestore commit API vuole un resource name del tipo:
+            // projects/{projectId}/databases/{databaseId}/documents/{path}
+            // NON un URL HTTPS.
+            var docName = BuildDocumentResourceName(documentPath);
 
             var fieldTransforms = transforms.Select(t =>
             {
@@ -262,7 +272,7 @@ namespace Biliardo.App.Servizi_Firebase
             if (structuredQuery == null) throw new ArgumentNullException(nameof(structuredQuery));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            // Regola API: parent è parte dell’URL: .../documents oppure .../documents/{document_path} :contentReference[oaicite:1]{index=1}
+            // Regola API: parent è parte dell’URL: .../documents oppure .../documents/{document_path}
             var url = string.IsNullOrWhiteSpace(parentDocumentPath)
                 ? RunQueryUrlRoot
                 : $"{BaseDocumentsUrl}/{parentDocumentPath}:runQuery";
