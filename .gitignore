@@ -55,3 +55,9 @@ _deploy_logs/
 _diag/
 _safety/
 artifacts/
+# --- BUILD OUTPUT WINDOWS ---
+WIN/*
+!WIN/BiliardoApp.exe
+
+# --- DUMPS LOCALI ---
+dumps/
