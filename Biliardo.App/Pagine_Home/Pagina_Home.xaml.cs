@@ -6,17 +6,19 @@
 //  - Menu laterale destro account (Info app / Esci →) con pannello a scorrimento.
 //  - Popup verde stile unificato (informazioni e messaggi Home).
 //  - Navigazione verso Pagina_MessaggiLista.
+//  - Feed Home (FirestoreHomeFeedService) con supporto allegati e audio playback.
 // =======================================================================
 
 using Biliardo.App.Componenti_UI.Composer;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
+using Biliardo.App.Infrastructure;
+using Microsoft.Maui.Graphics;
 using System.Collections.ObjectModel;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-
 
 #if WINDOWS
 using Windows.Media.Core;
@@ -39,16 +41,22 @@ namespace Biliardo.App.Pagine_Home
         // Popup personalizzato
         private TaskCompletionSource<bool>? _popupTcs;
 
+        // Tuning scroll (Android: disabilita change animations, cache, fixed size)
+        private readonly ScrollWorkCoordinator _feedCoordinator = new();
+        private CollectionViewNativeScrollStateTracker? _feedTracker;
+
         // ===================== 3) COSTRUTTORE ============================
         public Pagina_Home()
         {
             InitializeComponent();
             BindingContext = this;
 
-            // Nasconde la Navigation Bar (barra grigia con titolo) su questa pagina
+            // Nasconde la Navigation Bar su questa pagina
             NavigationPage.SetHasNavigationBar(this, false);
 
             _audioPlayback = AudioPlaybackFactory.Create();
+
+            ApplyHomeFeedScrollTuning();
         }
         // =================================================================
 
@@ -56,17 +64,51 @@ namespace Biliardo.App.Pagine_Home
         {
             base.OnAppearing();
 
-            // BLOCCO HARD: prima di qualsiasi accesso a Firestore/Storage
-            // Se non c'è sessione Firebase valida in locale, si torna a Login e NON si carica il feed.
             if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                 return;
+
+            ApplyHomeFeedScrollTuning();
 
             await LoadFeedAsync();
         }
 
+        protected override void OnDisappearing()
+        {
+            base.OnDisappearing();
+
+            try
+            {
+                _feedTracker?.Dispose();
+                _feedTracker = null;
+            }
+            catch { }
+        }
+
+        private void ApplyHomeFeedScrollTuning()
+        {
+            try
+            {
+                // Inerzia/fling tuning (Android/Windows). Su altre piattaforme è no-op.
+                Biliardo.App.Componenti_UI.ChatScrollTuning.Apply(FeedCollection);
+            }
+            catch { }
+
+            try
+            {
+                _feedTracker?.Dispose();
+                _feedTracker = CollectionViewNativeScrollStateTracker.Attach(
+                    FeedCollection,
+                    _feedCoordinator,
+                    TimeSpan.FromMilliseconds(280));
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
         /// <summary>
-        /// Verifica che esista una sessione Firebase locale (idToken+refreshToken e uid).
-        /// Non fa chiamate di rete. Se manca, torna a Login.
+        /// Verifica sessione Firebase locale. Se manca, torna a Login.
         /// </summary>
         private async Task<bool> EnsureFirebaseSessionOrBackToLoginAsync()
         {
@@ -116,12 +158,8 @@ namespace Biliardo.App.Pagine_Home
         private static string FormatExceptionForPopup(Exception ex)
         {
             var core = UnwrapException(ex);
-
-            // Messaggio utente: se è TargetInvocationException, mostriamo l'inner.
             var msg = core.Message;
-
 #if DEBUG
-            // In debug aggiungiamo dettagli per diagnosi (senza dipendenze esterne).
             msg += "\n\n" + core.ToString();
 #endif
             return msg;
@@ -132,6 +170,7 @@ namespace Biliardo.App.Pagine_Home
             try
             {
                 var res = await _homeFeed.ListPostsAsync(20, null);
+
                 Posts.Clear();
                 foreach (var post in res.Items)
                     Posts.Add(HomePostVm.FromService(post));
@@ -214,7 +253,6 @@ namespace Biliardo.App.Pagine_Home
         {
             try
             {
-                // SAFETY: evita invii se non loggato (es. Home aperta per errore)
                 if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                     return;
 
@@ -294,7 +332,6 @@ namespace Biliardo.App.Pagine_Home
             var fileName = Path.GetFileName(item.LocalFilePath);
             var objectPath = $"home_posts/media/{Guid.NewGuid():N}/{fileName}";
 
-            // FIX: named args per disambiguare l'overload (build/runtime issue)
             var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
                 idToken: idToken,
                 objectPath: objectPath,
@@ -474,20 +511,21 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        private async void OnLikeClicked(object sender, EventArgs e)
+        // ✅ FIX #1: gestione tap robusta (usa e.Parameter, non sender) -> like torna a funzionare
+        private async void OnLikeClicked(object sender, TappedEventArgs e)
         {
-            if (sender is not Button btn || btn.CommandParameter is not HomePostVm post)
+            if (e?.Parameter is not HomePostVm post)
                 return;
 
             try
             {
-                // SAFETY: evita chiamate se non loggato
                 if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                     return;
 
-                await _homeFeed.ToggleLikeAsync(post.PostId);
-                post.IsLiked = !post.IsLiked;
-                post.LikeCount += post.IsLiked ? 1 : -1;
+                var res = await _homeFeed.ToggleLikeWithResultAsync(post.PostId);
+
+                post.IsLiked = res.IsLikedNow;
+                post.LikeCount = Math.Max(0, res.LikeCount);
                 post.NotifyCounters();
             }
             catch (Exception ex)
@@ -496,23 +534,23 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        private async void OnCommentClicked(object sender, EventArgs e)
+        // ✅ FIX #3: comment/share senza Button (tap su layout)
+        private async void OnCommentClicked(object sender, TappedEventArgs e)
         {
-            if (sender is not Button btn || btn.CommandParameter is not HomePostVm post)
+            if (e?.Parameter is not HomePostVm post)
                 return;
 
             await Navigation.PushAsync(new PostDetailPage(post));
         }
 
-        private async void OnShareClicked(object sender, EventArgs e)
+        private async void OnShareClicked(object sender, TappedEventArgs e)
         {
-            if (sender is not Button btn || btn.CommandParameter is not HomePostVm post)
+            if (e?.Parameter is not HomePostVm post)
                 return;
 
             var choice = await DisplayActionSheet("Condividi", "Annulla", null, "Condividi esterno", "Repost interno");
             if (choice == "Condividi esterno")
             {
-                // Valida contenuto: preferisci il testo; se assente, prova il download URL del primo allegato disponibile.
                 var hasText = !string.IsNullOrWhiteSpace(post.Text);
                 string? fallbackUrl = null;
                 if (!hasText)
@@ -521,7 +559,6 @@ namespace Biliardo.App.Pagine_Home
                     fallbackUrl = att?.DownloadUrl;
                 }
 
-                // Usa il ShareHelper centralizzato; se la condivisione non avviene (nessun contenuto o errore), mostriamo popup informativo.
                 var shared = await Biliardo.App.Helpers.ShareHelper.ShareIfNotEmptyAsync(
                     hasText ? post.Text : null,
                     fallbackUrl,
@@ -534,7 +571,6 @@ namespace Biliardo.App.Pagine_Home
             }
             else if (choice == "Repost interno")
             {
-                // SAFETY: evita chiamate se non loggato
                 if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                     return;
 
@@ -564,7 +600,6 @@ namespace Biliardo.App.Pagine_Home
 
             try
             {
-                // SAFETY: evita download da Storage se non loggato
                 if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                     return;
 
@@ -619,13 +654,11 @@ namespace Biliardo.App.Pagine_Home
         }
 
         // ===================== 4) MENU LATERALE SINISTRO =================
-        // 4.1 Toggle del menu laterale sinistro (Tap su icona 3 palle o overlay)
         private async void OnMenuLaterale_Toggle(object? sender, TappedEventArgs e)
         {
             await ToggleMenuAsync();
         }
 
-        // 4.2 Logica di apertura/chiusura con animazione (sinistra)
         private async Task ToggleMenuAsync()
         {
             var overlayMenu = this.FindByName<Grid>("overlay_menu");
@@ -658,7 +691,6 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        // 4.3 Cattura voci del menu laterale sinistro (Clicked/Tapped)
         private async void OnMenuVoice(object? sender, EventArgs e)
         {
             await HandleMenuVoiceAsync(sender);
@@ -669,7 +701,6 @@ namespace Biliardo.App.Pagine_Home
             await HandleMenuVoiceAsync(sender);
         }
 
-        // 4.4 Router per voci free1..free15: apre pagina placeholder
         private async Task HandleMenuVoiceAsync(object? sender)
         {
             string? voce = null;
@@ -679,7 +710,6 @@ namespace Biliardo.App.Pagine_Home
             voce ??= "free";
             voce = voce.Trim();
 
-            // Chiudi menu sinistro prima di navigare
             if (_menuAperto)
             {
                 await ToggleMenuAsync();
@@ -718,7 +748,6 @@ namespace Biliardo.App.Pagine_Home
         // =================================================================
 
         // ===================== 5) MENU LATERALE DESTRO (ACCOUNT) =========
-        // 5.1 Toggle menu destro (icona freccia o tap overlay destro)
         private async void OnLogoutMenu(object? sender, TappedEventArgs e)
         {
             await ToggleLogoutMenuAsync();
@@ -729,7 +758,6 @@ namespace Biliardo.App.Pagine_Home
             await ToggleLogoutMenuAsync();
         }
 
-        // 5.2 Logica apertura/chiusura menu destro con animazione
         private async Task ToggleLogoutMenuAsync()
         {
             var overlayLogout = this.FindByName<Grid>("overlay_logout_menu");
@@ -762,7 +790,6 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        // 5.3 Click "Info su BiliardoApp"
         private async void OnLogoutInfoClicked(object? sender, EventArgs e)
         {
             if (_logoutMenuAperto)
@@ -772,7 +799,6 @@ namespace Biliardo.App.Pagine_Home
             await ShowInfoBiliardoAppAsync();
         }
 
-        // 5.4 Click "Esci →"
         private async void OnLogoutExitClicked(object? sender, EventArgs e)
         {
             if (_logoutMenuAperto)
@@ -864,7 +890,6 @@ namespace Biliardo.App.Pagine_Home
         // ===================== 9) LOGOUT (LOGICA) ==========================
         private async Task EseguiLogoutAsync()
         {
-            // Logout reale Firebase: altrimenti rimangono token e al riavvio si tenta accesso Firestore.
             try { await FirebaseSessionePersistente.LogoutAsync(); } catch { }
 
             Application.Current.MainPage = new NavigationPage(new Pagina_Login());
@@ -892,19 +917,44 @@ namespace Biliardo.App.Pagine_Home
             public int LikeCount { get; set; }
             public int CommentCount { get; set; }
             public int ShareCount { get; set; }
+            public string LikeHeartGlyph => LikeCount > 0 ? "❤️" : "🤍";
+
+
+            // Regola richiesta:
+            // - LikeCount == 0  -> cuore pieno bianco
+            // - LikeCount  > 0  -> cuore pieno rosso
+            public Microsoft.Maui.Graphics.Color LikeHeartColor => LikeCount > 0 ? Colors.Red : Colors.White;
+
+            // Mantengo IsLiked (può servire in futuro), ma NON guida più il colore.
             public bool IsLiked { get; set; }
 
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
+            public bool HasAttachments => Attachments != null && Attachments.Count > 0;
+
             public string CreatedAtLabel => CreatedAtUtc.ToLocalTime().ToString("g");
-            public string LikeLabel => $"{(IsLiked ? "♥" : "♡")} {LikeCount}";
+
+            // Compat (eventuali usi altrove)
+            public Color LikeTextColor => LikeCount > 0 ? Colors.Red : Colors.White;
+            public string LikeLabel => $"♥ {LikeCount}";
             public string CommentLabel => $"💬 {CommentCount}";
             public string ShareLabel => $"↗ {ShareCount}";
 
             public void NotifyCounters()
             {
+                // Compat
                 OnPropertyChanged(nameof(LikeLabel));
                 OnPropertyChanged(nameof(CommentLabel));
                 OnPropertyChanged(nameof(ShareLabel));
+                OnPropertyChanged(nameof(LikeTextColor));
+                OnPropertyChanged(nameof(LikeHeartGlyph));
+
+
+                // ✅ FIX: ora in XAML bindiamo i contatori direttamente
+                OnPropertyChanged(nameof(LikeCount));
+                OnPropertyChanged(nameof(CommentCount));
+                OnPropertyChanged(nameof(ShareCount));
+
+                OnPropertyChanged(nameof(LikeHeartColor));
             }
 
             public static HomePostVm FromService(FirestoreHomeFeedService.HomePostItem post)
@@ -920,7 +970,8 @@ namespace Biliardo.App.Pagine_Home
                     Text = post.Text ?? "",
                     LikeCount = post.LikeCount,
                     CommentCount = post.CommentCount,
-                    ShareCount = post.ShareCount
+                    ShareCount = post.ShareCount,
+                    IsLiked = post.IsLiked
                 };
 
                 foreach (var att in post.Attachments)

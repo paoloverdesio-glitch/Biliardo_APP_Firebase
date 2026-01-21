@@ -34,7 +34,11 @@ namespace Biliardo.App.Servizi_Firebase
             int ShareCount,
             bool Deleted,
             DateTimeOffset? DeletedAtUtc,
-            string? RepostOfPostId);
+            string? RepostOfPostId,
+            bool IsLiked = false
+        );
+
+        public sealed record LikeToggleResult(bool IsLikedNow, int LikeCount);
 
         public sealed record HomeCommentItem(
             string CommentId,
@@ -104,7 +108,7 @@ namespace Biliardo.App.Servizi_Firebase
 
         /// <summary>
         /// LISTA FEED.
-        /// FIX 403 (rules): aggiunto filtro query "deleted == false" + limit massimo + orderBy semplificato.
+        /// Nota: qui popoliamo anche IsLiked leggendo (best-effort) il doc like dell'utente corrente.
         /// </summary>
         public async Task<PageResult<HomePostItem>> ListPostsAsync(int pageSize, string? cursor, CancellationToken ct = default)
         {
@@ -112,7 +116,6 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
-            // Hard cap: molte rules impongono un massimo (es. 20)
             if (pageSize <= 0) pageSize = 20;
             if (pageSize > 20) pageSize = 20;
 
@@ -122,8 +125,6 @@ namespace Biliardo.App.Servizi_Firebase
                 {
                     new Dictionary<string, object> { ["collectionId"] = "home_posts" }
                 },
-
-                // Molte rules richiedono un filtro per consentire LIST/QUERY
                 ["where"] = new Dictionary<string, object>
                 {
                     ["fieldFilter"] = new Dictionary<string, object>
@@ -133,8 +134,6 @@ namespace Biliardo.App.Servizi_Firebase
                         ["value"] = FirestoreRestClient.VBool(false)
                     }
                 },
-
-                // OrderBy minimale (spesso le rules vietano __name__)
                 ["orderBy"] = new object[]
                 {
                     new Dictionary<string, object>
@@ -143,8 +142,6 @@ namespace Biliardo.App.Servizi_Firebase
                         ["direction"] = "DESCENDING"
                     }
                 },
-
-                // Niente +1: se le rules hanno cap stretto, pageSize+1 viene negato.
                 ["limit"] = pageSize
             };
 
@@ -163,8 +160,17 @@ namespace Biliardo.App.Servizi_Firebase
             using var json = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
             var items = ParsePosts(json);
 
-            // Con limit=pageSize non posso sapere se esiste "un altro" elemento senza una seconda query.
-            // Heuristica: se ho pageSize elementi, espongo NextCursor.
+            // Popola IsLiked (se ho un uid valido)
+            var myUid = FirebaseSessionePersistente.GetLocalId();
+            if (!string.IsNullOrWhiteSpace(myUid))
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var liked = await LikeExistsAsync(items[i].PostId, myUid!, idToken, ct);
+                    items[i] = items[i] with { IsLiked = liked };
+                }
+            }
+
             string? next = null;
             if (items.Count > 0 && items.Count >= pageSize)
             {
@@ -175,29 +181,38 @@ namespace Biliardo.App.Servizi_Firebase
             return new PageResult<HomePostItem>(items, next);
         }
 
+        /// <summary>
+        /// Compat: mantiene la vecchia API (senza ritorno).
+        /// </summary>
         public async Task ToggleLikeAsync(string postId, CancellationToken ct = default)
         {
+            _ = await ToggleLikeWithResultAsync(postId, ct);
+        }
+
+        /// <summary>
+        /// Toggle Like con ritorno stato + contatore "autoritativo" letto dal post dopo la commit.
+        /// </summary>
+        public async Task<LikeToggleResult> ToggleLikeWithResultAsync(string postId, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(postId))
+                throw new ArgumentException("postId vuoto", nameof(postId));
+
             var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
-            var likeDoc = $"home_posts/{postId}/likes/{myUid}";
+            if (string.IsNullOrWhiteSpace(myUid))
+                throw new InvalidOperationException("Utente non valido. Rifai login.");
 
-            bool exists;
-            try
-            {
-                await FirestoreRestClient.GetDocumentAsync(likeDoc, idToken, ct);
-                exists = true;
-            }
-            catch
-            {
-                exists = false;
-            }
+            var likeDocPath = $"home_posts/{postId}/likes/{myUid}";
 
-            if (exists)
+            var alreadyLiked = await LikeExistsAsync(postId, myUid, idToken, ct);
+
+            if (alreadyLiked)
             {
-                await FirestoreRestClient.DeleteDocumentAsync(likeDoc, idToken, ct);
+                await FirestoreRestClient.DeleteDocumentAsync(likeDocPath, idToken, ct);
+
                 await FirestoreRestClient.CommitAsync(
                     $"home_posts/{postId}",
                     new[]
@@ -213,7 +228,9 @@ namespace Biliardo.App.Servizi_Firebase
                 {
                     ["createdAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow)
                 };
+
                 await FirestoreRestClient.CreateDocumentAsync($"home_posts/{postId}/likes", myUid, fields, idToken, ct);
+
                 await FirestoreRestClient.CommitAsync(
                     $"home_posts/{postId}",
                     new[]
@@ -223,6 +240,47 @@ namespace Biliardo.App.Servizi_Firebase
                     idToken,
                     ct);
             }
+
+            // Lettura contatore dal post (stato "vero")
+            var likeCount = await GetPostLikeCountAsync(postId, idToken, ct);
+
+            return new LikeToggleResult(
+                IsLikedNow: !alreadyLiked,
+                LikeCount: Math.Max(0, likeCount));
+        }
+
+        private static async Task<int> GetPostLikeCountAsync(string postId, string idToken, CancellationToken ct)
+        {
+            using var doc = await FirestoreRestClient.GetDocumentAsync($"home_posts/{postId}", idToken, ct);
+
+            if (!doc.RootElement.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
+                return 0;
+
+            return (int)(ReadIntField(fields, "likeCount") ?? 0);
+        }
+
+        private static async Task<bool> LikeExistsAsync(string postId, string likeUid, string idToken, CancellationToken ct)
+        {
+            var likeDoc = $"home_posts/{postId}/likes/{likeUid}";
+            try
+            {
+                await FirestoreRestClient.GetDocumentAsync(likeDoc, idToken, ct);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (IsFirestoreNotFound(ex))
+                    return false;
+
+                // Qualsiasi altro errore NON è "non esiste": va propagato (es. 403 rules)
+                throw;
+            }
+        }
+
+        private static bool IsFirestoreNotFound(Exception ex)
+        {
+            var msg = (ex?.Message ?? "");
+            return msg.Contains(" 404") || msg.Contains("404.") || msg.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase);
         }
 
         public async Task AddCommentAsync(string postId, string text, CancellationToken ct = default)
@@ -256,6 +314,7 @@ namespace Biliardo.App.Servizi_Firebase
             };
 
             await FirestoreRestClient.CreateDocumentAsync($"home_posts/{postId}/comments", null, fields, idToken, ct);
+
             await FirestoreRestClient.CommitAsync(
                 $"home_posts/{postId}",
                 new[]
@@ -397,7 +456,8 @@ namespace Biliardo.App.Servizi_Firebase
                     ShareCount: (int)(ReadIntField(fields, "shareCount") ?? 0),
                     Deleted: deleted,
                     DeletedAtUtc: ReadTimestampField(fields, "deletedAt"),
-                    RepostOfPostId: ReadStringField(fields, "repostOfPostId")
+                    RepostOfPostId: ReadStringField(fields, "repostOfPostId"),
+                    IsLiked: false
                 ));
             }
 
@@ -463,7 +523,6 @@ namespace Biliardo.App.Servizi_Firebase
 
         private static DateTimeOffset ParseCursorTimestamp(string cursor)
         {
-            // Compat: accetta anche formato vecchio "ticks|postId"
             var first = (cursor ?? "").Split('|')[0];
 
             if (!long.TryParse(first, NumberStyles.Integer, CultureInfo.InvariantCulture, out var ticks))

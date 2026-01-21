@@ -33,17 +33,11 @@
               Padding="10,0,10,6"
               BackgroundColor="#00000000">
             <Grid.ColumnDefinitions>
-                <!-- Icona 3 palle / menu laterale sinistro -->
                 <ColumnDefinition Width="Auto" />
-                <!-- Spazio centrale flessibile -->
                 <ColumnDefinition Width="*" />
-                <!-- Mercatino -->
                 <ColumnDefinition Width="Auto" />
-                <!-- Sfida (spade) -->
                 <ColumnDefinition Width="Auto" />
-                <!-- Chat (nuvoletta) -->
                 <ColumnDefinition Width="Auto" />
-                <!-- Menu account (logout) -->
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
@@ -70,40 +64,43 @@
                        HorizontalOptions="Center" />
             </Frame>
 
-            <!-- [B1.2] ICONA MERCATINO (CARRELLO, SOLO ICONA) -->
+            <!-- [B1.2] ICONA MERCATINO (CARRELLO) -->
             <Grid Grid.Column="2"
                   Margin="6,0"
                   VerticalOptions="Center">
                 <Grid.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnMercatino" />
                 </Grid.GestureRecognizers>
-                <Label Text="🛒"
+                <!-- 🛒 -->
+                <Label Text="&#x1F6D2;"
                        FontSize="22"
                        HorizontalOptions="Center"
                        VerticalOptions="Center" />
             </Grid>
 
-            <!-- [B1.3] ICONA SFIDA (2 SPADE INCROCIATE, SOLO ICONA) -->
+            <!-- [B1.3] ICONA SFIDA (2 SPADE INCROCIATE) -->
             <Grid Grid.Column="3"
                   Margin="6,0"
                   VerticalOptions="Center">
                 <Grid.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnCreaSfida" />
                 </Grid.GestureRecognizers>
-                <Label Text="⚔️"
+                <!-- ⚔️ -->
+                <Label Text="&#x2694;&#xFE0F;"
                        FontSize="22"
                        HorizontalOptions="Center"
                        VerticalOptions="Center" />
             </Grid>
 
-            <!-- [B1.4] ICONA CHAT (NUVOLETTA, SOLO ICONA) -->
+            <!-- [B1.4] ICONA CHAT (NUVOLETTA) -->
             <Grid Grid.Column="4"
                   Margin="6,0"
                   VerticalOptions="Center">
                 <Grid.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnApriMessaggi" />
                 </Grid.GestureRecognizers>
-                <Label Text="💬"
+                <!-- 💬 -->
+                <Label Text="&#x1F4AC;"
                        FontSize="22"
                        HorizontalOptions="Center"
                        VerticalOptions="Center" />
@@ -116,7 +113,8 @@
                 <Grid.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnLogoutMenu" />
                 </Grid.GestureRecognizers>
-                <Label Text="➤"
+                <!-- ➤ -->
+                <Label Text="&#x27A4;"
                        FontSize="24"
                        TextColor="White"
                        HorizontalOptions="Center"
@@ -140,19 +138,19 @@
                             <Border.StrokeShape>
                                 <RoundRectangle CornerRadius="14" />
                             </Border.StrokeShape>
+
                             <VerticalStackLayout Spacing="10">
+
+                                <!-- Header -->
                                 <HorizontalStackLayout Spacing="10" VerticalOptions="Center">
                                     <ui:UserAvatarView AvatarUrl="{Binding AuthorAvatarUrl}"
                                                        AvatarPath="{Binding AuthorAvatarPath}"
                                                        DisplayName="{Binding AuthorNickname}"
                                                        Size="36" />
-                                    <VerticalStackLayout Spacing="2">
+                                    <VerticalStackLayout Spacing="0">
                                         <Label Text="{Binding AuthorNickname}"
                                                TextColor="White"
                                                FontAttributes="Bold" />
-                                        <Label Text="{Binding CreatedAtLabel}"
-                                               TextColor="#A0A0A0"
-                                               FontSize="12" />
                                     </VerticalStackLayout>
                                 </HorizontalStackLayout>
 
@@ -161,20 +159,24 @@
                                        LineBreakMode="WordWrap"
                                        IsVisible="{Binding HasText}" />
 
-                                <CollectionView ItemsSource="{Binding Attachments}"
-                                                SelectionMode="None"
-                                                Margin="0,0,0,4">
-                                    <CollectionView.ItemTemplate>
+                                <!-- Allegati -->
+                                <VerticalStackLayout Margin="0,0,0,4"
+                                                     Spacing="6"
+                                                     IsVisible="{Binding HasAttachments}"
+                                                     BindableLayout.ItemsSource="{Binding Attachments}">
+                                    <BindableLayout.ItemTemplate>
                                         <DataTemplate>
                                             <Grid>
                                                 <Image IsVisible="{Binding IsImage}"
                                                        Source="{Binding DownloadUrl}"
                                                        Aspect="AspectFill"
                                                        HeightRequest="180" />
+
                                                 <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
                                                                         Latitude="{Binding Latitude}"
                                                                         Longitude="{Binding Longitude}"
                                                                         Address="{Binding AddressLabel}" />
+
                                                 <Border IsVisible="{Binding IsAudio}"
                                                         Stroke="#2B2B2B"
                                                         StrokeThickness="1"
@@ -191,6 +193,7 @@
                                                                VerticalTextAlignment="Center" />
                                                     </HorizontalStackLayout>
                                                 </Border>
+
                                                 <Border IsVisible="{Binding IsFileOrVideo}"
                                                         Stroke="#2B2B2B"
                                                         StrokeThickness="1"
@@ -199,52 +202,109 @@
                                                     <Label Text="{Binding FileName}"
                                                            TextColor="White" />
                                                 </Border>
+
                                                 <Border IsVisible="{Binding IsContact}"
                                                         Stroke="#2B2B2B"
                                                         StrokeThickness="1"
                                                         BackgroundColor="#1A1A1A"
                                                         Padding="8">
-                                                    <Label Text="👤 Contatto"
+                                                    <Label Text="&#x1F464; Contatto"
                                                            TextColor="White" />
                                                 </Border>
+
                                                 <Border IsVisible="{Binding IsPoll}"
                                                         Stroke="#2B2B2B"
                                                         StrokeThickness="1"
                                                         BackgroundColor="#1A1A1A"
                                                         Padding="8">
-                                                    <Label Text="📊 Sondaggio"
+                                                    <Label Text="&#x1F4CA; Sondaggio"
                                                            TextColor="White" />
                                                 </Border>
+
                                                 <Border IsVisible="{Binding IsEvent}"
                                                         Stroke="#2B2B2B"
                                                         StrokeThickness="1"
                                                         BackgroundColor="#1A1A1A"
                                                         Padding="8">
-                                                    <Label Text="📅 Evento"
+                                                    <Label Text="&#x1F4C5; Evento"
                                                            TextColor="White" />
                                                 </Border>
                                             </Grid>
                                         </DataTemplate>
-                                    </CollectionView.ItemTemplate>
-                                </CollectionView>
+                                    </BindableLayout.ItemTemplate>
+                                </VerticalStackLayout>
 
-                                <HorizontalStackLayout Spacing="16">
-                                    <Button Text="{Binding LikeLabel}"
-                                            Clicked="OnLikeClicked"
-                                            CommandParameter="{Binding .}"
-                                            BackgroundColor="#1E1E1E"
-                                            TextColor="White" />
-                                    <Button Text="{Binding CommentLabel}"
-                                            Clicked="OnCommentClicked"
-                                            CommandParameter="{Binding .}"
-                                            BackgroundColor="#1E1E1E"
-                                            TextColor="White" />
-                                    <Button Text="{Binding ShareLabel}"
-                                            Clicked="OnShareClicked"
-                                            CommandParameter="{Binding .}"
-                                            BackgroundColor="#1E1E1E"
-                                            TextColor="White" />
+                                <!-- ✅ FIX #3: azioni senza cornice grigia (no Border/Button chrome) -->
+                                <HorizontalStackLayout Spacing="18">
+
+                                    <!-- LIKE -->
+                                    <HorizontalStackLayout Spacing="6"
+                                                           Padding="0"
+                                                           VerticalOptions="Center">
+                                        <HorizontalStackLayout.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnLikeClicked"
+                                                                  CommandParameter="{Binding .}" />
+                                        </HorizontalStackLayout.GestureRecognizers>
+
+                                        <!-- ✅ FIX #2: cuore più “pieno/largo” come prima -->
+                                        <!-- U+2764 (heavy heart) in presentazione testo (FE0E) -->
+                                        <Label Text="{Binding LikeHeartGlyph}"
+                                                VerticalTextAlignment="Center" />
+
+
+                                        <!-- numero SEMPRE bianco -->
+                                        <Label Text="{Binding LikeCount}"
+                                               FontSize="16"
+                                               TextColor="White"
+                                               VerticalTextAlignment="Center" />
+                                    </HorizontalStackLayout>
+
+                                    <!-- COMMENTI -->
+                                    <HorizontalStackLayout Spacing="6"
+                                                           Padding="0"
+                                                           VerticalOptions="Center">
+                                        <HorizontalStackLayout.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnCommentClicked"
+                                                                  CommandParameter="{Binding .}" />
+                                        </HorizontalStackLayout.GestureRecognizers>
+
+                                        <Label Text="&#x1F4AC;"
+                                               FontSize="18"
+                                               TextColor="White"
+                                               VerticalTextAlignment="Center" />
+                                        <Label Text="{Binding CommentCount}"
+                                               FontSize="16"
+                                               TextColor="White"
+                                               VerticalTextAlignment="Center" />
+                                    </HorizontalStackLayout>
+
+                                    <!-- CONDIVIDI -->
+                                    <HorizontalStackLayout Spacing="6"
+                                                           Padding="0"
+                                                           VerticalOptions="Center">
+                                        <HorizontalStackLayout.GestureRecognizers>
+                                            <TapGestureRecognizer Tapped="OnShareClicked"
+                                                                  CommandParameter="{Binding .}" />
+                                        </HorizontalStackLayout.GestureRecognizers>
+
+                                        <Label Text="↗"
+                                               FontSize="18"
+                                               TextColor="White"
+                                               VerticalTextAlignment="Center" />
+                                        <Label Text="{Binding ShareCount}"
+                                               FontSize="16"
+                                               TextColor="White"
+                                               VerticalTextAlignment="Center" />
+                                    </HorizontalStackLayout>
+
                                 </HorizontalStackLayout>
+
+                                <!-- ✅ FIX #4: data/ora in basso a destra nel riquadro -->
+                                <Label Text="{Binding CreatedAtLabel}"
+                                       TextColor="#A0A0A0"
+                                       FontSize="12"
+                                       HorizontalOptions="End" />
+
                             </VerticalStackLayout>
                         </Border>
                     </DataTemplate>
@@ -270,7 +330,6 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!-- [C1] PANNELLO SINISTRO SCORREVOLE (FREE1..FREE15) -->
             <Frame x:Name="menu_panel"
                    Grid.Column="0"
                    Padding="0"
@@ -289,7 +348,6 @@
                                  BackgroundColor="#444444"
                                  Margin="0,0,0,8" />
 
-                        <!-- Voci free1..free15 -->
                         <Button Text="free1"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
                         <Button Text="free2"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
                         <Button Text="free3"  Style="{StaticResource MenuVoice}"  Clicked="OnMenuVoice" />
@@ -309,7 +367,6 @@
                 </ScrollView>
             </Frame>
 
-            <!-- [C2] AREA CLIC PER CHIUDERE MENU SINISTRO -->
             <ContentView Grid.Column="1">
                 <ContentView.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnMenuLaterale_Toggle" />
@@ -328,14 +385,12 @@
                 <ColumnDefinition Width="280" />
             </Grid.ColumnDefinitions>
 
-            <!-- [D1] AREA CLIC PER CHIUDERE MENU DESTRO -->
             <ContentView Grid.Column="0">
                 <ContentView.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnLogoutMenu_Toggle" />
                 </ContentView.GestureRecognizers>
             </ContentView>
 
-            <!-- [D2] PANNELLO DESTRO SCORREVOLE (ACCOUNT) -->
             <Frame x:Name="logout_menu_panel"
                    Grid.Column="1"
                    Padding="0"
@@ -404,7 +459,6 @@
 
     <!-- ===================== [F] STILI LOCALI (MENU TESTO) ================== -->
     <ContentPage.Resources>
-        <!-- Menu sinistro FREE -->
         <Style x:Key="MenuVoice"
                TargetType="Button">
             <Setter Property="HorizontalOptions" Value="Fill" />
@@ -413,7 +467,6 @@
             <Setter Property="CornerRadius" Value="6" />
             <Setter Property="Background">
                 <Setter.Value>
-                    <!-- Gradiente verde scuro inclinato ~20° rispetto all'orizzontale -->
                     <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.15">
                         <GradientStop Color="#022C22" Offset="0.0" />
                         <GradientStop Color="#064E3B" Offset="0.5" />
@@ -423,7 +476,6 @@
             </Setter>
         </Style>
 
-        <!-- Menu destro ACCOUNT -->
         <Style x:Key="LogoutMenuVoice"
                TargetType="Button">
             <Setter Property="HorizontalOptions" Value="Fill" />
@@ -432,7 +484,6 @@
             <Setter Property="CornerRadius" Value="6" />
             <Setter Property="Background">
                 <Setter.Value>
-                    <!-- Gradiente verde scuro inclinato ~20° rispetto all'orizzontale -->
                     <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.15">
                         <GradientStop Color="#022C22" Offset="0.0" />
                         <GradientStop Color="#064E3B" Offset="0.5" />

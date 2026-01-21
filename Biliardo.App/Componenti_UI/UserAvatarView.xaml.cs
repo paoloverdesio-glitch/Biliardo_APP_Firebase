@@ -1,3 +1,7 @@
+// FILE: Biliardo.App\Componenti_UI\UserAvatarView.xaml.cs
+// Ottimizzazione: evita creare ImageSource nuove ad ogni rebind (riciclo celle CollectionView).
+// Usa UriImageSource con caching e cache condivisa per url/path.
+
 using System;
 using System.Collections.Concurrent;
 using Microsoft.Maui.Controls;
@@ -6,7 +10,10 @@ namespace Biliardo.App.Componenti_UI
 {
     public partial class UserAvatarView : ContentView
     {
+        // Chiavi: "url:<...>" oppure "path:<...>"
         private static readonly ConcurrentDictionary<string, ImageSource> _cache = new();
+
+        private string _lastKey = "";
 
         public UserAvatarView()
         {
@@ -19,7 +26,7 @@ namespace Biliardo.App.Componenti_UI
             typeof(string),
             typeof(UserAvatarView),
             default(string),
-            propertyChanged: (_, __, ___) => ((UserAvatarView) _).UpdateAvatarSource());
+            propertyChanged: (_, __, ___) => ((UserAvatarView)_).UpdateAvatarSource());
 
         public string? AvatarPath
         {
@@ -32,7 +39,7 @@ namespace Biliardo.App.Componenti_UI
             typeof(string),
             typeof(UserAvatarView),
             default(string),
-            propertyChanged: (_, __, ___) => ((UserAvatarView) _).UpdateAvatarSource());
+            propertyChanged: (_, __, ___) => ((UserAvatarView)_).UpdateAvatarSource());
 
         public string? AvatarUrl
         {
@@ -45,7 +52,7 @@ namespace Biliardo.App.Componenti_UI
             typeof(string),
             typeof(UserAvatarView),
             default(string),
-            propertyChanged: (_, __, ___) => ((UserAvatarView) _).UpdateInitials());
+            propertyChanged: (_, __, ___) => ((UserAvatarView)_).UpdateInitials());
 
         public string? DisplayName
         {
@@ -74,7 +81,7 @@ namespace Biliardo.App.Componenti_UI
             if (string.IsNullOrWhiteSpace(avatarPath) || source == null)
                 return;
 
-            _cache[avatarPath] = source;
+            _cache["path:" + avatarPath.Trim()] = source;
         }
 
         private void UpdateInitials()
@@ -87,20 +94,54 @@ namespace Biliardo.App.Componenti_UI
         private void UpdateAvatarSource()
         {
             ImageSource? source = null;
+
             var url = (AvatarUrl ?? "").Trim();
+            var path = (AvatarPath ?? "").Trim();
+
+            string key = "";
+            if (!string.IsNullOrWhiteSpace(url))
+                key = "url:" + url;
+            else if (!string.IsNullOrWhiteSpace(path))
+                key = "path:" + path;
+
+            // Se è la stessa chiave già applicata, evita lavoro e riduci invalidazioni durante scroll.
+            if (!string.IsNullOrWhiteSpace(key) && string.Equals(key, _lastKey, StringComparison.Ordinal))
+            {
+                UpdateInitials();
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(url))
             {
-                source = ImageSource.FromUri(new Uri(url));
-                var path = (AvatarPath ?? "").Trim();
+                if (_cache.TryGetValue("url:" + url, out var cached))
+                {
+                    source = cached;
+                }
+                else
+                {
+                    // UriImageSource con caching esplicito
+                    var uriSource = new UriImageSource
+                    {
+                        Uri = new Uri(url),
+                        CachingEnabled = true,
+                        CacheValidity = TimeSpan.FromDays(7)
+                    };
+
+                    _cache["url:" + url] = uriSource;
+                    source = uriSource;
+                }
+
+                // Se abbiamo anche un AvatarPath, salviamo alias path->source
                 if (!string.IsNullOrWhiteSpace(path))
-                    _cache[path] = source;
+                    _cache["path:" + path] = source!;
             }
             else
             {
-                var path = (AvatarPath ?? "").Trim();
-                if (!string.IsNullOrWhiteSpace(path) && _cache.TryGetValue(path, out var cached))
+                if (!string.IsNullOrWhiteSpace(path) && _cache.TryGetValue("path:" + path, out var cached))
                     source = cached;
             }
+
+            _lastKey = key;
 
             AvatarImage.Source = source;
             OnPropertyChanged(nameof(HasImage));

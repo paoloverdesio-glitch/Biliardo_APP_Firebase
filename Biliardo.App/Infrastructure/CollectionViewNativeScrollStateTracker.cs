@@ -34,8 +34,12 @@ namespace Biliardo.App.Infrastructure
                 return;
 
             _attached = true;
-            _coordinator.ConfigureIdleTimer(_idleDelay);
+
+            // IMPORTANTE: prima attach piattaforma (può attivare tracking nativo su Android).
             AttachPlatform(_view, _coordinator);
+
+            // Timer idle solo se serve (su Android, ScrollWorkCoordinator lo disattiva quando nativeTrackingActive=true).
+            _coordinator.ConfigureIdleTimer(_idleDelay);
         }
 
         public void Dispose()
