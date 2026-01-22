@@ -44,6 +44,7 @@ namespace Biliardo.App.Pagine_Messaggi
         private partial void StopPlaybackSafe()
         {
             try { _playback?.StopPlaybackSafe(); } catch { }
+            StopPlaybackWave();
         }
 
         // ============================================================
@@ -219,13 +220,81 @@ namespace Biliardo.App.Pagine_Messaggi
                 }
 
                 m.IsAudioPlaying = true;
+                StartPlaybackWave(m);
                 await _playback.PlayAsync(path);
                 m.IsAudioPlaying = false;
+                StopPlaybackWave();
             }
             catch (Exception ex)
             {
                 await DisplayAlert("Errore", ex.Message, "OK");
             }
+        }
+
+        private void OnAudioWaveLoaded(object sender, EventArgs e)
+        {
+            if (sender is not GraphicsView view || view.BindingContext is not ChatMessageVm m)
+                return;
+
+            view.Drawable = m.PlaybackWave;
+            _audioWaveViews[m] = view;
+            view.Invalidate();
+        }
+
+        private void OnAudioWaveUnloaded(object sender, EventArgs e)
+        {
+            if (sender is not GraphicsView view || view.BindingContext is not ChatMessageVm m)
+                return;
+
+            if (_audioWaveViews.ContainsKey(m))
+                _audioWaveViews.Remove(m);
+        }
+
+        private void StartPlaybackWave(ChatMessageVm m)
+        {
+            StopPlaybackWave();
+
+            _audioWaveCurrent = m;
+            _audioWavePhase = 0;
+            m.PlaybackWave.Reset();
+
+            _audioWaveTimer = Dispatcher.CreateTimer();
+            _audioWaveTimer.Interval = TimeSpan.FromMilliseconds(80);
+            _audioWaveTimer.Tick += (_, __) =>
+            {
+                if (_audioWaveCurrent == null)
+                    return;
+
+                var level = Math.Abs(Math.Sin(_audioWavePhase));
+                var harmonic = Math.Abs(Math.Sin(_audioWavePhase * 0.37));
+                var combined = 0.15 + (level * 0.85 * (0.6 + harmonic * 0.4));
+                if (combined > 1) combined = 1;
+
+                _audioWaveCurrent.PlaybackWave.AddSample((float)combined);
+                _audioWavePhase += 0.35;
+
+                if (_audioWaveViews.TryGetValue(_audioWaveCurrent, out var view))
+                    view.Invalidate();
+            };
+            _audioWaveTimer.Start();
+        }
+
+        private void StopPlaybackWave()
+        {
+            if (_audioWaveTimer != null)
+            {
+                _audioWaveTimer.Stop();
+                _audioWaveTimer = null;
+            }
+
+            if (_audioWaveCurrent != null)
+            {
+                _audioWaveCurrent.PlaybackWave.Reset();
+                if (_audioWaveViews.TryGetValue(_audioWaveCurrent, out var view))
+                    view.Invalidate();
+            }
+
+            _audioWaveCurrent = null;
         }
 
         // ============================================================
@@ -518,10 +587,13 @@ namespace Biliardo.App.Pagine_Messaggi
         private sealed class AndroidAudioPlayback : IAudioPlayback
         {
             private Android.Media.MediaPlayer? _player;
+            private TaskCompletionSource<bool>? _playTcs;
 
             public Task PlayAsync(string filePath)
             {
                 StopPlaybackSafe();
+
+                _playTcs = new TaskCompletionSource<bool>();
 
                 _player = new Android.Media.MediaPlayer();
                 _player.SetDataSource(filePath);
@@ -529,7 +601,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 _player.Start();
 
                 _player.Completion += (_, __) => StopPlaybackSafe();
-                return Task.CompletedTask;
+                return _playTcs.Task;
             }
 
             public void StopPlaybackSafe()
@@ -542,6 +614,9 @@ namespace Biliardo.App.Pagine_Messaggi
                         try { _player.Release(); } catch { }
                         _player = null;
                     }
+
+                    _playTcs?.TrySetResult(true);
+                    _playTcs = null;
                 }
                 catch { }
             }
@@ -552,15 +627,17 @@ namespace Biliardo.App.Pagine_Messaggi
         private sealed class WindowsAudioPlayback : IAudioPlayback
         {
             private MediaPlayer? _player;
+            private TaskCompletionSource<bool>? _playTcs;
 
             public Task PlayAsync(string filePath)
             {
                 StopPlaybackSafe();
+                _playTcs = new TaskCompletionSource<bool>();
                 _player = new MediaPlayer();
                 _player.Source = MediaSource.CreateFromUri(new Uri(filePath));
                 _player.MediaEnded += (_, __) => StopPlaybackSafe();
                 _player.Play();
-                return Task.CompletedTask;
+                return _playTcs.Task;
             }
 
             public void StopPlaybackSafe()
@@ -573,6 +650,9 @@ namespace Biliardo.App.Pagine_Messaggi
                         _player.Dispose();
                         _player = null;
                     }
+
+                    _playTcs?.TrySetResult(true);
+                    _playTcs = null;
                 }
                 catch { }
             }

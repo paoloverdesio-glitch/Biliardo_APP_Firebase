@@ -75,14 +75,16 @@
             </Border.StrokeShape>
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
                 <Label Text="{Binding VoiceTimeLabel, Source={x:Reference ThisView}}"
-                       TextColor="White"
+                       TextColor="#FF3B30"
                        FontAttributes="Bold"
                        VerticalTextAlignment="Center" />
-                <Label Grid.Column="1"
-                       Text="{Binding VoiceHintLabel, Source={x:Reference ThisView}}"
-                       TextColor="#A5A5A5"
-                       FontSize="12"
-                       VerticalTextAlignment="Center" />
+                <VerticalStackLayout Grid.Column="1" Spacing="4">
+                    <GraphicsView x:Name="VoiceWaveHoldView"
+                                  HeightRequest="40" />
+                    <Label Text="{Binding VoiceHintLabel, Source={x:Reference ThisView}}"
+                           TextColor="#A5A5A5"
+                           FontSize="12" />
+                </VerticalStackLayout>
             </Grid>
         </Border>
 
@@ -141,13 +143,17 @@
                 <RoundRectangle CornerRadius="16" />
             </Border.StrokeShape>
 
-            <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+            <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
                 <Label Text="{Binding VoiceTimeLabel, Source={x:Reference ThisView}}"
-                       TextColor="White"
-                       FontSize="24"
+                       TextColor="#FF3B30"
+                       FontSize="20"
                        FontAttributes="Bold" />
 
-                <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                <GraphicsView Grid.Row="1"
+                              x:Name="VoiceWaveLockView"
+                              HeightRequest="48" />
+
+                <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
                     <Button Grid.Column="0"
                             Text="🗑"
                             BackgroundColor="#2B2B2B"
@@ -163,7 +169,7 @@
                             Clicked="OnVoicePauseResumeClicked" />
 
                     <Button Grid.Column="2"
-                            Text="Fatto"
+                            Text="Invia"
                             BackgroundColor="#18A558"
                             TextColor="White"
                             CornerRadius="18"

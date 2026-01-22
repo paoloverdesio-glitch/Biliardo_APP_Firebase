@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using Microsoft.Maui.Controls;
 
+using Biliardo.App.Componenti_UI;
 using Biliardo.App.Servizi_Firebase;
 
 namespace Biliardo.App.Pagine_Messaggi
@@ -69,6 +70,10 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         public sealed class ChatMessageVm : BindableObject
         {
+            private const int PlaybackWaveHistoryMs = 5000;
+            private const int PlaybackWaveTickMs = 80;
+            private const float PlaybackWaveStrokePx = 2f;
+            private const float PlaybackWaveMaxPeakToPeakDip = 40f;
             // ------------------------------------------------------------
             // 4.1) Identità e ownership
             // ------------------------------------------------------------
@@ -183,9 +188,12 @@ namespace Biliardo.App.Pagine_Messaggi
                 }
             }
 
-            public string AudioPlayStopLabel => IsAudioPlaying ? "Stop" : "Play";
+            public string AudioPlayStopLabel => IsAudioPlaying ? "■" : "▶";
             public string AudioLabel => string.IsNullOrWhiteSpace(FileName) ? "Audio" : FileName!;
             public string DurationLabel => DurationMs > 0 ? TimeSpan.FromMilliseconds(DurationMs).ToString(@"mm\:ss") : "";
+
+            public WaveformDrawable PlaybackWave { get; } =
+                new(PlaybackWaveHistoryMs, PlaybackWaveTickMs, PlaybackWaveStrokePx, PlaybackWaveMaxPeakToPeakDip);
 
             // Flags tipo (usati dal DataTemplate XAML)
             public bool IsAudio => !DeletedForAll && string.Equals(Type, "audio", StringComparison.OrdinalIgnoreCase);

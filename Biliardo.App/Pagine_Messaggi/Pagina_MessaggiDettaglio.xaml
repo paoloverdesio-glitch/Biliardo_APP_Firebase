@@ -264,23 +264,27 @@
                                                 <RoundRectangle CornerRadius="12" />
                                             </Border.StrokeShape>
 
-                                            <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="10">
-                                                <Button Text="{Binding AudioPlayStopLabel}"
+                                            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="4">
+                                                <Button Grid.RowSpan="2"
+                                                        Text="{Binding AudioPlayStopLabel}"
                                                         BackgroundColor="#2A2A2A"
                                                         TextColor="White"
+                                                        FontSize="18"
                                                         Clicked="OnPlayAudioClicked"
                                                         CommandParameter="{Binding}"
-                                                        WidthRequest="90"
-                                                        HeightRequest="40" />
-                                                <VerticalStackLayout Grid.Column="1" Spacing="2" HorizontalOptions="Start">
-                                                    <Label Text="{Binding AudioLabel}"
-                                                           TextColor="White"
-                                                           LineBreakMode="TailTruncation" />
-                                                    <Label Text="{Binding DurationLabel}"
-                                                           TextColor="White"
-                                                           FontSize="12"
-                                                           Opacity="0.7" />
-                                                </VerticalStackLayout>
+                                                        WidthRequest="44"
+                                                        HeightRequest="44"
+                                                        CornerRadius="22" />
+                                                <GraphicsView Grid.Column="1"
+                                                              HeightRequest="40"
+                                                              Loaded="OnAudioWaveLoaded"
+                                                              Unloaded="OnAudioWaveUnloaded" />
+                                                <Label Grid.Row="1"
+                                                       Grid.Column="1"
+                                                       Text="{Binding DurationLabel}"
+                                                       TextColor="White"
+                                                       FontSize="12"
+                                                       Opacity="0.7" />
                                             </Grid>
                                         </Border>
 

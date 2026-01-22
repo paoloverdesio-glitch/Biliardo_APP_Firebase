@@ -269,6 +269,10 @@ namespace Biliardo.App.Pagine_Messaggi
         // 16) PLAYBACK AUDIO MESSAGGI (istanziato in InitPlaybackSubsystem)
         // ============================================================
         private IAudioPlayback _playback = null!;
+        private readonly Dictionary<ChatMessageVm, GraphicsView> _audioWaveViews = new();
+        private IDispatcherTimer? _audioWaveTimer;
+        private ChatMessageVm? _audioWaveCurrent;
+        private double _audioWavePhase;
 
         // ============================================================
         // 17) INIT: COLLEZIONI + EVENTI + EMOJI

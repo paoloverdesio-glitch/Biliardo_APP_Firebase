@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Biliardo.App.Componenti_UI;
 using Biliardo.App.Servizi_Media;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls;
@@ -17,8 +18,19 @@ namespace Biliardo.App.Componenti_UI.Composer
 {
     public partial class ComposerBarView : ContentView
     {
+        private const int VoiceMinSendMs = 600;
+        private const int VoiceUiTickMs = 80;
+        private const int VoiceWaveRecordHistoryMs = 2500;
+        private const float VoiceWaveStrokePx = 2f;
+        private const float VoiceWaveMaxPeakToPeakDip = 40f;
+
+        private const double GestureDeadzoneDip = 12;
+        private const double GestureLockDyDip = -90;
+        private const double GestureCancelDxDip = -110;
+
         private readonly IVoiceRecorder _recorder;
         private readonly DraftAudioPlayback _draftPlayback;
+        private readonly WaveformDrawable _voiceWave;
         private IDispatcherTimer? _voiceTimer;
 
         private bool _isRecording;
@@ -29,7 +41,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         private string _composerText = "";
         private string _voiceTimeLabel = "00:00";
-        private string _voiceHintLabel = "Scorri a sinistra per annullare • Su per bloccare";
+        private string _voiceHintLabel = "Scorri a sinistra per annullare • Scorri su per bloccare";
 
         public ComposerBarView()
         {
@@ -39,6 +51,13 @@ namespace Biliardo.App.Componenti_UI.Composer
             _draftPlayback = new DraftAudioPlayback();
 
             InitializeComponent();
+
+            _voiceWave = new WaveformDrawable(VoiceWaveRecordHistoryMs, VoiceUiTickMs, VoiceWaveStrokePx, VoiceWaveMaxPeakToPeakDip);
+            VoiceWaveHoldView.Drawable = _voiceWave;
+            VoiceWaveLockView.Drawable = _voiceWave;
+
+            if (_recorder is NoopVoiceRecorder)
+                _micDisabled = true;
 
             BindingContext = this;
 
@@ -103,7 +122,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         }
 
         // Null-safe: evita crash in fase di costruzione/binding
-        public string VoicePauseResumeLabel => (_recorder?.IsPaused ?? false) ? "PLAY" : "STOP";
+        public string VoicePauseResumeLabel => (_recorder?.IsPaused ?? false) ? "Riprendi" : "Pausa";
 
         public event EventHandler? AttachmentActionRequested;
         public event EventHandler<ComposerSendPayload>? SendRequested;
@@ -206,7 +225,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 
             _holdStartPoint = e.Point;
             _isLocked = false;
-            VoiceHintLabel = "Scorri a sinistra per annullare • Su per bloccare";
+            VoiceHintLabel = "Scorri a sinistra per annullare • Scorri su per bloccare";
 
             try
             {
@@ -222,6 +241,7 @@ namespace Biliardo.App.Componenti_UI.Composer
             }
 
             _isRecording = true;
+            _voiceWave.Reset();
             StartVoiceTimer();
             RefreshVoiceBindings();
         }
@@ -233,17 +253,21 @@ namespace Biliardo.App.Componenti_UI.Composer
             var dx = e.Point.X - _holdStartPoint.X;
             var dy = e.Point.Y - _holdStartPoint.Y;
 
-            if (dx <= -80)
-            {
-                _ = CancelRecordingAsync();
+            if (Math.Abs(dx) < GestureDeadzoneDip && Math.Abs(dy) < GestureDeadzoneDip)
                 return;
-            }
 
-            if (dy <= -80)
+            if (dy <= GestureLockDyDip)
             {
                 _isLocked = true;
                 VoiceHintLabel = "Registrazione bloccata";
                 RefreshVoiceBindings();
+                return;
+            }
+
+            if (dx <= GestureCancelDxDip)
+            {
+                _ = CancelRecordingAsync();
+                return;
             }
         }
 
@@ -252,7 +276,7 @@ namespace Biliardo.App.Componenti_UI.Composer
             if (!_isRecording) return;
             if (_isLocked) return;
 
-            await StopRecordingToDraftAsync();
+            await StopRecordingAndSendAsync();
         }
 
         private async void OnMicHoldCanceled(object sender, HoldEventArgs e)
@@ -271,10 +295,14 @@ namespace Biliardo.App.Componenti_UI.Composer
         {
             if (!_isRecording) return;
 
-            if (_recorder.IsPaused)
-                await _recorder.ResumeAsync();
-            else
-                await _recorder.PauseAsync();
+            try
+            {
+                if (_recorder.IsPaused)
+                    await _recorder.ResumeAsync();
+                else
+                    await _recorder.PauseAsync();
+            }
+            catch { }
 
             OnPropertyChanged(nameof(VoicePauseResumeLabel));
         }
@@ -282,10 +310,10 @@ namespace Biliardo.App.Componenti_UI.Composer
         private async void OnVoiceDoneClicked(object sender, EventArgs e)
         {
             if (!_isRecording) return;
-            await StopRecordingToDraftAsync();
+            await StopRecordingAndSendAsync();
         }
 
-        private async Task StopRecordingToDraftAsync()
+        private async Task StopRecordingAndSendAsync()
         {
             var (filePath, durationMs) = await StopVoiceAndGetFileAsync();
             if (string.IsNullOrWhiteSpace(filePath))
@@ -294,17 +322,24 @@ namespace Biliardo.App.Componenti_UI.Composer
                 return;
             }
 
+            if (durationMs < VoiceMinSendMs)
+            {
+                TryDeleteFile(filePath);
+                RefreshVoiceBindings();
+                return;
+            }
+
             var item = new PendingItemVm
             {
                 Kind = PendingKind.AudioDraft,
                 LocalFilePath = filePath,
-                DisplayName = "Audio pronto",
+                DisplayName = "Audio",
                 DurationMs = durationMs,
                 SizeBytes = TryGetFileSize(filePath),
                 CreatedUtc = DateTimeOffset.UtcNow
             };
 
-            PendingItems.Add(item);
+            SendRequested?.Invoke(this, new ComposerSendPayload("", new[] { item }));
             RefreshVoiceBindings();
         }
 
@@ -315,6 +350,9 @@ namespace Biliardo.App.Componenti_UI.Composer
             _isRecording = false;
             _isLocked = false;
             VoiceTimeLabel = "00:00";
+            _voiceWave.Reset();
+            VoiceWaveHoldView.Invalidate();
+            VoiceWaveLockView.Invalidate();
             RefreshVoiceBindings();
         }
 
@@ -327,6 +365,9 @@ namespace Biliardo.App.Componenti_UI.Composer
             _isRecording = false;
             _isLocked = false;
             VoiceTimeLabel = "00:00";
+            _voiceWave.Reset();
+            VoiceWaveHoldView.Invalidate();
+            VoiceWaveLockView.Invalidate();
             return (path, duration);
         }
 
@@ -334,11 +375,15 @@ namespace Biliardo.App.Componenti_UI.Composer
         {
             StopVoiceTimer();
             _voiceTimer = Dispatcher.CreateTimer();
-            _voiceTimer.Interval = TimeSpan.FromMilliseconds(120);
+            _voiceTimer.Interval = TimeSpan.FromMilliseconds(VoiceUiTickMs);
             _voiceTimer.Tick += (_, __) =>
             {
                 var ms = _recorder.GetElapsedMs();
                 VoiceTimeLabel = FormatMs(ms);
+                var level = _recorder.TryGetLevel01();
+                _voiceWave.AddSample((float)level);
+                VoiceWaveHoldView.Invalidate();
+                VoiceWaveLockView.Invalidate();
             };
             _voiceTimer.Start();
         }
@@ -372,8 +417,18 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         private static string BuildDraftPath()
         {
-            var fileName = $"voice_draft_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.m4a";
+            var fileName = $"voice_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.m4a";
             return Path.Combine(FileSystem.CacheDirectory, fileName);
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    File.Delete(path);
+            }
+            catch { }
         }
 
         private void RefreshVoiceBindings()
