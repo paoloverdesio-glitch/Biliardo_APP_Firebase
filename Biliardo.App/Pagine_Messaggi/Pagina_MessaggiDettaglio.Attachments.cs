@@ -456,12 +456,21 @@ namespace Biliardo.App.Pagine_Messaggi
             // 7.4) Path oggetto su Storage
             var storagePath = $"chats/{chatId}/media/{msgId}/{fileName}";
 
-            // 7.5) Upload Storage (REST)
+            // 7.5) Upload Storage (REST) + custom metadata (ownerUid)
+            var meta = new Dictionary<string, string>
+            {
+                ["ownerUid"] = myUid,
+                ["scope"] = "chat",
+                ["chatId"] = chatId,
+                ["messageId"] = msgId
+            };
+
             await FirebaseStorageRestClient.UploadFileAsync(
                 idToken: idToken,
                 objectPath: storagePath,
                 localFilePath: a.LocalPath,
                 contentType: contentType,
+                customMetadata: meta,
                 ct: default);
 
             // 7.6) Scrittura messaggio su Firestore

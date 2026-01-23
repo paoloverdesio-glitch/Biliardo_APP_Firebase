@@ -248,12 +248,22 @@ public partial class Pagina_Registrazione : ContentPage
                         ext = ".jpg";
 
                     var storagePath = $"avatars/{uid}/profile{ext}";
+
+                    // ✅ custom metadata per rispettare le Storage Rules (evita 403 se controllano ownerUid/scope)
+                    var meta = new Dictionary<string, string>
+                    {
+                        ["ownerUid"] = uid,
+                        ["scope"] = "avatar",
+                        ["uid"] = uid
+                    };
+
                     var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
-                        idToken,
-                        storagePath,
-                        _avatarLocalPath,
-                        FirebaseStorageRestClient.GuessContentTypeFromPath(storagePath),
-                        CancellationToken.None);
+                        idToken: idToken,
+                        objectPath: storagePath,
+                        localFilePath: _avatarLocalPath!,
+                        contentType: FirebaseStorageRestClient.GuessContentTypeFromPath(storagePath),
+                        customMetadata: meta,
+                        ct: CancellationToken.None);
 
                     var avatarFields = new Dictionary<string, object>
                     {

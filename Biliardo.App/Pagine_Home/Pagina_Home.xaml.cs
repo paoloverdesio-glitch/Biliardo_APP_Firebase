@@ -329,14 +329,25 @@ namespace Biliardo.App.Pagine_Home
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
+            var myUid = FirebaseSessionePersistente.GetLocalId();
+            if (string.IsNullOrWhiteSpace(myUid))
+                throw new InvalidOperationException("Sessione scaduta (uid mancante). Rifai login.");
+
             var fileName = Path.GetFileName(item.LocalFilePath);
             var objectPath = $"home_posts/media/{Guid.NewGuid():N}/{fileName}";
+
+            var meta = new Dictionary<string, string>
+            {
+                ["ownerUid"] = myUid!,
+                ["scope"] = "home_post"
+            };
 
             var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
                 idToken: idToken,
                 objectPath: objectPath,
                 localFilePath: item.LocalFilePath,
                 contentType: FirebaseStorageRestClient.GuessContentTypeFromPath(item.LocalFilePath),
+                customMetadata: meta,
                 ct: default);
 
             if (item.Kind == PendingKind.AudioDraft)
@@ -919,13 +930,8 @@ namespace Biliardo.App.Pagine_Home
             public int ShareCount { get; set; }
             public string LikeHeartGlyph => LikeCount > 0 ? "❤️" : "🤍";
 
-
-            // Regola richiesta:
-            // - LikeCount == 0  -> cuore pieno bianco
-            // - LikeCount  > 0  -> cuore pieno rosso
             public Microsoft.Maui.Graphics.Color LikeHeartColor => LikeCount > 0 ? Colors.Red : Colors.White;
 
-            // Mantengo IsLiked (può servire in futuro), ma NON guida più il colore.
             public bool IsLiked { get; set; }
 
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
@@ -933,7 +939,6 @@ namespace Biliardo.App.Pagine_Home
 
             public string CreatedAtLabel => CreatedAtUtc.ToLocalTime().ToString("g");
 
-            // Compat (eventuali usi altrove)
             public Color LikeTextColor => LikeCount > 0 ? Colors.Red : Colors.White;
             public string LikeLabel => $"♥ {LikeCount}";
             public string CommentLabel => $"💬 {CommentCount}";
@@ -941,15 +946,12 @@ namespace Biliardo.App.Pagine_Home
 
             public void NotifyCounters()
             {
-                // Compat
                 OnPropertyChanged(nameof(LikeLabel));
                 OnPropertyChanged(nameof(CommentLabel));
                 OnPropertyChanged(nameof(ShareLabel));
                 OnPropertyChanged(nameof(LikeTextColor));
                 OnPropertyChanged(nameof(LikeHeartGlyph));
 
-
-                // ✅ FIX: ora in XAML bindiamo i contatori direttamente
                 OnPropertyChanged(nameof(LikeCount));
                 OnPropertyChanged(nameof(CommentCount));
                 OnPropertyChanged(nameof(ShareCount));

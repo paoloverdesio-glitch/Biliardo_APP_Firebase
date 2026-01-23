@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,8 +15,14 @@ namespace Biliardo.App.Servizi_Firebase
     /// Autenticazione: Authorization: Bearer {Firebase ID Token}
     /// Nota: con ID token, Storage applica le Security Rules.
     ///
-    /// Upload:
+    /// Upload (solo media - SENZA metadata):
     /// POST https://firebasestorage.googleapis.com/v0/b/{bucket}/o?uploadType=media&name={objectPathUrlEncoded}
+    ///
+    /// Upload (multipart - CON metadata):
+    /// POST https://firebasestorage.googleapis.com/v0/b/{bucket}/o?uploadType=multipart&name={objectPathUrlEncoded}
+    /// body multipart/related:
+    ///  - part1: JSON metadata (name, contentType, metadata/custom)
+    ///  - part2: bytes file
     ///
     /// Download (autenticato):
     /// GET  https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{objectPathUrlEncoded}?alt=media
@@ -24,7 +31,6 @@ namespace Biliardo.App.Servizi_Firebase
     {
         // >>> IMPORTANTE <<<
         // Questo valore DEVE corrispondere a Platforms/Android/google-services.json -> project_info.storage_bucket
-        // Se cambia, aggiorna SOLO questa costante.
         public const string DefaultStorageBucket = "biliardoapp.firebasestorage.app";
 
         private static readonly HttpClient _http = new HttpClient
@@ -54,15 +60,45 @@ namespace Biliardo.App.Servizi_Firebase
             string contentType,
             CancellationToken ct = default)
         {
-            return UploadAsync(idToken, DefaultStorageBucket, storagePath, content, contentType, ct);
+            return UploadAsync(idToken, DefaultStorageBucket, storagePath, content, contentType, customMetadata: null, ct: ct);
         }
 
+        /// <summary>
+        /// Upload con custom metadata (necessario se le Storage Rules controllano request.resource.metadata.*).
+        /// </summary>
+        public static Task<UploadResult> UploadAsync(
+            string idToken,
+            string storagePath,
+            Stream content,
+            string contentType,
+            IDictionary<string, string>? customMetadata,
+            CancellationToken ct = default)
+        {
+            return UploadAsync(idToken, DefaultStorageBucket, storagePath, content, contentType, customMetadata, ct);
+        }
+
+        public static Task<UploadResult> UploadAsync(
+            string idToken,
+            string bucket,
+            string storagePath,
+            Stream content,
+            string contentType,
+            CancellationToken ct = default)
+        {
+            return UploadAsync(idToken, bucket, storagePath, content, contentType, customMetadata: null, ct: ct);
+        }
+
+        /// <summary>
+        /// Upload: se customMetadata != null e non vuota -> usa multipart per includere metadata.
+        /// Altrimenti usa uploadType=media (compatibilità).
+        /// </summary>
         public static async Task<UploadResult> UploadAsync(
             string idToken,
             string bucket,
             string storagePath,
             Stream content,
             string contentType,
+            IDictionary<string, string>? customMetadata,
             CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(idToken))
@@ -79,6 +115,20 @@ namespace Biliardo.App.Servizi_Firebase
 
             var normalized = NormalizeObjectPath(storagePath);
 
+            // Se devi impostare metadata, DEVI usare multipart.
+            if (customMetadata != null && customMetadata.Count > 0)
+            {
+                return await UploadMultipartAsync(
+                    idToken: idToken,
+                    bucket: bucket,
+                    normalizedStoragePath: normalized,
+                    content: content,
+                    contentType: contentType,
+                    customMetadata: customMetadata,
+                    ct: ct);
+            }
+
+            // Fallback compatibilità: media upload (senza metadata)
             var nameEncoded = Uri.EscapeDataString(normalized);
             var url = $"{BaseUrl(bucket)}?uploadType=media&name={nameEncoded}";
 
@@ -126,6 +176,82 @@ namespace Biliardo.App.Servizi_Firebase
             );
         }
 
+        private static async Task<UploadResult> UploadMultipartAsync(
+            string idToken,
+            string bucket,
+            string normalizedStoragePath,
+            Stream content,
+            string contentType,
+            IDictionary<string, string> customMetadata,
+            CancellationToken ct)
+        {
+            // Endpoint multipart (aggiungo name= in query per robustezza)
+            var nameEncoded = Uri.EscapeDataString(normalizedStoragePath);
+            var url = $"{BaseUrl(bucket)}?uploadType=multipart&name={nameEncoded}";
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", idToken);
+
+            // JSON metadata (GCS object resource)
+            var metaObj = new Dictionary<string, object?>
+            {
+                ["name"] = normalizedStoragePath,
+                ["contentType"] = contentType,
+                ["metadata"] = customMetadata
+            };
+
+            var metaJson = JsonSerializer.Serialize(metaObj);
+
+            // multipart/related: JSON + bytes
+            var boundary = "biliardo_" + Guid.NewGuid().ToString("N");
+            var multipart = new MultipartContent("related", boundary);
+
+            var jsonPart = new StringContent(metaJson, Encoding.UTF8, "application/json");
+
+            var filePart = new StreamContent(content);
+            filePart.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+
+            if (content.CanSeek)
+            {
+                var remaining = content.Length - content.Position;
+                if (remaining >= 0)
+                    filePart.Headers.ContentLength = remaining;
+            }
+
+            multipart.Add(jsonPart);
+            multipart.Add(filePart);
+
+            req.Content = multipart;
+
+            using var resp = await _http.SendAsync(req, ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
+
+            if (!resp.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    $"Storage UPLOAD failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
+
+            using var doc = JsonDocument.Parse(body);
+
+            var returnedName = ReadString(doc.RootElement, "name") ?? normalizedStoragePath;
+            var returnedContentType = ReadString(doc.RootElement, "contentType") ?? contentType;
+            var sizeBytes = ReadLongFromString(doc.RootElement, "size");
+
+            var tokens = ReadString(doc.RootElement, "downloadTokens");
+            var token = FirstToken(tokens);
+
+            string? downloadUrl = null;
+            if (!string.IsNullOrWhiteSpace(token))
+                downloadUrl = BuildAnonDownloadUrl(bucket, returnedName, token);
+
+            return new UploadResult(
+                StoragePath: returnedName,
+                ContentType: returnedContentType,
+                SizeBytes: sizeBytes,
+                DownloadToken: token,
+                DownloadUrl: downloadUrl
+            );
+        }
+
         public static Task<UploadResult> UploadFileWithResultAsync(
             string idToken,
             string objectPath,
@@ -133,7 +259,32 @@ namespace Biliardo.App.Servizi_Firebase
             string? contentType = null,
             CancellationToken ct = default)
         {
-            return UploadFileWithResultAsync(idToken, DefaultStorageBucket, objectPath, localFilePath, contentType, ct);
+            return UploadFileWithResultAsync(idToken, DefaultStorageBucket, objectPath, localFilePath, contentType, customMetadata: null, ct: ct);
+        }
+
+        /// <summary>
+        /// Upload file con custom metadata.
+        /// </summary>
+        public static Task<UploadResult> UploadFileWithResultAsync(
+            string idToken,
+            string objectPath,
+            string localFilePath,
+            string? contentType,
+            IDictionary<string, string>? customMetadata,
+            CancellationToken ct = default)
+        {
+            return UploadFileWithResultAsync(idToken, DefaultStorageBucket, objectPath, localFilePath, contentType, customMetadata, ct);
+        }
+
+        public static Task<UploadResult> UploadFileWithResultAsync(
+            string idToken,
+            string bucket,
+            string objectPath,
+            string localFilePath,
+            string? contentType = null,
+            CancellationToken ct = default)
+        {
+            return UploadFileWithResultAsync(idToken, bucket, objectPath, localFilePath, contentType, customMetadata: null, ct: ct);
         }
 
         public static async Task<UploadResult> UploadFileWithResultAsync(
@@ -141,7 +292,8 @@ namespace Biliardo.App.Servizi_Firebase
             string bucket,
             string objectPath,
             string localFilePath,
-            string? contentType = null,
+            string? contentType,
+            IDictionary<string, string>? customMetadata,
             CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(localFilePath))
@@ -160,14 +312,14 @@ namespace Biliardo.App.Servizi_Firebase
                 storagePath: normalized,
                 content: fs,
                 contentType: contentType,
+                customMetadata: customMetadata,
                 ct: ct);
         }
 
         // =========================================================
         // Upload (API "semplice" - COMPATIBILITÀ)
         // =========================================================
-        // Questa firma/ritorno serve se in altri file hai chiamate che si aspettano Task<string>.
-        // Ritorna lo StoragePath effettivo (objectPath normalizzato/ritornato dall'API).
+
         public static async Task<string> UploadFileAsync(
             string idToken,
             string objectPath,
@@ -180,6 +332,28 @@ namespace Biliardo.App.Servizi_Firebase
                 objectPath: objectPath,
                 localFilePath: localFilePath,
                 contentType: contentType,
+                ct: ct);
+
+            return res.StoragePath;
+        }
+
+        /// <summary>
+        /// Versione compatibile ma con custom metadata.
+        /// </summary>
+        public static async Task<string> UploadFileAsync(
+            string idToken,
+            string objectPath,
+            string localFilePath,
+            string contentType,
+            IDictionary<string, string>? customMetadata,
+            CancellationToken ct = default)
+        {
+            var res = await UploadFileWithResultAsync(
+                idToken: idToken,
+                objectPath: objectPath,
+                localFilePath: localFilePath,
+                contentType: contentType,
+                customMetadata: customMetadata,
                 ct: ct);
 
             return res.StoragePath;
@@ -295,10 +469,6 @@ namespace Biliardo.App.Servizi_Firebase
                 _ => "application/octet-stream"
             };
         }
-
-        // =========================================================
-        // Helpers JSON/error
-        // =========================================================
 
         private static string NormalizeObjectPath(string p)
         {
