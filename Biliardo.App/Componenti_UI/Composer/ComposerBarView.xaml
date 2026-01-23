@@ -123,8 +123,13 @@
                         IsVisible="{Binding CanSend, Source={x:Reference ThisView}}"
                         Clicked="OnSendClicked" />
 
+                <!-- FIX: dimensioni vincolate + center => niente stretch verticale -->
                 <composer:MicHoldButton Grid.Column="3"
                                         IsVisible="{Binding CanShowMic, Source={x:Reference ThisView}}"
+                                        WidthRequest="46"
+                                        HeightRequest="46"
+                                        HorizontalOptions="End"
+                                        VerticalOptions="Center"
                                         AccentColor="#18A558"
                                         HoldStarted="OnMicHoldStarted"
                                         HoldMoved="OnMicHoldMoved"

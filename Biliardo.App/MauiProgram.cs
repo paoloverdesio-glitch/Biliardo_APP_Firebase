@@ -2,7 +2,7 @@
 using Microsoft.Maui;
 using Microsoft.Maui.Hosting;
 using Microsoft.Maui.LifecycleEvents;
-using Microsoft.Maui.Controls.Hosting; // <-- necessario per ConfigureEffects
+using Microsoft.Maui.Controls.Hosting; // necessario per ConfigureEffects
 
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
@@ -42,15 +42,30 @@ namespace Biliardo.App
             builder.Services.AddSingleton(_ => new FirestoreChatService("biliardoapp"));
             builder.Services.AddSingleton<ForegroundDeliveredReceiptsService>();
 
-            // === Registrazione Effect (NO attributi [assembly: ...]) ===
+            // Trace numerata (ordine garantito da contatore interno)
+            TouchTrace.Log("MauiProgram.CreateMauiApp START");
+            TouchTrace.Log("MauiProgram: before ConfigureEffects");
+
+            // === Registrazione Effect (MAUI) ===
+            // NOTA: In MAUI è corretta la registrazione via ConfigureEffects.
             builder.ConfigureEffects(effects =>
             {
+                TouchTrace.Log("ConfigureEffects ENTER");
+
 #if ANDROID
+                TouchTrace.Log("ConfigureEffects: registering TouchEffect -> PlatformTouchEffectAndroid");
                 effects.Add<TouchEffect, PlatformTouchEffectAndroid>();
+                TouchTrace.Log("ConfigureEffects: registered TouchEffect -> PlatformTouchEffectAndroid");
 #elif WINDOWS
+                TouchTrace.Log("ConfigureEffects: registering TouchEffect -> PlatformTouchEffectWindows");
                 effects.Add<TouchEffect, PlatformTouchEffectWindows>();
+                TouchTrace.Log("ConfigureEffects: registered TouchEffect -> PlatformTouchEffectWindows");
+#else
+                TouchTrace.Log("ConfigureEffects: no platform mapping compiled for this target");
 #endif
             });
+
+            TouchTrace.Log("MauiProgram: after ConfigureEffects");
 
             // Inizializzazione Firebase + lifecycle foreground/background
             builder.ConfigureLifecycleEvents(events =>
@@ -89,6 +104,7 @@ namespace Biliardo.App
             builder.Services.AddSingleton<IPushNotificationService, PushNotificationService>();
 #endif
 
+            TouchTrace.Log("MauiProgram: builder.Build about to run");
             return builder.Build();
         }
     }

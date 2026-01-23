@@ -1,15 +1,23 @@
 using System;
-
+using System.Diagnostics;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 
-using Biliardo.App.Effects;
+#if ANDROID
+using Android.Views;
+using AView = Android.Views.View;
+#endif
+
+#if WINDOWS
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Input;
+#endif
 
 namespace Biliardo.App.Componenti_UI.Composer
 {
     /// <summary>
-    /// Pulsante microfono con eventi "hold" (Pressed/Move/Released/Cancel) basati su TouchEffect.
-    /// Nota: il riconoscimento del long-press e le soglie (lock/cancel) sono gestite dal chiamante (ComposerBarView).
+    /// Pulsante microfono con eventi "hold" (Pressed/Move/Released/Cancel).
+    /// Implementazione DIRETTA su eventi nativi (Android/Windows) per evitare problemi di attach degli Effects in MAUI.
     /// </summary>
     public sealed class MicHoldButton : ContentView
     {
@@ -41,14 +49,27 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         private readonly Frame _frame;
         private readonly Image _icon;
-        private readonly TouchEffect _touchEffect;
 
         private Point _startPoint;
         private bool _isPressed;
 
+#if ANDROID
+        private AView? _androidView;
+        private float _androidDensity = 1f;
+#endif
+
+#if WINDOWS
+        private FrameworkElement? _winView;
+#endif
+
         public MicHoldButton()
         {
-            // Frame circolare (la parte che deve ricevere davvero il touch)
+            // Dimensioni default per mantenere il cerchio (evita “stiramento” verticale)
+            WidthRequest = 44;
+            HeightRequest = 44;
+            HorizontalOptions = LayoutOptions.Center;
+            VerticalOptions = LayoutOptions.Center;
+
             _icon = new Image
             {
                 Source = "ic_mic.png",
@@ -56,8 +77,7 @@ namespace Biliardo.App.Componenti_UI.Composer
                 HeightRequest = 22,
                 HorizontalOptions = LayoutOptions.Center,
                 VerticalOptions = LayoutOptions.Center,
-                // IMPORTANTISSIMO: l'icona non deve intercettare il touch, deve "passare" al Frame.
-                InputTransparent = true,
+                InputTransparent = true, // NON deve intercettare il touch
             };
 
             _frame = new Frame
@@ -65,19 +85,22 @@ namespace Biliardo.App.Componenti_UI.Composer
                 Padding = 0,
                 Margin = 0,
                 HasShadow = false,
-                CornerRadius = 9999, // forzatura cerchio
+                CornerRadius = 9999,
                 BackgroundColor = AccentColor,
-                HorizontalOptions = LayoutOptions.Fill,
-                VerticalOptions = LayoutOptions.Fill,
+
+                WidthRequest = 44,
+                HeightRequest = 44,
+                HorizontalOptions = LayoutOptions.Center,
+                VerticalOptions = LayoutOptions.Center,
+
                 Content = _icon
             };
 
             Content = _frame;
 
-            // TouchEffect va sul FRAME (non sul ContentView padre), altrimenti spesso non arrivano gli eventi.
-            _touchEffect = new TouchEffect { Capture = true };
-            _touchEffect.TouchAction += OnTouchEffectAction;
-            _frame.Effects.Add(_touchEffect);
+            // Aggancio nativo quando il controllo ottiene l’Handler (cioè quando diventa “reale” a runtime)
+            _frame.HandlerChanging += (_, __) => DetachNative();
+            _frame.HandlerChanged += (_, __) => AttachNative();
         }
 
         private static void OnAccentColorChanged(BindableObject bindable, object oldValue, object newValue)
@@ -85,52 +108,267 @@ namespace Biliardo.App.Componenti_UI.Composer
             if (bindable is not MicHoldButton b)
                 return;
 
-            try
-            {
-                if (newValue is Color c)
-                    b._frame.BackgroundColor = c;
-            }
-            catch
-            {
-                // no-throw: non deve mai rompere la UI
-            }
+            if (newValue is Color c)
+                b._frame.BackgroundColor = c;
         }
 
-        private void OnTouchEffectAction(object? sender, TouchActionEventArgs args)
+        private void AttachNative()
+        {
+            DetachNative();
+
+#if ANDROID
+            try
+            {
+                if (_frame.Handler?.PlatformView is AView v)
+                {
+                    _androidView = v;
+                    _androidDensity = v.Context?.Resources?.DisplayMetrics?.Density ?? 1f;
+
+                    try
+                    {
+                        v.Clickable = true;
+                        v.LongClickable = true;
+                        v.Focusable = true;
+                        v.FocusableInTouchMode = true;
+                    }
+                    catch { }
+
+                    v.Touch += OnAndroidTouch;
+
+#if DEBUG
+                    Android.Util.Log.Info("Biliardo.Mic", "101 - MicHoldButton ANDROID attached to native view");
+#endif
+                }
+            }
+            catch { }
+#endif
+
+#if WINDOWS
+            try
+            {
+                if (_frame.Handler?.PlatformView is FrameworkElement fe)
+                {
+                    _winView = fe;
+                    fe.PointerPressed += OnWinPointerPressed;
+                    fe.PointerMoved += OnWinPointerMoved;
+                    fe.PointerReleased += OnWinPointerReleased;
+                    fe.PointerCanceled += OnWinPointerCanceled;
+
+#if DEBUG
+                    Debug.WriteLine("101 - MicHoldButton WINDOWS attached to native view");
+#endif
+                }
+            }
+            catch { }
+#endif
+        }
+
+        private void DetachNative()
+        {
+#if ANDROID
+            try
+            {
+                if (_androidView != null)
+                    _androidView.Touch -= OnAndroidTouch;
+            }
+            catch { }
+            _androidView = null;
+#endif
+
+#if WINDOWS
+            try
+            {
+                if (_winView != null)
+                {
+                    _winView.PointerPressed -= OnWinPointerPressed;
+                    _winView.PointerMoved -= OnWinPointerMoved;
+                    _winView.PointerReleased -= OnWinPointerReleased;
+                    _winView.PointerCanceled -= OnWinPointerCanceled;
+                }
+            }
+            catch { }
+            _winView = null;
+#endif
+
+            _isPressed = false;
+            _startPoint = default;
+        }
+
+#if ANDROID
+        private void OnAndroidTouch(object? sender, AView.TouchEventArgs e)
         {
             try
             {
-                switch (args.Type)
+                var me = e.Event;
+                var view = _androidView;
+                if (me == null || view == null)
+                    return;
+
+                var action = me.ActionMasked;
+
+                // Per MOVE, ActionIndex non è affidabile: con singolo dito usiamo 0
+                int idx = action == MotionEventActions.Move ? 0 : me.ActionIndex;
+
+                double x = me.GetX(idx) / _androidDensity;
+                double y = me.GetY(idx) / _androidDensity;
+
+                switch (action)
                 {
-                    case TouchActionType.Pressed:
+                    case MotionEventActions.Down:
+                    case MotionEventActions.PointerDown:
                         _isPressed = true;
-                        _startPoint = args.Location;
-                        HoldStarted?.Invoke(this, new HoldEventArgs(args.Location, _startPoint));
-                        break;
+                        _startPoint = new Point(x, y);
 
-                    case TouchActionType.Moved:
-                        if (!_isPressed) return;
-                        HoldMoved?.Invoke(this, new HoldEventArgs(args.Location, _startPoint));
-                        break;
+#if DEBUG
+                        Android.Util.Log.Info("Biliardo.Mic", $"102 - Pressed @ ({x:0.0},{y:0.0})");
+#endif
+                        HoldStarted?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                        // blocca intercettazioni parent (scroll ecc.)
+                        view.Parent?.RequestDisallowInterceptTouchEvent(true);
+                        e.Handled = true;
+                        return;
 
-                    case TouchActionType.Released:
-                        if (!_isPressed) return;
+                    case MotionEventActions.Move:
+                        if (!_isPressed)
+                        {
+                            e.Handled = true;
+                            return;
+                        }
+
+#if DEBUG
+                        Android.Util.Log.Info("Biliardo.Mic", $"103 - Moved @ ({x:0.0},{y:0.0})");
+#endif
+                        HoldMoved?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                        e.Handled = true;
+                        return;
+
+                    case MotionEventActions.Up:
+                    case MotionEventActions.PointerUp:
+                        if (!_isPressed)
+                        {
+                            e.Handled = true;
+                            return;
+                        }
+
                         _isPressed = false;
-                        HoldEnded?.Invoke(this, new HoldEventArgs(args.Location, _startPoint));
-                        break;
 
-                    case TouchActionType.Cancelled:
-                        if (!_isPressed) return;
+#if DEBUG
+                        Android.Util.Log.Info("Biliardo.Mic", $"104 - Released @ ({x:0.0},{y:0.0})");
+#endif
+                        HoldEnded?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                        view.Parent?.RequestDisallowInterceptTouchEvent(false);
+                        e.Handled = true;
+                        return;
+
+                    case MotionEventActions.Cancel:
+                        if (!_isPressed)
+                        {
+                            e.Handled = true;
+                            return;
+                        }
+
                         _isPressed = false;
-                        HoldCanceled?.Invoke(this, new HoldEventArgs(args.Location, _startPoint));
-                        break;
+
+#if DEBUG
+                        Android.Util.Log.Info("Biliardo.Mic", $"105 - Cancelled @ ({x:0.0},{y:0.0})");
+#endif
+                        HoldCanceled?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                        view.Parent?.RequestDisallowInterceptTouchEvent(false);
+                        e.Handled = true;
+                        return;
+
+                    default:
+                        e.Handled = true;
+                        return;
                 }
             }
             catch
             {
-                // no-throw: mai crash da gesture
+                try { e.Handled = true; } catch { }
             }
         }
+#endif
+
+#if WINDOWS
+        private void OnWinPointerPressed(object sender, PointerRoutedEventArgs e)
+        {
+            try
+            {
+                if (_winView == null) return;
+                var pt = e.GetCurrentPoint(_winView);
+                var x = pt.Position.X;
+                var y = pt.Position.Y;
+
+                _isPressed = true;
+                _startPoint = new Point(x, y);
+
+#if DEBUG
+                Debug.WriteLine($"102 - Pressed @ ({x:0.0},{y:0.0})");
+#endif
+                HoldStarted?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                e.Handled = true;
+            }
+            catch { }
+        }
+
+        private void OnWinPointerMoved(object sender, PointerRoutedEventArgs e)
+        {
+            try
+            {
+                if (!_isPressed || _winView == null) { e.Handled = true; return; }
+                var pt = e.GetCurrentPoint(_winView);
+                var x = pt.Position.X;
+                var y = pt.Position.Y;
+
+#if DEBUG
+                Debug.WriteLine($"103 - Moved @ ({x:0.0},{y:0.0})");
+#endif
+                HoldMoved?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                e.Handled = true;
+            }
+            catch { }
+        }
+
+        private void OnWinPointerReleased(object sender, PointerRoutedEventArgs e)
+        {
+            try
+            {
+                if (!_isPressed || _winView == null) { e.Handled = true; return; }
+                var pt = e.GetCurrentPoint(_winView);
+                var x = pt.Position.X;
+                var y = pt.Position.Y;
+
+                _isPressed = false;
+
+#if DEBUG
+                Debug.WriteLine($"104 - Released @ ({x:0.0},{y:0.0})");
+#endif
+                HoldEnded?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                e.Handled = true;
+            }
+            catch { }
+        }
+
+        private void OnWinPointerCanceled(object sender, PointerRoutedEventArgs e)
+        {
+            try
+            {
+                if (!_isPressed || _winView == null) { e.Handled = true; return; }
+                var pt = e.GetCurrentPoint(_winView);
+                var x = pt.Position.X;
+                var y = pt.Position.Y;
+
+                _isPressed = false;
+
+#if DEBUG
+                Debug.WriteLine($"105 - Cancelled @ ({x:0.0},{y:0.0})");
+#endif
+                HoldCanceled?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
+                e.Handled = true;
+            }
+            catch { }
+        }
+#endif
     }
 
     public sealed class HoldEventArgs : EventArgs

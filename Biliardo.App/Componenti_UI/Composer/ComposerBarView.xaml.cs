@@ -37,6 +37,10 @@ namespace Biliardo.App.Componenti_UI.Composer
         private bool _isLocked;
         private bool _micDisabled;
         private bool _isSending;
+
+        // evita “rilascio” che arriva mentre l’annullamento è in corso
+        private bool _cancelInProgress;
+
         private Point _holdStartPoint;
 
         private string _composerText = "";
@@ -45,8 +49,6 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         public ComposerBarView()
         {
-            // IMPORTANTISSIMO:
-            // inizializza PRIMA del BindingContext, così le binding non leggono campi null.
             _recorder = VoiceMediaFactory.CreateRecorder();
             _draftPlayback = new DraftAudioPlayback();
 
@@ -121,7 +123,6 @@ namespace Biliardo.App.Componenti_UI.Composer
             }
         }
 
-        // Null-safe: evita crash in fase di costruzione/binding
         public string VoicePauseResumeLabel => (_recorder?.IsPaused ?? false) ? "Riprendi" : "Pausa";
 
         public event EventHandler? AttachmentActionRequested;
@@ -223,6 +224,8 @@ namespace Biliardo.App.Componenti_UI.Composer
                 return;
             }
 
+            _cancelInProgress = false;
+
             _holdStartPoint = e.Point;
             _isLocked = false;
             VoiceHintLabel = "Scorri a sinistra per annullare • Scorri su per bloccare";
@@ -248,7 +251,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         private void OnMicHoldMoved(object sender, HoldEventArgs e)
         {
-            if (!_isRecording || _isLocked) return;
+            if (!_isRecording || _isLocked || _cancelInProgress) return;
 
             var dx = e.Point.X - _holdStartPoint.X;
             var dy = e.Point.Y - _holdStartPoint.Y;
@@ -266,6 +269,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 
             if (dx <= GestureCancelDxDip)
             {
+                _cancelInProgress = true;
                 _ = CancelRecordingAsync();
                 return;
             }
@@ -275,6 +279,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         {
             if (!_isRecording) return;
             if (_isLocked) return;
+            if (_cancelInProgress) return;
 
             await StopRecordingAndSendAsync();
         }
@@ -282,12 +287,14 @@ namespace Biliardo.App.Componenti_UI.Composer
         private async void OnMicHoldCanceled(object sender, HoldEventArgs e)
         {
             if (!_isRecording) return;
+            _cancelInProgress = true;
             await CancelRecordingAsync();
         }
 
         private async void OnVoiceTrashClicked(object sender, EventArgs e)
         {
             if (!_isRecording) return;
+            _cancelInProgress = true;
             await CancelRecordingAsync();
         }
 
@@ -345,8 +352,9 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         private async Task CancelRecordingAsync()
         {
+            // UI subito (così l’eventuale “rilascio” non può più inviare)
             StopVoiceTimer();
-            await _recorder.CancelAsync();
+
             _isRecording = false;
             _isLocked = false;
             VoiceTimeLabel = "00:00";
@@ -354,6 +362,10 @@ namespace Biliardo.App.Componenti_UI.Composer
             VoiceWaveHoldView.Invalidate();
             VoiceWaveLockView.Invalidate();
             RefreshVoiceBindings();
+
+            try { await _recorder.CancelAsync(); } catch { }
+
+            _cancelInProgress = false;
         }
 
         private async Task<(string? filePath, long durationMs)> StopVoiceAndGetFileAsync()
