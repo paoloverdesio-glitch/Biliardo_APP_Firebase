@@ -74,8 +74,6 @@
                 <RoundRectangle CornerRadius="16" />
             </Border.StrokeShape>
 
-            <!-- FIX estetico:
-                 riservo a destra lo stesso spazio del mic, così la scritta NON finisce sotto il dito -->
             <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
                 <Label Text="{Binding VoiceTimeLabel, Source={x:Reference ThisView}}"
                        TextColor="#FF3B30"
@@ -90,7 +88,6 @@
                            FontSize="12" />
                 </VerticalStackLayout>
 
-                <!-- Placeholder spazio mic -->
                 <ContentView Grid.Column="2"
                              WidthRequest="46"
                              InputTransparent="True" />
@@ -107,7 +104,11 @@
                 <RoundRectangle CornerRadius="20" />
             </Border.StrokeShape>
 
-            <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" VerticalOptions="Center">
+            <!-- MODIFICA: tolta la 4a colonna.
+                 Ora l’area “pulsante a destra” è UNA SOLA colonna (Grid.Column=2) con un contenitore fisso 46x46.
+                 Dentro ci sono sia INVIA che MIC, sovrapposti e centrati: così hanno IDENTICO centro. -->
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalOptions="Center">
+
                 <ImageButton Grid.Column="0"
                              WidthRequest="28"
                              HeightRequest="28"
@@ -125,27 +126,48 @@
                        Text="{Binding ComposerText, Source={x:Reference ThisView}}"
                        IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}" />
 
-                <Button Grid.Column="2"
-                        Text="Invia"
-                        BackgroundColor="#18A558"
-                        TextColor="White"
-                        CornerRadius="14"
-                        Padding="10,6"
-                        IsVisible="{Binding CanSend, Source={x:Reference ThisView}}"
-                        Clicked="OnSendClicked" />
+                <!-- Contenitore fisso: garantisce lo stesso punto di ancoraggio a destra -->
+                <Grid Grid.Column="2"
+                      WidthRequest="46"
+                      HeightRequest="46"
+                      HorizontalOptions="End"
+                      VerticalOptions="Center">
 
-                <!-- FIX: il mic resta visibile anche durante hold recording (finché non è lock) -->
-                <composer:MicHoldButton Grid.Column="3"
-                                        IsVisible="{Binding IsMicVisible, Source={x:Reference ThisView}}"
-                                        WidthRequest="46"
-                                        HeightRequest="46"
-                                        HorizontalOptions="End"
-                                        VerticalOptions="Center"
-                                        AccentColor="#18A558"
-                                        HoldStarted="OnMicHoldStarted"
-                                        HoldMoved="OnMicHoldMoved"
-                                        HoldEnded="OnMicHoldEnded"
-                                        HoldCanceled="OnMicHoldCanceled" />
+                    <!-- INVIA: cerchio verde + icona più piccola e centrata -->
+                    <Border WidthRequest="46"
+                            HeightRequest="46"
+                            StrokeThickness="0"
+                            BackgroundColor="#18A558"
+                            HorizontalOptions="Center"
+                            VerticalOptions="Center"
+                            IsVisible="{Binding CanSend, Source={x:Reference ThisView}}">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="23" />
+                        </Border.StrokeShape>
+
+                        <ImageButton BackgroundColor="Transparent"
+                                     Padding="0"
+                                     Aspect="AspectFit"
+                                     Source="ic_send.svg"
+                                     WidthRequest="22"
+                                     HeightRequest="22"
+                                     HorizontalOptions="Center"
+                                     VerticalOptions="Center"
+                                     Clicked="OnSendClicked" />
+                    </Border>
+
+                    <!-- MIC: stesso identico centro del tasto invia -->
+                    <composer:MicHoldButton IsVisible="{Binding IsMicVisible, Source={x:Reference ThisView}}"
+                                            WidthRequest="46"
+                                            HeightRequest="46"
+                                            HorizontalOptions="Center"
+                                            VerticalOptions="Center"
+                                            AccentColor="#18A558"
+                                            HoldStarted="OnMicHoldStarted"
+                                            HoldMoved="OnMicHoldMoved"
+                                            HoldEnded="OnMicHoldEnded"
+                                            HoldCanceled="OnMicHoldCanceled" />
+                </Grid>
             </Grid>
         </Border>
 
@@ -184,14 +206,31 @@
                             FontAttributes="Bold"
                             Clicked="OnVoicePauseResumeClicked" />
 
-                    <Button Grid.Column="2"
-                            Text="Invia"
+                    <!-- INVIA (lock): cerchio verde + icona più piccola e centrata -->
+                    <Border Grid.Column="2"
+                            WidthRequest="46"
+                            HeightRequest="46"
+                            StrokeThickness="0"
                             BackgroundColor="#18A558"
-                            TextColor="White"
-                            CornerRadius="18"
-                            Clicked="OnVoiceDoneClicked" />
+                            HorizontalOptions="End"
+                            VerticalOptions="Center">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="23" />
+                        </Border.StrokeShape>
+
+                        <ImageButton BackgroundColor="Transparent"
+                                     Padding="0"
+                                     Aspect="AspectFit"
+                                     Source="ic_send.svg"
+                                     WidthRequest="22"
+                                     HeightRequest="22"
+                                     HorizontalOptions="Center"
+                                     VerticalOptions="Center"
+                                     Clicked="OnVoiceDoneClicked" />
+                    </Border>
                 </Grid>
             </Grid>
         </Border>
+
     </Grid>
 </ContentView>
