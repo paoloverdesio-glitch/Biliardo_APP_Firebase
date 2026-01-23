@@ -73,11 +73,15 @@
             <Border.StrokeShape>
                 <RoundRectangle CornerRadius="16" />
             </Border.StrokeShape>
-            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+
+            <!-- FIX estetico:
+                 riservo a destra lo stesso spazio del mic, così la scritta NON finisce sotto il dito -->
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
                 <Label Text="{Binding VoiceTimeLabel, Source={x:Reference ThisView}}"
                        TextColor="#FF3B30"
                        FontAttributes="Bold"
                        VerticalTextAlignment="Center" />
+
                 <VerticalStackLayout Grid.Column="1" Spacing="4">
                     <GraphicsView x:Name="VoiceWaveHoldView"
                                   HeightRequest="40" />
@@ -85,12 +89,17 @@
                            TextColor="#A5A5A5"
                            FontSize="12" />
                 </VerticalStackLayout>
+
+                <!-- Placeholder spazio mic -->
+                <ContentView Grid.Column="2"
+                             WidthRequest="46"
+                             InputTransparent="True" />
             </Grid>
         </Border>
 
         <!-- Normal composer -->
         <Border Grid.Row="2"
-                IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}"
+                IsVisible="{Binding IsComposerSurfaceVisible, Source={x:Reference ThisView}}"
                 StrokeThickness="0"
                 BackgroundColor="#1C1C1C"
                 Padding="10,6">
@@ -105,14 +114,16 @@
                              BackgroundColor="#00000000"
                              Opacity="0.9"
                              Source="ic_clip.png"
-                             Clicked="OnAttachmentClicked" />
+                             Clicked="OnAttachmentClicked"
+                             IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}" />
 
                 <Entry Grid.Column="1"
                        Placeholder="Scrivi..."
                        PlaceholderColor="#6E6E73"
                        TextColor="White"
                        BackgroundColor="Transparent"
-                       Text="{Binding ComposerText, Source={x:Reference ThisView}}" />
+                       Text="{Binding ComposerText, Source={x:Reference ThisView}}"
+                       IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}" />
 
                 <Button Grid.Column="2"
                         Text="Invia"
@@ -123,9 +134,9 @@
                         IsVisible="{Binding CanSend, Source={x:Reference ThisView}}"
                         Clicked="OnSendClicked" />
 
-                <!-- FIX: dimensioni vincolate + center => niente stretch verticale -->
+                <!-- FIX: il mic resta visibile anche durante hold recording (finché non è lock) -->
                 <composer:MicHoldButton Grid.Column="3"
-                                        IsVisible="{Binding CanShowMic, Source={x:Reference ThisView}}"
+                                        IsVisible="{Binding IsMicVisible, Source={x:Reference ThisView}}"
                                         WidthRequest="46"
                                         HeightRequest="46"
                                         HorizontalOptions="End"
