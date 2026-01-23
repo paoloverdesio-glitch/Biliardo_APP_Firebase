@@ -106,6 +106,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (!string.IsNullOrWhiteSpace(payload.Text))
                 {
                     var msgId = Guid.NewGuid().ToString("N");
+                    AddPendingOutgoingText(msgId, myUid!, payload.Text);
                     await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId, msgId, myUid!, payload.Text);
                 }
 
@@ -116,7 +117,9 @@ namespace Biliardo.App.Pagine_Messaggi
                     var attachment = ToAttachmentVm(item);
                     if (attachment == null) continue;
 
-                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment);
+                    var msgId = Guid.NewGuid().ToString("N");
+                    AddPendingOutgoingAttachment(msgId, myUid!, attachment);
+                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, msgId, attachment);
 
                     // 2.6) Se bozza audio: elimina file locale dopo invio
                     if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
@@ -140,6 +143,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 // 2.8) Post-invio: torno in fondo e ricarico una volta
                 _userNearBottom = true;
                 await LoadOnceAsync(CancellationToken.None);
+                _ = ScrollToEndAfterLayoutAsync();
             }
             catch (Exception ex)
             {
@@ -388,28 +392,17 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 6) HELPERS: COPIA FILE IN CACHE (per invio/upload)
         // ============================================================
-        private static async Task<string> CopyToCacheAsync(FileResult fr, string prefix)
-        {
-            var ext = Path.GetExtension(fr.FileName);
-            if (string.IsNullOrWhiteSpace(ext)) ext = ".bin";
-
-            var dest = Path.Combine(FileSystem.CacheDirectory, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{ext}");
-
-            await using var src = await fr.OpenReadAsync();
-            await using var dst = File.Create(dest);
-            await src.CopyToAsync(dst);
-
-            return dest;
-        }
+        private static Task<string> CopyToCacheAsync(FileResult fr, string prefix)
+            => MediaFileHelper.CopyToCacheAsync(fr, prefix);
 
         // ============================================================
         // 7) SEND ATTACHMENT: upload su Storage + messaggio su Firestore
         // ============================================================
-        private async Task SendAttachmentAsync(string idToken, string myUid, string peerUid, string chatId, AttachmentVm a)
+        private async Task SendAttachmentAsync(string idToken, string myUid, string peerUid, string chatId, string messageId, AttachmentVm a)
         {
             if (a == null) return;
 
-            var msgId = Guid.NewGuid().ToString("N");
+            var msgId = messageId;
 
             // 7.1) Location -> messaggio diretto (niente Storage)
             if (a.Kind == AttachmentKind.Location)
@@ -466,6 +459,15 @@ namespace Biliardo.App.Pagine_Messaggi
                 ["chatId"] = chatId,
                 ["messageId"] = msgId
             };
+
+            if (a.Kind == AttachmentKind.Audio)
+            {
+                var stableSize = await MediaFileHelper.WaitForStableFileSizeAsync(a.LocalPath);
+                if (stableSize > 0)
+                    sizeBytes = stableSize;
+
+                MediaFileHelper.LogFileSnapshot("Chat.Audio.BeforeUpload", a.LocalPath, contentType);
+            }
 
             await FirebaseStorageRestClient.UploadFileAsync(
                 idToken: idToken,
@@ -547,7 +549,78 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // ============================================================
-        // 9) HANDLER “LEGACY” (se ancora referenziati da UI vecchie)
+        // 9) PENDING UI: MESSAGGIO OTTIMISTICO (TESTO/ALLEGATI)
+        // ============================================================
+        private void AddPendingOutgoingText(string messageId, string myUid, string text)
+        {
+            var vm = new ChatMessageVm
+            {
+                Id = messageId,
+                IsMine = true,
+                Type = "text",
+                Text = text ?? "",
+                CreatedAt = DateTimeOffset.UtcNow,
+                StatusLabel = "✓"
+            };
+
+            AppendPendingMessage(vm);
+        }
+
+        private void AddPendingOutgoingAttachment(string messageId, string myUid, AttachmentVm a)
+        {
+            var type = a.Kind switch
+            {
+                AttachmentKind.Audio => "audio",
+                AttachmentKind.Photo => "photo",
+                AttachmentKind.Video => "video",
+                AttachmentKind.File => "file",
+                AttachmentKind.Location => "location",
+                AttachmentKind.Contact => "contact",
+                _ => "file"
+            };
+
+            var vm = new ChatMessageVm
+            {
+                Id = messageId,
+                IsMine = true,
+                Type = type,
+                Text = "",
+                CreatedAt = DateTimeOffset.UtcNow,
+                StatusLabel = "✓",
+                FileName = a.DisplayName,
+                ContentType = a.ContentType,
+                SizeBytes = a.SizeBytes,
+                DurationMs = a.DurationMs,
+                Latitude = a.Latitude,
+                Longitude = a.Longitude,
+                ContactName = a.ContactName,
+                ContactPhone = a.ContactPhone
+            };
+
+            AppendPendingMessage(vm);
+        }
+
+        private void AppendPendingMessage(ChatMessageVm vm)
+        {
+            if (vm == null) return;
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
+                var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
+                var day = vm.CreatedAt.ToLocalTime().Date;
+
+                if (lastDay == null || day != lastDay.Value)
+                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(day));
+
+                Messaggi.Add(vm);
+                _userNearBottom = true;
+                _ = ScrollToEndAfterLayoutAsync();
+            });
+        }
+
+        // ============================================================
+        // 10) HANDLER “LEGACY” (se ancora referenziati da UI vecchie)
         // ============================================================
         private void OnComposerTapped(object sender, TappedEventArgs e)
         {

@@ -391,6 +391,12 @@ namespace Biliardo.App.Pagine_Messaggi
             var filePath = _voice.CurrentFilePath ?? _voiceFilePath;
             var ms = _voice.GetElapsedMs();
 
+            if (!string.IsNullOrWhiteSpace(filePath))
+            {
+                await MediaFileHelper.WaitForStableFileSizeAsync(filePath);
+                MediaFileHelper.LogFileSnapshot("Chat.Voice.AfterStop", filePath, "audio/mp4");
+            }
+
             _voiceFilePath = null;
             _voiceDurationMs = 0;
             VoiceTimeLabel = "00:00";
@@ -432,17 +438,24 @@ namespace Biliardo.App.Pagine_Messaggi
 
             var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
 
+            var msgId = Guid.NewGuid().ToString("N");
+
+            var stableSize = await MediaFileHelper.WaitForStableFileSizeAsync(filePath);
+            if (stableSize <= 0)
+                stableSize = new FileInfo(filePath).Length;
+
             var a = new AttachmentVm
             {
                 Kind = AttachmentKind.Audio,
                 DisplayName = Path.GetFileName(filePath),
                 LocalPath = filePath,
                 ContentType = "audio/mp4",
-                SizeBytes = new FileInfo(filePath).Length,
+                SizeBytes = stableSize,
                 DurationMs = durationMs > 0 ? durationMs : MediaMetadataHelper.TryGetDurationMs(filePath)
             };
 
-            await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, a);
+            AddPendingOutgoingAttachment(msgId, myUid!, a);
+            await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, msgId, a);
         }
 
         private void RefreshVoiceBindings()

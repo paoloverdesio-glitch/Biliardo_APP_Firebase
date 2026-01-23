@@ -345,6 +345,12 @@ namespace Biliardo.App.Pagine_Home
                 ["scope"] = "home_post"
             };
 
+            if (item.Kind == PendingKind.AudioDraft)
+                await MediaFileHelper.WaitForStableFileSizeAsync(item.LocalFilePath);
+
+            if (item.Kind == PendingKind.AudioDraft)
+                MediaFileHelper.LogFileSnapshot("Home.Audio.BeforeUpload", item.LocalFilePath, FirebaseStorageRestClient.GuessContentTypeFromPath(item.LocalFilePath));
+
             var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
                 idToken: idToken,
                 objectPath: objectPath,
@@ -652,22 +658,12 @@ namespace Biliardo.App.Pagine_Home
 
             await FirebaseStorageRestClient.DownloadToFileAsync(idToken, att.StoragePath, local);
             att.LocalPath = local;
+            MediaFileHelper.LogFileSnapshot("Home.Audio.AfterDownload", local, att.ContentType);
             return local;
         }
 
-        private static async Task<string> CopyToCacheAsync(FileResult fr, string prefix)
-        {
-            var ext = Path.GetExtension(fr.FileName);
-            if (string.IsNullOrWhiteSpace(ext)) ext = ".bin";
-
-            var dest = Path.Combine(FileSystem.CacheDirectory, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{ext}");
-
-            await using var src = await fr.OpenReadAsync();
-            await using var dst = File.Create(dest);
-            await src.CopyToAsync(dst);
-
-            return dest;
-        }
+        private static Task<string> CopyToCacheAsync(FileResult fr, string prefix)
+            => MediaFileHelper.CopyToCacheAsync(fr, prefix);
 
         // ===================== 4) MENU LATERALE SINISTRO =================
         private async void OnMenuLaterale_Toggle(object? sender, TappedEventArgs e)
@@ -996,6 +992,7 @@ namespace Biliardo.App.Pagine_Home
             public string? StoragePath { get; set; }
             public string? DownloadUrl { get; set; }
             public string? FileName { get; set; }
+            public string? ContentType { get; set; }
             public long DurationMs { get; set; }
             public string? LocalPath { get; set; }
 
@@ -1030,6 +1027,7 @@ namespace Biliardo.App.Pagine_Home
                     StoragePath = att.StoragePath,
                     DownloadUrl = att.DownloadUrl,
                     FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
+                    ContentType = att.ContentType,
                     DurationMs = att.DurationMs
                 };
 

@@ -315,9 +315,6 @@ namespace Biliardo.App.Pagine_Messaggi
 
                     foreach (var m in ordered)
                     {
-                        if (m.DeletedFor != null && m.DeletedFor.Contains(myUid, StringComparer.Ordinal))
-                            continue;
-
                         var id = m.MessageId ?? "";
                         if (string.IsNullOrWhiteSpace(id))
                             continue;
@@ -325,6 +322,8 @@ namespace Biliardo.App.Pagine_Messaggi
                         // 5.3.3.a) già esiste: patch in place (spunte e metadati media)
                         if (byId.TryGetValue(id, out var existing))
                         {
+                            ApplyDeletionState(existing, m, myUid);
+
                             if (existing.IsMine)
                             {
                                 var delivered = (m.DeliveredTo ?? Array.Empty<string>())
@@ -390,6 +389,9 @@ namespace Biliardo.App.Pagine_Messaggi
                             continue;
                         }
 
+                        if (m.DeletedFor != null && m.DeletedFor.Contains(myUid, StringComparer.Ordinal))
+                            continue;
+
                         // 5.3.3.b) nuovo: aggiungi separatore se cambia giorno + append
                         var day = m.CreatedAtUtc.ToLocalTime().Date;
                         if (lastDay == null || day != lastDay.Value)
@@ -405,7 +407,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 // 5.3.4) auto-scroll solo se l’utente è near-bottom
                 if (appended && _userNearBottom)
-                    ScrollToEnd();
+                    _ = ScrollToEndAfterLayoutAsync();
             });
         }
 
@@ -441,6 +443,111 @@ namespace Biliardo.App.Pagine_Messaggi
                 CvMessaggi.ScrollTo(Messaggi.Count - 1, position: ScrollToPosition.End, animate: false);
             }
             catch { }
+        }
+
+        private async Task ScrollToEndAfterLayoutAsync()
+        {
+            try
+            {
+                await _scrollToEndLock.WaitAsync();
+
+                if (Messaggi.Count == 0)
+                    return;
+
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    try
+                    {
+                        CvMessaggi.ScrollTo(Messaggi.Count - 1, position: ScrollToPosition.End, animate: false);
+                    }
+                    catch { }
+                });
+
+                await Task.Delay(_keyboardVisible ? 140 : 60);
+
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    try
+                    {
+                        CvMessaggi.ScrollTo(Messaggi.Count - 1, position: ScrollToPosition.End, animate: false);
+                    }
+                    catch { }
+                });
+            }
+            catch { }
+            finally
+            {
+                try { _scrollToEndLock.Release(); } catch { }
+            }
+        }
+
+        private void HookComposerKeyboardEvents()
+        {
+            try
+            {
+                ComposerBar.KeyboardVisibilityChanged -= OnComposerKeyboardVisibilityChanged;
+                ComposerBar.KeyboardVisibilityChanged += OnComposerKeyboardVisibilityChanged;
+            }
+            catch { }
+        }
+
+        private void OnComposerKeyboardVisibilityChanged(object? sender, bool isVisible)
+        {
+            _keyboardVisible = isVisible;
+            _userNearBottom = true;
+            _ = ScrollToEndAfterLayoutAsync();
+        }
+
+        private static void ApplyDeletionState(ChatMessageVm existing, FirestoreChatService.MessageItem m, string myUid)
+        {
+            var deletedForAll = m.DeletedForAll;
+            var deletedFor = m.DeletedFor ?? Array.Empty<string>();
+            var isHiddenForMe = deletedFor.Contains(myUid, StringComparer.Ordinal);
+
+            var changed = false;
+
+            if (existing.DeletedForAll != deletedForAll)
+            {
+                existing.DeletedForAll = deletedForAll;
+                changed = true;
+            }
+
+            if (!ReferenceEquals(existing.DeletedFor, deletedFor))
+            {
+                existing.DeletedFor = deletedFor;
+                changed = true;
+            }
+
+            if (existing.IsHiddenForMe != isHiddenForMe)
+            {
+                existing.IsHiddenForMe = isHiddenForMe;
+                changed = true;
+            }
+
+            if (deletedForAll)
+            {
+                if (!string.IsNullOrWhiteSpace(existing.Text))
+                {
+                    existing.Text = "";
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                existing.NotificaCambio(
+                    nameof(ChatMessageVm.DeletedForAll),
+                    nameof(ChatMessageVm.IsDeletedPlaceholder),
+                    nameof(ChatMessageVm.IsHiddenForMe),
+                    nameof(ChatMessageVm.Text),
+                    nameof(ChatMessageVm.HasText),
+                    nameof(ChatMessageVm.IsAudio),
+                    nameof(ChatMessageVm.IsPhoto),
+                    nameof(ChatMessageVm.IsVideo),
+                    nameof(ChatMessageVm.IsFile),
+                    nameof(ChatMessageVm.IsFileOrVideo),
+                    nameof(ChatMessageVm.IsLocation));
+            }
         }
 
         // ============================================================

@@ -20,6 +20,7 @@ namespace Biliardo.App.Pagine_Messaggi
             InitVoiceSubsystem();        // Vocale + waveform
             InitUiCollections();         // Emoji, eventi collezioni, binding state
             InitScrollTuning();          // Tuning scroll CollectionView
+            HookComposerKeyboardEvents();
 
             // 1.2) Stato iniziale UI
             TitoloChat = "Chat";

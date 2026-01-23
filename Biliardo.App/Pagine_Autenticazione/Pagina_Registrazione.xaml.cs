@@ -253,8 +253,7 @@ public partial class Pagina_Registrazione : ContentPage
                     var meta = new Dictionary<string, string>
                     {
                         ["ownerUid"] = uid,
-                        ["scope"] = "avatar",
-                        ["uid"] = uid
+                        ["scope"] = "avatar"
                     };
 
                     var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(

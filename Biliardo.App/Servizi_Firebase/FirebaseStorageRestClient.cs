@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Biliardo.App.Servizi_Diagnostics;
 
 namespace Biliardo.App.Servizi_Firebase
 {
@@ -141,13 +142,14 @@ namespace Biliardo.App.Servizi_Firebase
             // Se devi impostare metadata, DEVI usare multipart.
             if (customMetadata != null && customMetadata.Count > 0)
             {
+                var normalizedMetadata = NormalizeCustomMetadata(customMetadata);
                 return await UploadMultipartAsync(
                     idToken: idToken,
                     bucket: bucket,
                     normalizedStoragePath: normalized,
                     content: content,
                     contentType: contentType,
-                    customMetadata: customMetadata,
+                    customMetadata: normalizedMetadata,
                     ct: ct);
             }
 
@@ -508,6 +510,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ".jpg" or ".jpeg" => "image/jpeg",
                 ".png" => "image/png",
                 ".gif" => "image/gif",
+                ".webp" => "image/webp",
                 ".pdf" => "application/pdf",
                 ".txt" => "text/plain",
                 _ => "application/octet-stream"
@@ -520,6 +523,58 @@ namespace Biliardo.App.Servizi_Firebase
             p = p.TrimStart('/');
             return p;
         }
+
+        private static IDictionary<string, string> NormalizeCustomMetadata(IDictionary<string, string> customMetadata)
+        {
+            var normalized = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var kv in customMetadata)
+            {
+                if (string.IsNullOrWhiteSpace(kv.Key))
+                    continue;
+
+                if (!AllowedMetadataKeys.Contains(kv.Key))
+                    continue;
+
+                var value = (kv.Value ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                if (value.Length > MaxMetadataValueLength)
+                {
+                    value = value.Substring(0, MaxMetadataValueLength);
+                    DiagLog.Note("Storage.Metadata.Truncated", kv.Key);
+                }
+
+                normalized[kv.Key] = value;
+            }
+
+            if (!normalized.ContainsKey("ownerUid") || !normalized.ContainsKey("scope"))
+                throw new InvalidOperationException("customMetadata deve includere ownerUid e scope.");
+
+            if (normalized.TryGetValue("scope", out var scope) && !AllowedScopes.Contains(scope))
+                throw new InvalidOperationException($"customMetadata.scope non valido: {scope}");
+
+            return normalized;
+        }
+
+        private const int MaxMetadataValueLength = 128;
+
+        private static readonly HashSet<string> AllowedMetadataKeys = new(StringComparer.Ordinal)
+        {
+            "ownerUid",
+            "scope",
+            "chatId",
+            "messageId",
+            "postId"
+        };
+
+        private static readonly HashSet<string> AllowedScopes = new(StringComparer.Ordinal)
+        {
+            "chat",
+            "home_post",
+            "avatar"
+        };
 
         private static string? TryParseGoogleApiError(string body)
         {

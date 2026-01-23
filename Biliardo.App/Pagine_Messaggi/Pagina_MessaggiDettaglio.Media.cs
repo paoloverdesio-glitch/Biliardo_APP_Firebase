@@ -11,6 +11,8 @@ using Microsoft.Maui.ApplicationModel.Communication;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Storage;
 
+using Biliardo.App.Servizi_Media;
+
 #if ANDROID
 using Android.Graphics;
 using Android.Media;
@@ -332,6 +334,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{m.Id}_{Guid.NewGuid():N}{ext}");
 
                 await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, m.StoragePath!, local);
+
+                if (m.IsAudio)
+                    MediaFileHelper.LogFileSnapshot("Chat.Audio.AfterDownload", local, m.ContentType);
 
                 MainThread.BeginInvokeOnMainThread(() =>
                 {

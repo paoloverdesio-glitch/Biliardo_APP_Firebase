@@ -119,12 +119,15 @@
                              IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}" />
 
                 <Entry Grid.Column="1"
+                       x:Name="ComposerEntry"
                        Placeholder="Scrivi..."
                        PlaceholderColor="#6E6E73"
                        TextColor="White"
                        BackgroundColor="Transparent"
                        Text="{Binding ComposerText, Source={x:Reference ThisView}}"
-                       IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}" />
+                       IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}"
+                       Focused="OnComposerEntryFocused"
+                       Unfocused="OnComposerEntryUnfocused" />
 
                 <!-- Contenitore fisso: garantisce lo stesso punto di ancoraggio a destra -->
                 <Grid Grid.Column="2"
