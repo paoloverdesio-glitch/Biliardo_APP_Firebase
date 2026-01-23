@@ -1,4 +1,7 @@
-﻿// ========================= 1) NOME FILE E SCOPO =========================
+﻿// FILE 3/3: Pagine_Home/Pagina_Home.xaml.cs
+// (Il file è già coerente: usa UploadFileWithResultAsync con customMetadata. Nessuna modifica necessaria lato upload.)
+
+// ========================= 1) NOME FILE E SCOPO =========================
 // Pagine_Home/Pagina_Home.xaml.cs
 // Code-behind della Home. Implementa:
 //  - Barra icone (menu laterale, mercatino, sfida, chat, menu account).
@@ -619,6 +622,8 @@ namespace Biliardo.App.Pagine_Home
                     return;
 
                 att.IsPlaying = true;
+                var fi = new FileInfo(path);
+                await ShowPopupAsync($"Audio path:\n{path}\n\nSize: {fi.Length} bytes", "DEBUG audio");
                 await _audioPlayback.PlayAsync(path);
                 att.IsPlaying = false;
             }
@@ -1072,16 +1077,21 @@ namespace Biliardo.App.Pagine_Home
         private sealed class AndroidAudioPlayback : IAudioPlayback
         {
             private Android.Media.MediaPlayer? _player;
+            private TaskCompletionSource<bool>? _playTcs;
 
             public Task PlayAsync(string filePath)
             {
                 StopPlaybackSafe();
+
+                _playTcs = new TaskCompletionSource<bool>();
+
                 _player = new Android.Media.MediaPlayer();
                 _player.SetDataSource(filePath);
                 _player.Prepare();
                 _player.Start();
+
                 _player.Completion += (_, __) => StopPlaybackSafe();
-                return Task.CompletedTask;
+                return _playTcs.Task;
             }
 
             public void StopPlaybackSafe()
@@ -1094,10 +1104,14 @@ namespace Biliardo.App.Pagine_Home
                         try { _player.Release(); } catch { }
                         _player = null;
                     }
+
+                    _playTcs?.TrySetResult(true);
+                    _playTcs = null;
                 }
                 catch { }
             }
         }
+
 #endif
 
 #if WINDOWS

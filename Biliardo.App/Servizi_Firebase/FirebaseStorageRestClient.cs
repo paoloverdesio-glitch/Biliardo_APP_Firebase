@@ -1,4 +1,6 @@
-﻿using System;
+﻿// FILE 1/3: Servizi_Firebase/FirebaseStorageRestClient.cs
+
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -60,7 +62,14 @@ namespace Biliardo.App.Servizi_Firebase
             string contentType,
             CancellationToken ct = default)
         {
-            return UploadAsync(idToken, DefaultStorageBucket, storagePath, content, contentType, customMetadata: null, ct: ct);
+            return UploadAsync(
+                idToken: idToken,
+                bucket: DefaultStorageBucket,
+                storagePath: storagePath,
+                content: content,
+                contentType: contentType,
+                customMetadata: null,
+                ct: ct);
         }
 
         /// <summary>
@@ -74,7 +83,14 @@ namespace Biliardo.App.Servizi_Firebase
             IDictionary<string, string>? customMetadata,
             CancellationToken ct = default)
         {
-            return UploadAsync(idToken, DefaultStorageBucket, storagePath, content, contentType, customMetadata, ct);
+            return UploadAsync(
+                idToken: idToken,
+                bucket: DefaultStorageBucket,
+                storagePath: storagePath,
+                content: content,
+                contentType: contentType,
+                customMetadata: customMetadata,
+                ct: ct);
         }
 
         public static Task<UploadResult> UploadAsync(
@@ -85,7 +101,14 @@ namespace Biliardo.App.Servizi_Firebase
             string contentType,
             CancellationToken ct = default)
         {
-            return UploadAsync(idToken, bucket, storagePath, content, contentType, customMetadata: null, ct: ct);
+            return UploadAsync(
+                idToken: idToken,
+                bucket: bucket,
+                storagePath: storagePath,
+                content: content,
+                contentType: contentType,
+                customMetadata: null,
+                ct: ct);
         }
 
         /// <summary>
@@ -259,7 +282,14 @@ namespace Biliardo.App.Servizi_Firebase
             string? contentType = null,
             CancellationToken ct = default)
         {
-            return UploadFileWithResultAsync(idToken, DefaultStorageBucket, objectPath, localFilePath, contentType, customMetadata: null, ct: ct);
+            return UploadFileWithResultAsync(
+                idToken: idToken,
+                bucket: DefaultStorageBucket,
+                objectPath: objectPath,
+                localFilePath: localFilePath,
+                contentType: contentType,
+                customMetadata: null,
+                ct: ct);
         }
 
         /// <summary>
@@ -273,7 +303,14 @@ namespace Biliardo.App.Servizi_Firebase
             IDictionary<string, string>? customMetadata,
             CancellationToken ct = default)
         {
-            return UploadFileWithResultAsync(idToken, DefaultStorageBucket, objectPath, localFilePath, contentType, customMetadata, ct);
+            return UploadFileWithResultAsync(
+                idToken: idToken,
+                bucket: DefaultStorageBucket,
+                objectPath: objectPath,
+                localFilePath: localFilePath,
+                contentType: contentType,
+                customMetadata: customMetadata,
+                ct: ct);
         }
 
         public static Task<UploadResult> UploadFileWithResultAsync(
@@ -284,7 +321,14 @@ namespace Biliardo.App.Servizi_Firebase
             string? contentType = null,
             CancellationToken ct = default)
         {
-            return UploadFileWithResultAsync(idToken, bucket, objectPath, localFilePath, contentType, customMetadata: null, ct: ct);
+            return UploadFileWithResultAsync(
+                idToken: idToken,
+                bucket: bucket,
+                objectPath: objectPath,
+                localFilePath: localFilePath,
+                contentType: contentType,
+                customMetadata: null,
+                ct: ct);
         }
 
         public static async Task<UploadResult> UploadFileWithResultAsync(

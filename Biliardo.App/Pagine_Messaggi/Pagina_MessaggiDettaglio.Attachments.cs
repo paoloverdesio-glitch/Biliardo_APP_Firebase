@@ -1,4 +1,6 @@
-﻿using System;
+﻿// FILE 2/3: Pagine_Messaggi/Pagina_MessaggiDettaglio.Attachments.cs
+
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;

@@ -15,7 +15,7 @@ namespace Biliardo.App.Servizi_Sicurezza
     /// </summary>
     public static class SessionePersistente
     {
-        public const int AccessiConsentitiSenzaBiometria = 5;
+        public const int AccessiConsentitiSenzaBiometria = 500000;
 
         private const string K_AuthProvider = "auth_provider"; // "firebase" | "api" (legacy)
         private const string K_ApiAccessToken = "auth_token";  // legacy
