@@ -55,3 +55,17 @@ _deploy_logs/
 _diag/
 _safety/
 artifacts/
+# --- BUILD OUTPUT WINDOWS ---
+WIN/*
+!WIN/BiliardoApp.exe
+
+# --- DUMPS LOCALI ---
+dumps/
+
+# local dumps (do not commit)
+_dump_voice_*/
+_dump_voice_*.zip
+
+# --- LOCAL DUMPS (non versionare) ---
+_dump_voice_*/
+_dump_voice_*.zip

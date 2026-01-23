@@ -8,6 +8,7 @@ using Biliardo.App.Pagine_Home;
 using Biliardo.App.Servizi_Diagnostics;
 using Biliardo.App.Servizi_Sicurezza;
 using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Infrastructure;
 
 namespace Biliardo.App.Pagine_Autenticazione
 {
@@ -146,13 +147,37 @@ namespace Biliardo.App.Pagine_Autenticazione
                     $"Firebase OK\nEmail: {FirebaseSessionePersistente.GetEmail()}\nUID: {FirebaseSessionePersistente.GetLocalId()}\nEmail verificata: True",
                     "Login Firebase");
 
-                Application.Current.MainPage = new NavigationPage(new Pagina_Home());
-                DiagLog.Step("Navigation", "ToHome(Firebase)");
+                try
+                {
+                    var home = new Pagina_Home();
+                    Application.Current.MainPage = new NavigationPage(home);
+                    DiagLog.Step("Navigation", "ToHome(Firebase)");
+                }
+                catch (Exception navEx)
+                {
+                    DiagLog.Exception("NavigationHomeError", navEx);
+                    ExceptionFormatter.Log(navEx);
+                    var userMsg = ExceptionFormatter.FormatUserMessage(navEx);
+#if DEBUG
+                    var debug = ExceptionFormatter.FormatDebugDetails(navEx);
+                    if (!string.IsNullOrWhiteSpace(debug))
+                        userMsg += "\n\n" + debug;
+#endif
+                    await ShowPopupAsync(userMsg, "Errore Firebase");
+                    return;
+                }
             }
             catch (Exception ex)
             {
                 DiagLog.Exception("LoginFirebaseError", ex);
-                await ShowPopupAsync(HumanizeFirebaseError(ex.Message), "Errore Firebase");
+                ExceptionFormatter.Log(ex);
+                var userMsg = ExceptionFormatter.FormatUserMessage(ex);
+#if DEBUG
+                var debug = ExceptionFormatter.FormatDebugDetails(ex);
+                if (!string.IsNullOrWhiteSpace(debug))
+                    userMsg += "\n\n" + debug;
+#endif
+                await ShowPopupAsync(userMsg, "Errore Firebase");
             }
             finally
             {

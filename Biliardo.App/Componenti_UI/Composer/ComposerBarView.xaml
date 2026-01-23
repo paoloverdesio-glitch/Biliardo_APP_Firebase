@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:composer="clr-namespace:Biliardo.App.Componenti_UI.Composer"
+             x:Class="Biliardo.App.Componenti_UI.Composer.ComposerBarView"
+             x:Name="ThisView">
+
+    <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+
+        <!-- Pending items -->
+        <CollectionView Grid.Row="0"
+                        ItemsSource="{Binding PendingItems, Source={x:Reference ThisView}}"
+                        SelectionMode="None"
+                        Margin="0,0,0,4"
+                        IsVisible="{Binding HasPendingItems, Source={x:Reference ThisView}}">
+            <CollectionView.ItemTemplate>
+                <DataTemplate>
+                    <Border Padding="10"
+                            Stroke="#2B2B2B"
+                            BackgroundColor="#151515"
+                            StrokeThickness="1"
+                            Margin="0,0,0,8">
+                        <Border.StrokeShape>
+                            <RoundRectangle CornerRadius="12" />
+                        </Border.StrokeShape>
+
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <VerticalStackLayout Spacing="4">
+                                <Label Text="{Binding DisplayName}"
+                                       TextColor="White"
+                                       FontAttributes="Bold" />
+                                <Label Text="{Binding Kind}"
+                                       TextColor="#A5A5A5"
+                                       FontSize="12" />
+                            </VerticalStackLayout>
+
+                            <HorizontalStackLayout Grid.Column="1" Spacing="8" VerticalOptions="Center">
+                                <Button Text="{Binding AudioPlayLabel}"
+                                        IsVisible="{Binding IsAudioDraft}"
+                                        Clicked="OnPlayDraftClicked"
+                                        CommandParameter="{Binding .}"
+                                        BackgroundColor="#1E1E1E"
+                                        TextColor="White"
+                                        CornerRadius="8"
+                                        Padding="8,4" />
+                                <Button Text="Invia"
+                                        Clicked="OnSendDraftClicked"
+                                        CommandParameter="{Binding .}"
+                                        BackgroundColor="#18A558"
+                                        TextColor="White"
+                                        CornerRadius="8"
+                                        Padding="8,4" />
+                                <Button Text="✕"
+                                        Clicked="OnRemovePendingClicked"
+                                        CommandParameter="{Binding .}"
+                                        BackgroundColor="#2B2B2B"
+                                        TextColor="White"
+                                        CornerRadius="8"
+                                        Padding="6,4" />
+                            </HorizontalStackLayout>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+        <!-- Voice hold strip -->
+        <Border Grid.Row="1"
+                IsVisible="{Binding IsVoiceHoldStripVisible, Source={x:Reference ThisView}}"
+                StrokeThickness="0"
+                BackgroundColor="#1C1C1C"
+                Padding="10,6">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="16" />
+            </Border.StrokeShape>
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                <Label Text="{Binding VoiceTimeLabel, Source={x:Reference ThisView}}"
+                       TextColor="#FF3B30"
+                       FontAttributes="Bold"
+                       VerticalTextAlignment="Center" />
+                <VerticalStackLayout Grid.Column="1" Spacing="4">
+                    <GraphicsView x:Name="VoiceWaveHoldView"
+                                  HeightRequest="40" />
+                    <Label Text="{Binding VoiceHintLabel, Source={x:Reference ThisView}}"
+                           TextColor="#A5A5A5"
+                           FontSize="12" />
+                </VerticalStackLayout>
+            </Grid>
+        </Border>
+
+        <!-- Normal composer -->
+        <Border Grid.Row="2"
+                IsVisible="{Binding IsNormalComposerVisible, Source={x:Reference ThisView}}"
+                StrokeThickness="0"
+                BackgroundColor="#1C1C1C"
+                Padding="10,6">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="20" />
+            </Border.StrokeShape>
+
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" VerticalOptions="Center">
+                <ImageButton Grid.Column="0"
+                             WidthRequest="28"
+                             HeightRequest="28"
+                             BackgroundColor="#00000000"
+                             Opacity="0.9"
+                             Source="ic_clip.png"
+                             Clicked="OnAttachmentClicked" />
+
+                <Entry Grid.Column="1"
+                       Placeholder="Scrivi..."
+                       PlaceholderColor="#6E6E73"
+                       TextColor="White"
+                       BackgroundColor="Transparent"
+                       Text="{Binding ComposerText, Source={x:Reference ThisView}}" />
+
+                <Button Grid.Column="2"
+                        Text="Invia"
+                        BackgroundColor="#18A558"
+                        TextColor="White"
+                        CornerRadius="14"
+                        Padding="10,6"
+                        IsVisible="{Binding CanSend, Source={x:Reference ThisView}}"
+                        Clicked="OnSendClicked" />
+
+                <!-- FIX: dimensioni vincolate + center => niente stretch verticale -->
+                <composer:MicHoldButton Grid.Column="3"
+                                        IsVisible="{Binding CanShowMic, Source={x:Reference ThisView}}"
+                                        WidthRequest="46"
+                                        HeightRequest="46"
+                                        HorizontalOptions="End"
+                                        VerticalOptions="Center"
+                                        AccentColor="#18A558"
+                                        HoldStarted="OnMicHoldStarted"
+                                        HoldMoved="OnMicHoldMoved"
+                                        HoldEnded="OnMicHoldEnded"
+                                        HoldCanceled="OnMicHoldCanceled" />
+            </Grid>
+        </Border>
+
+        <!-- Voice lock panel -->
+        <Border Grid.Row="2"
+                IsVisible="{Binding IsVoiceLockPanelVisible, Source={x:Reference ThisView}}"
+                StrokeThickness="0"
+                BackgroundColor="#111111"
+                Padding="14">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="16" />
+            </Border.StrokeShape>
+
+            <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
+                <Label Text="{Binding VoiceTimeLabel, Source={x:Reference ThisView}}"
+                       TextColor="#FF3B30"
+                       FontSize="20"
+                       FontAttributes="Bold" />
+
+                <GraphicsView Grid.Row="1"
+                              x:Name="VoiceWaveLockView"
+                              HeightRequest="48" />
+
+                <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                    <Button Grid.Column="0"
+                            Text="🗑"
+                            BackgroundColor="#2B2B2B"
+                            TextColor="White"
+                            CornerRadius="12"
+                            Clicked="OnVoiceTrashClicked" />
+
+                    <Button Grid.Column="1"
+                            Text="{Binding VoicePauseResumeLabel, Source={x:Reference ThisView}}"
+                            BackgroundColor="Transparent"
+                            TextColor="#FF3B30"
+                            FontAttributes="Bold"
+                            Clicked="OnVoicePauseResumeClicked" />
+
+                    <Button Grid.Column="2"
+                            Text="Invia"
+                            BackgroundColor="#18A558"
+                            TextColor="White"
+                            CornerRadius="18"
+                            Clicked="OnVoiceDoneClicked" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</ContentView>

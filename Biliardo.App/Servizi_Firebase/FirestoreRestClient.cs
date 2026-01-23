@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -33,12 +34,21 @@ namespace Biliardo.App.Servizi_Firebase
             PropertyNameCaseInsensitive = true
         };
 
+        private static string DocumentsResourceRoot =>
+            $"projects/{ProjectId}/databases/{DatabaseId}/documents";
+
         private static string BaseDocumentsUrl =>
-            $"https://firestore.googleapis.com/v1/projects/{ProjectId}/databases/{DatabaseId}/documents";
+            $"https://firestore.googleapis.com/v1/{DocumentsResourceRoot}";
 
         // Root runQuery (parent = .../documents)
         private static string RunQueryUrlRoot =>
             $"{BaseDocumentsUrl}:runQuery";
+
+        private static string CommitUrl =>
+            $"{BaseDocumentsUrl}:commit";
+
+        private static string BuildDocumentResourceName(string documentPath)
+            => $"{DocumentsResourceRoot}/{documentPath.TrimStart('/')}";
 
         // =========================================================
         // [1] API di base
@@ -157,6 +167,86 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new InvalidOperationException($"Firestore DELETE failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
         }
 
+        // =========================================================
+        // [1.1] Commit con FieldTransforms (increment/arrayUnion)
+        // =========================================================
+
+        public sealed record FieldTransform(string FieldPath, Dictionary<string, object> Transform);
+
+        public static FieldTransform TransformIncrement(string fieldPath, long amount)
+        {
+            return new FieldTransform(fieldPath, new Dictionary<string, object>
+            {
+                ["increment"] = VInt(amount)
+            });
+        }
+
+        public static FieldTransform TransformAppendMissingElements(string fieldPath, IEnumerable<object> values)
+        {
+            return new FieldTransform(fieldPath, new Dictionary<string, object>
+            {
+                ["appendMissingElements"] = new Dictionary<string, object>
+                {
+                    ["values"] = values?.ToArray() ?? Array.Empty<object>()
+                }
+            });
+        }
+
+        public static async Task CommitAsync(
+            string documentPath,
+            IReadOnlyList<FieldTransform> transforms,
+            string idToken,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(documentPath)) throw new ArgumentException("documentPath vuoto", nameof(documentPath));
+            if (transforms == null || transforms.Count == 0) throw new ArgumentException("transforms vuoti", nameof(transforms));
+            if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
+
+            // FIX CRITICO:
+            // Firestore commit API vuole un resource name del tipo:
+            // projects/{projectId}/databases/{databaseId}/documents/{path}
+            // NON un URL HTTPS.
+            var docName = BuildDocumentResourceName(documentPath);
+
+            var fieldTransforms = transforms.Select(t =>
+            {
+                var dict = new Dictionary<string, object>
+                {
+                    ["fieldPath"] = t.FieldPath
+                };
+
+                foreach (var kv in t.Transform)
+                    dict[kv.Key] = kv.Value;
+
+                return dict;
+            }).ToArray();
+
+            var payload = new Dictionary<string, object>
+            {
+                ["writes"] = new object[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["transform"] = new Dictionary<string, object>
+                        {
+                            ["document"] = docName,
+                            ["fieldTransforms"] = fieldTransforms
+                        }
+                    }
+                }
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, CommitUrl);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", idToken);
+            req.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOpts), Encoding.UTF8, "application/json");
+
+            using var resp = await _http.SendAsync(req, ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
+
+            if (!resp.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Firestore COMMIT failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
+        }
+
         /// <summary>
         /// Esegue una StructuredQuery sul parent ROOT (projects/.../documents).
         /// </summary>
@@ -182,7 +272,7 @@ namespace Biliardo.App.Servizi_Firebase
             if (structuredQuery == null) throw new ArgumentNullException(nameof(structuredQuery));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            // Regola API: parent è parte dell’URL: .../documents oppure .../documents/{document_path} :contentReference[oaicite:1]{index=1}
+            // Regola API: parent è parte dell’URL: .../documents oppure .../documents/{document_path}
             var url = string.IsNullOrWhiteSpace(parentDocumentPath)
                 ? RunQueryUrlRoot
                 : $"{BaseDocumentsUrl}/{parentDocumentPath}:runQuery";
@@ -215,6 +305,8 @@ namespace Biliardo.App.Servizi_Firebase
 
         // Firestore REST vuole integerValue come stringa
         public static object VInt(long value) => new Dictionary<string, object> { ["integerValue"] = value.ToString() };
+
+        public static object VDouble(double value) => new Dictionary<string, object> { ["doubleValue"] = value };
 
         public static object VTimestamp(DateTimeOffset utcTime)
         {

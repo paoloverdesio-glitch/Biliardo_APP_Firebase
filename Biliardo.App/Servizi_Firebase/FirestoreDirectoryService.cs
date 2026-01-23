@@ -82,6 +82,7 @@ namespace Biliardo.App.Servizi_Firebase
             var photoUrl =
                 ReadStringField(fields, "photoUrl")
                 ?? ReadStringField(fields, "avatarUrl")
+                ?? ReadStringField(fields, "avatarPath")
                 ?? "";
 
             return new UserPublicItem
@@ -245,6 +246,7 @@ namespace Biliardo.App.Servizi_Firebase
                 var photoUrl =
                     ReadStringField(fieldsEl, "photoUrl")
                     ?? ReadStringField(fieldsEl, "avatarUrl")
+                    ?? ReadStringField(fieldsEl, "avatarPath")
                     ?? "";
 
                 list.Add(new UserPublicItem

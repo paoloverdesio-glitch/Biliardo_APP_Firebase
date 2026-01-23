@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Componenti_UI.LocationPreviewView"
+             x:Name="ThisView">
+
+    <Border Stroke="#2B2B2B"
+            StrokeThickness="1"
+            BackgroundColor="#151515"
+            Padding="0">
+        <Border.StrokeShape>
+            <RoundRectangle CornerRadius="12" />
+        </Border.StrokeShape>
+
+        <Grid RowDefinitions="120,Auto">
+
+            <!-- Tile immagine + overlay icona -->
+            <Grid Grid.Row="0">
+                <Image x:Name="TileImage"
+                       Aspect="AspectFill" />
+                <Image Source="ic_location.svg"
+                       WidthRequest="28"
+                       HeightRequest="28"
+                       HorizontalOptions="Center"
+                       VerticalOptions="Center" />
+            </Grid>
+
+            <!-- Etichetta indirizzo / fallback coordinate -->
+            <Label Grid.Row="1"
+                   Text="{Binding AddressLabel, Source={x:Reference ThisView}}"
+                   TextColor="#EAEAEA"
+                   FontSize="12"
+                   Padding="10,6" />
+
+        </Grid>
+    </Border>
+</ContentView>

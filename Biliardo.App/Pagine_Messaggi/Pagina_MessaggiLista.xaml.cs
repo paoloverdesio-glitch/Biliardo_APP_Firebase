@@ -1,17 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Maui.ApplicationModel;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
-using Microsoft.Maui.Controls;
-using Biliardo.App.Componenti_UI;
+﻿using Biliardo.App.Componenti_UI;
+using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
-using Biliardo.App.Pagine_Autenticazione;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 
 namespace Biliardo.App.Pagine_Messaggi
 {
@@ -341,7 +333,8 @@ namespace Biliardo.App.Pagine_Messaggi
                         withUserId: peerUid,
                         nickname: nickname,
                         fullName: fullName,
-                        photoUrl: photo,
+                        avatarUrl: photo,
+                        avatarPath: photo,
                         ultimoMessaggio: preview,
                         dataOra: whenLocal,
                         nonLetti: 0));
@@ -506,7 +499,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
         public string Nickname { get; }
         public string FullName { get; }
-        public string PhotoUrl { get; }
+        public string AvatarUrl { get; }
+        public string AvatarPath { get; }
 
         public string DisplayTitle => $"{Nickname} ({FullName})";
 
@@ -514,19 +508,14 @@ namespace Biliardo.App.Pagine_Messaggi
         public string OraBreve { get; }
         public int NonLetti { get; }
 
-        public string Iniziale =>
-            string.IsNullOrWhiteSpace(Nickname) ? "?" : Nickname[..1].ToUpperInvariant();
-
-        public bool HasPhoto => !string.IsNullOrWhiteSpace(PhotoUrl);
-        public bool HasNoPhoto => !HasPhoto;
-
         public bool NonLettiVisibile => NonLetti > 0;
 
         public ChatPreview(
             string withUserId,
             string nickname,
             string fullName,
-            string photoUrl,
+            string avatarUrl,
+            string avatarPath,
             string ultimoMessaggio,
             DateTime dataOra,
             int nonLetti)
@@ -534,7 +523,8 @@ namespace Biliardo.App.Pagine_Messaggi
             WithUserId = withUserId;
             Nickname = nickname;
             FullName = string.IsNullOrWhiteSpace(fullName) ? "xxxxx xxxxx" : fullName;
-            PhotoUrl = photoUrl ?? "";
+            AvatarUrl = avatarUrl ?? "";
+            AvatarPath = avatarPath ?? "";
             UltimoMessaggio = ultimoMessaggio ?? "";
             NonLetti = nonLetti;
 

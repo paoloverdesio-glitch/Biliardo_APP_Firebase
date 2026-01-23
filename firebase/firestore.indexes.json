@@ -1,0 +1,14 @@
+﻿{
+  "indexes": [
+    {
+      "collectionGroup": "home_posts",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "deleted",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt","order": "DESCENDING" },
+        { "fieldPath": "__name__", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

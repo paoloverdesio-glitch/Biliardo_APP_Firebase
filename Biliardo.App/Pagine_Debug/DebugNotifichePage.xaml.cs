@@ -1,12 +1,6 @@
-using System;
-using System.Linq;
-using System.Collections.Generic;
-using Microsoft.Maui.ApplicationModel;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
-using Microsoft.Maui.Controls;
+using Biliardo.App.Pagine_Messaggi; // Pagina_MessaggiLista
 using Plugin.Firebase.CloudMessaging;
 using Plugin.Firebase.CloudMessaging.EventArgs;
-using Biliardo.App.Pagine_Messaggi; // Pagina_MessaggiLista
 
 namespace Biliardo.App.Pagine_Debug
 {

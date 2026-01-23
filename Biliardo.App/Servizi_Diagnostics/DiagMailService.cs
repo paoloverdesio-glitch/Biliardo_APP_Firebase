@@ -1,10 +1,6 @@
-﻿using System;
-using System.IO;
-using System.Linq;
+﻿//Servizi_Diagnostics / DiagMailService.cs
+using System.Diagnostics;
 using System.Text;
-using System.Threading.Tasks;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
-using Microsoft.Maui.Storage;
 
 namespace Biliardo.App.Servizi_Diagnostics
 {
@@ -34,19 +30,49 @@ namespace Biliardo.App.Servizi_Diagnostics
                 sb.AppendLine(textLog ?? "");
 
                 var fileName = $"biliardo_diag_{DateTimeOffset.UtcNow:yyyyMMdd_HHmmss}.txt";
-                var path = Path.Combine(FileSystem.CacheDirectory, fileName);
-                File.WriteAllText(path, sb.ToString());
 
-                await Share.Default.RequestAsync(new ShareFileRequest
+                // FileSystem.CacheDirectory può essere null in ambienti particolari: fallback a LocalApplicationData
+                var cacheDir = FileSystem.CacheDirectory;
+                if (string.IsNullOrWhiteSpace(cacheDir))
+                    cacheDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+                if (!Directory.Exists(cacheDir))
                 {
-                    Title = "Diagnostica Biliardo",
-                    File = new ShareFile(path)
-                });
+                    try { Directory.CreateDirectory(cacheDir); } catch { /* ignore */ }
+                }
 
-                return true;
+                var path = Path.Combine(cacheDir, fileName);
+
+                // Scrittura asincrona per non bloccare il UI thread
+                await File.WriteAllTextAsync(path, sb.ToString()).ConfigureAwait(false);
+
+                if (!File.Exists(path))
+                {
+                    Debug.WriteLine($"DiagMailService: file not found after write: {path}");
+                    return false;
+                }
+
+                try
+                {
+                    Debug.WriteLine($"DiagMailService: sharing file {path}");
+                    var req = new ShareFileRequest
+                    {
+                        Title = "Diagnostica Biliardo",
+                        File = new ShareFile(path)
+                    };
+
+                    await Share.Default.RequestAsync(req).ConfigureAwait(false);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"DiagMailService: share failed: {ex.GetType().Name}: {ex.Message}");
+                    return false;
+                }
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.WriteLine($"DiagMailService: failed to prepare/send diagnostic: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
         }

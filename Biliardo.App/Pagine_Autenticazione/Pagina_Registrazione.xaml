@@ -21,6 +21,31 @@
                        HorizontalOptions="Center"
                        TextColor="White" />
 
+                <Label Text="Foto profilo (opzionale)"
+                       FontAttributes="Bold"
+                       TextColor="White" />
+                <HorizontalStackLayout Spacing="12" VerticalOptions="Center">
+                    <Frame WidthRequest="72"
+                           HeightRequest="72"
+                           CornerRadius="36"
+                           HasShadow="False"
+                           BackgroundColor="#1A1A1A"
+                           Padding="0">
+                        <Image x:Name="AvatarPreview"
+                               Aspect="AspectFill" />
+                    </Frame>
+                    <VerticalStackLayout Spacing="6">
+                        <Button Text="Scegli foto"
+                                Clicked="OnSelectAvatarClicked"
+                                BackgroundColor="#006633"
+                                TextColor="White" />
+                        <Label x:Name="AvatarHintLabel"
+                               Text="Nessuna foto selezionata"
+                               FontSize="12"
+                               TextColor="#CCCCCC" />
+                    </VerticalStackLayout>
+                </HorizontalStackLayout>
+
                 <Label Text="Nickname *"
                        FontAttributes="Bold"
                        TextColor="White" />

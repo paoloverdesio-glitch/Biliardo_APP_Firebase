@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Networking;
 using Microsoft.Maui.Storage;
 using Biliardo.App.Servizi_Firebase;
@@ -14,6 +16,7 @@ public partial class Pagina_Registrazione : ContentPage
 {
     private bool _busy;
     private bool _pwdVisible;
+    private string? _avatarLocalPath;
 
     private TaskCompletionSource<bool>? _popupTcs;
 
@@ -23,6 +26,44 @@ public partial class Pagina_Registrazione : ContentPage
     public Pagina_Registrazione()
     {
         InitializeComponent();
+    }
+
+    private async void OnSelectAvatarClicked(object sender, EventArgs e)
+    {
+        try
+        {
+            var options = new List<string> { "Galleria" };
+            if (MediaPicker.Default.IsCaptureSupported)
+                options.Add("Fotocamera");
+
+            options.Add("Annulla");
+
+            var choice = await DisplayActionSheet("Seleziona foto profilo", "Annulla", null, options.ToArray());
+            if (string.IsNullOrWhiteSpace(choice) || choice == "Annulla")
+                return;
+
+            FileResult? file = null;
+            if (choice == "Fotocamera")
+                file = await MediaPicker.Default.CapturePhotoAsync();
+            else
+                file = await MediaPicker.Default.PickPhotoAsync();
+
+            if (file == null)
+                return;
+
+            var local = Path.Combine(FileSystem.CacheDirectory, $"avatar_{Guid.NewGuid():N}{Path.GetExtension(file.FileName)}");
+            await using var stream = await file.OpenReadAsync();
+            await using var fs = File.Create(local);
+            await stream.CopyToAsync(fs);
+
+            _avatarLocalPath = local;
+            AvatarPreview.Source = ImageSource.FromFile(local);
+            AvatarHintLabel.Text = "Foto selezionata";
+        }
+        catch (Exception ex)
+        {
+            await ShowPopupAsync(ex.Message, "Errore avatar");
+        }
     }
 
     private void TogglePassword_Clicked(object sender, EventArgs e)
@@ -195,6 +236,43 @@ public partial class Pagina_Registrazione : ContentPage
                     return;
                 }
                 throw;
+            }
+
+            // 3.3) Avatar (se selezionato)
+            if (!string.IsNullOrWhiteSpace(_avatarLocalPath))
+            {
+                try
+                {
+                    var ext = Path.GetExtension(_avatarLocalPath);
+                    if (string.IsNullOrWhiteSpace(ext))
+                        ext = ".jpg";
+
+                    var storagePath = $"avatars/{uid}/profile{ext}";
+                    var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
+                        idToken,
+                        storagePath,
+                        _avatarLocalPath,
+                        FirebaseStorageRestClient.GuessContentTypeFromPath(storagePath),
+                        CancellationToken.None);
+
+                    var avatarFields = new Dictionary<string, object>
+                    {
+                        ["avatarPath"] = FirestoreRestClient.VString(upload.StoragePath),
+                        ["avatarUrl"] = string.IsNullOrWhiteSpace(upload.DownloadUrl) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(upload.DownloadUrl),
+                        ["avatarUpdatedAt"] = FirestoreRestClient.VTimestamp(now)
+                    };
+
+                    await FirestoreRestClient.PatchDocumentAsync(
+                        $"users_public/{uid}",
+                        avatarFields,
+                        new[] { "avatarPath", "avatarUrl", "avatarUpdatedAt" },
+                        idToken,
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    // non bloccare la registrazione
+                }
             }
 
             // 4) OK

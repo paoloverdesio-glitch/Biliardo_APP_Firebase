@@ -23,6 +23,14 @@ namespace Biliardo.App.Infrastructure
         public void ConfigureIdleTimer(TimeSpan idleDelay)
         {
             _idleDelay = idleDelay;
+
+            // Se il tracking nativo è attivo (Android RecyclerView), il timer non serve: evitare tick UI inutili.
+            if (_nativeTrackingActive)
+            {
+                StopIdleTimerIfAny();
+                return;
+            }
+
             _dispatcher ??= Application.Current?.Dispatcher ?? Dispatcher.GetForCurrentThread();
             if (_dispatcher == null)
                 return;
@@ -39,6 +47,23 @@ namespace Biliardo.App.Infrastructure
         public void SetNativeTrackingActive(bool active)
         {
             _nativeTrackingActive = active;
+
+            // Se diventa attivo, spegnere il timer: su Android questo è un miglioramento netto della fluidità.
+            if (active)
+                StopIdleTimerIfAny();
+        }
+
+        private void StopIdleTimerIfAny()
+        {
+            try
+            {
+                if (_idleTimer != null)
+                {
+                    try { _idleTimer.Stop(); } catch { }
+                    _idleTimer = null;
+                }
+            }
+            catch { }
         }
 
         public void NotifyActivity()

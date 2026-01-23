@@ -1,0 +1,262 @@
+﻿rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+
+    // USERS (privato)
+    match /users/{userId} {
+      allow read, create, update: if signedIn() && uid() == userId;
+      allow delete: if false;
+    }
+
+    // USERS_PUBLIC (leggibile da utenti loggati)
+    match /users_public/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && uid() == userId;
+      allow delete: if false;
+    }
+
+    // NICKNAMES (indice univoco)
+    match /nicknames/{nickLower} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.resource.data.uid == uid()
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.keys().toSet().hasOnly(['uid','createdAt','updatedAt'])
+        && (!('updatedAt' in request.resource.data) || request.resource.data.updatedAt is timestamp);
+
+      allow update: if signedIn()
+        && resource.data.uid == uid()
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.keys().toSet().hasOnly(['uid','createdAt','updatedAt'])
+        && request.resource.data.updatedAt is timestamp;
+
+      allow delete: if signedIn() && resource.data.uid == uid();
+    }
+
+    // CHATS
+    match /chats/{chatId} {
+
+      function isMember() {
+        return signedIn()
+          && (uid() in resource.data.members);
+      }
+
+      allow read: if isMember();
+
+      // CREATE: requisiti minimi ma solidi
+      allow create: if signedIn()
+        && request.resource.data.members is list
+        && request.resource.data.members.size() >= 2
+        && (uid() in request.resource.data.members)
+        && request.resource.data.isGroup is bool
+        && request.resource.data.createdAt is timestamp;
+
+      // UPDATE: vieto modifiche a members/isGroup/createdAt
+      allow update: if isMember()
+        && request.resource.data.members == resource.data.members
+        && request.resource.data.isGroup == resource.data.isGroup
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'updatedAt',
+          'lastMessageAt',
+          'lastMessageText',
+          'lastMessageSenderUid',
+          'lastMessageType',
+          'payload'
+        ]);
+
+      allow delete: if false;
+
+      // MESSAGES
+      match /messages/{messageId} {
+
+        function chatDoc() {
+          return get(/databases/$(database)/documents/chats/$(chatId)).data;
+        }
+
+        function iAmMember() {
+          return signedIn()
+            && (uid() in chatDoc().members);
+        }
+
+        function oldList(field) { return resource.data.get(field, []); }
+        function newList(field) { return request.resource.data.get(field, oldList(field)); }
+
+        function onlyAddSelf(field) {
+          return newList(field).toSet().hasAll(oldList(field).toSet())
+            && newList(field).toSet().difference(oldList(field).toSet()).hasOnly([uid()]);
+        }
+
+        function notDeletedForMe() {
+          return !resource.data.get('deletedFor', []).toSet().hasAny([uid()]);
+        }
+
+        function notDeletedForAll() {
+          return resource.data.get('deletedForAll', false) == false;
+        }
+
+        allow read: if iAmMember() && notDeletedForAll() && notDeletedForMe();
+
+        allow create: if iAmMember()
+          && request.resource.data.keys().toSet().hasOnly([
+            'senderId','type','payload','createdAt',
+            'deliveredTo','readBy','deletedFor','deletedForAll','updatedAt'
+          ])
+          && request.resource.data.senderId == uid()
+          && request.resource.data.senderId is string
+          && request.resource.data.type is string
+          && request.resource.data.payload is map
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.get('deliveredTo', []) is list
+          && request.resource.data.get('readBy', []) is list
+          && request.resource.data.get('deletedFor', []) is list
+          && request.resource.data.get('deletedForAll', false) is bool
+          && request.resource.data.updatedAt is timestamp;
+
+        allow update: if iAmMember()
+          && request.resource.data.senderId == resource.data.senderId
+          && request.resource.data.type == resource.data.type
+          && request.resource.data.payload == resource.data.payload
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'deliveredTo','readBy','deletedFor','deletedForAll','updatedAt'
+          ])
+          && onlyAddSelf('deliveredTo')
+          && onlyAddSelf('readBy')
+          && onlyAddSelf('deletedFor')
+          && (
+            request.resource.data.get('deletedForAll', false) == resource.data.get('deletedForAll', false)
+            || (
+              resource.data.get('deletedForAll', false) == false
+              && request.resource.data.get('deletedForAll', false) == true
+              && uid() == resource.data.senderId
+            )
+          );
+
+        allow delete: if false;
+      }
+    }
+
+    // ====================================================================
+    // HOME FEED: home_posts + likes + comments
+    // ====================================================================
+
+    match /home_posts/{postId} {
+
+      function postNotDeleted() { return resource.data.get('deleted', false) == false; }
+      function isAuthor() { return signedIn() && resource.data.authorUid == uid(); }
+
+      // Leggibile da utenti loggati (solo post non cancellati)
+      allow read: if signedIn() && postNotDeleted();
+
+      // Creazione post: solo autore, counters a zero, deleted=false
+      allow create: if signedIn()
+        && request.resource.data.keys().toSet().hasOnly([
+          'authorUid','authorNickname','authorAvatarPath','authorAvatarUrl',
+          'createdAt','text','attachments',
+          'likeCount','commentCount','shareCount',
+          'deleted','deletedAt','repostOfPostId'
+        ])
+        && request.resource.data.authorUid == uid()
+        && request.resource.data.authorUid is string
+        && request.resource.data.authorNickname is string
+        && (request.resource.data.authorAvatarPath == null || request.resource.data.authorAvatarPath is string)
+        && (request.resource.data.authorAvatarUrl == null || request.resource.data.authorAvatarUrl is string)
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.text is string
+        && request.resource.data.attachments is list
+        && request.resource.data.likeCount is int
+        && request.resource.data.commentCount is int
+        && request.resource.data.shareCount is int
+        && request.resource.data.likeCount == 0
+        && request.resource.data.commentCount == 0
+        && request.resource.data.shareCount == 0
+        && request.resource.data.deleted is bool
+        && request.resource.data.deleted == false
+        && request.resource.data.deletedAt == null
+        && (request.resource.data.repostOfPostId == null || request.resource.data.repostOfPostId is string);
+
+      allow update: if (
+          signedIn()
+          && postNotDeleted()
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.authorNickname == resource.data.authorNickname
+          && request.resource.data.authorAvatarPath == resource.data.authorAvatarPath
+          && request.resource.data.authorAvatarUrl == resource.data.authorAvatarUrl
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.text == resource.data.text
+          && request.resource.data.attachments == resource.data.attachments
+          && request.resource.data.repostOfPostId == resource.data.repostOfPostId
+          && request.resource.data.deleted == resource.data.deleted
+          && request.resource.data.deletedAt == resource.data.deletedAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'likeCount','commentCount','shareCount'
+          ])
+          && request.resource.data.likeCount is int
+          && request.resource.data.commentCount is int
+          && request.resource.data.shareCount is int
+          && request.resource.data.likeCount >= 0
+          && request.resource.data.commentCount >= 0
+          && request.resource.data.shareCount >= 0
+        )
+        || (
+          isAuthor()
+          && postNotDeleted()
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.text == resource.data.text
+          && request.resource.data.attachments == resource.data.attachments
+          && request.resource.data.repostOfPostId == resource.data.repostOfPostId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'deleted','deletedAt'
+          ])
+          && request.resource.data.deleted is bool
+          && request.resource.data.deleted == true
+          && request.resource.data.deletedAt is timestamp
+        );
+
+      allow delete: if false;
+
+      match /likes/{likeUid} {
+        allow read: if signedIn() && postNotDeleted();
+
+        allow create: if signedIn()
+          && postNotDeleted()
+          && likeUid == uid()
+          && request.resource.data.keys().toSet().hasOnly(['createdAt'])
+          && request.resource.data.createdAt is timestamp;
+
+        allow delete: if signedIn()
+          && postNotDeleted()
+          && likeUid == uid();
+
+        allow update: if false;
+      }
+
+      match /comments/{commentId} {
+        allow read: if signedIn() && postNotDeleted();
+
+        allow create: if signedIn()
+          && postNotDeleted()
+          && request.resource.data.keys().toSet().hasOnly([
+            'authorUid','authorNickname','authorAvatarPath','authorAvatarUrl','createdAt','text'
+          ])
+          && request.resource.data.authorUid == uid()
+          && request.resource.data.authorUid is string
+          && request.resource.data.authorNickname is string
+          && (request.resource.data.authorAvatarPath == null || request.resource.data.authorAvatarPath is string)
+          && (request.resource.data.authorAvatarUrl == null || request.resource.data.authorAvatarUrl is string)
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.text is string;
+
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+  }
+}
