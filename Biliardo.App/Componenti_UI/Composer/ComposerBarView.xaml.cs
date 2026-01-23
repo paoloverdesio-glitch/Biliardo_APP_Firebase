@@ -142,6 +142,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         public event EventHandler<ComposerSendPayload>? SendRequested;
         public event EventHandler<PendingItemVm>? PendingItemSendRequested;
         public event EventHandler<PendingItemVm>? PendingItemRemoved;
+        public event EventHandler<bool>? KeyboardVisibilityChanged;
 
         public bool TryAddPendingItem(PendingItemVm item, int? maxNonTextItems = null)
         {
@@ -179,6 +180,12 @@ namespace Biliardo.App.Componenti_UI.Composer
             var payload = new ComposerSendPayload(ComposerText.Trim(), PendingItems.ToList());
             SendRequested?.Invoke(this, payload);
         }
+
+        private void OnComposerEntryFocused(object sender, FocusEventArgs e)
+            => KeyboardVisibilityChanged?.Invoke(this, true);
+
+        private void OnComposerEntryUnfocused(object sender, FocusEventArgs e)
+            => KeyboardVisibilityChanged?.Invoke(this, false);
 
         private void OnSendDraftClicked(object sender, EventArgs e)
         {

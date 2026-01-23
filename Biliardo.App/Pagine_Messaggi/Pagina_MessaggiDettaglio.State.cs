@@ -208,6 +208,9 @@ namespace Biliardo.App.Pagine_Messaggi
         private string? _chatIdCached;
 
         private bool _userNearBottom = true;
+        private bool _keyboardVisible;
+
+        private readonly SemaphoreSlim _scrollToEndLock = new(1, 1);
 
         // Modali: evita stop polling quando apro un modal (foto fullscreen, bottom sheet, ecc.)
         private bool _suppressStopPollingOnce;
