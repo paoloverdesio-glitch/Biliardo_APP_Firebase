@@ -1,19 +1,21 @@
 ﻿using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Controls.Platform;
 
-
 #if ANDROID
 using Android.Views;
 using AView = Android.Views.View;
+[assembly: Microsoft.Maui.Controls.ExportEffect(typeof(Biliardo.App.Effects.PlatformTouchEffectAndroid), "Biliardo.App.TouchEffect")]
 #endif
 
 #if WINDOWS
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+[assembly: Microsoft.Maui.Controls.ExportEffect(typeof(Biliardo.App.Effects.PlatformTouchEffectWindows), "Biliardo.App.TouchEffect")]
 #endif
 
 namespace Biliardo.App.Effects
@@ -56,7 +58,10 @@ namespace Biliardo.App.Effects
         public event TouchActionEventHandler? TouchAction;
 
         internal void Raise(Element element, TouchActionEventArgs args)
-            => TouchAction?.Invoke(element, args);
+        {
+            Debug.WriteLine($"[TouchEffect] Raise: {args.Type} at {args.Location} on {element?.GetType().Name}");
+            TouchAction?.Invoke(element, args);
+        }
     }
 }
 
@@ -70,16 +75,21 @@ namespace Biliardo.App.Effects
 
         protected override void OnAttached()
         {
+            Debug.WriteLine("[PlatformTouchEffectAndroid] OnAttached");
             _effect = Element?.Effects?.OfType<TouchEffect>().FirstOrDefault();
             _view = Control as AView ?? Container as AView;
             if (_view == null || _effect == null)
+            {
+                Debug.WriteLine("[PlatformTouchEffectAndroid] Missing view or effect");
                 return;
+            }
 
             _view.Touch += OnTouch;
         }
 
         protected override void OnDetached()
         {
+            Debug.WriteLine("[PlatformTouchEffectAndroid] OnDetached");
             if (_view != null)
                 _view.Touch -= OnTouch;
 
@@ -143,6 +153,7 @@ namespace Biliardo.App.Effects
                     return;
             }
 
+            Debug.WriteLine($"[PlatformTouchEffectAndroid] OnTouch: {type} @ ({x:0.0},{y:0.0}) handled={effect.Capture}");
             effect.Raise(Element, new TouchActionEventArgs(id, type, new Point(x, y), inContact));
             e.Handled = effect.Capture;
         }
@@ -160,6 +171,7 @@ namespace Biliardo.App.Effects
 
         protected override void OnAttached()
         {
+            Debug.WriteLine("[PlatformTouchEffectWindows] OnAttached");
             _effect = Element?.Effects?.OfType<TouchEffect>().FirstOrDefault();
             _view = Control as FrameworkElement ?? Container as FrameworkElement;
             if (_view == null || _effect == null)
@@ -223,6 +235,7 @@ namespace Biliardo.App.Effects
             double x = pt.Position.X; // già in DIPs
             double y = pt.Position.Y;
 
+            Debug.WriteLine($"[PlatformTouchEffectWindows] Raise: {type} @ ({x:0.0},{y:0.0})");
             effect.Raise(Element, new TouchActionEventArgs(id, type, new Point(x, y), inContact));
         }
     }
