@@ -61,3 +61,11 @@ WIN/*
 
 # --- DUMPS LOCALI ---
 dumps/
+
+# local dumps (do not commit)
+_dump_voice_*/
+_dump_voice_*.zip
+
+# --- LOCAL DUMPS (non versionare) ---
+_dump_voice_*/
+_dump_voice_*.zip
