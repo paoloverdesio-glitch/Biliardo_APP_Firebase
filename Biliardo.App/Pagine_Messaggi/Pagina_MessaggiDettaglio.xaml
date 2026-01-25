@@ -152,7 +152,7 @@
                                                 <TapGestureRecognizer Tapped="OnPhotoTapped" />
                                             </Border.GestureRecognizers>
 
-                                            <Image Source="{Binding MediaLocalPath}"
+                                            <Image Source="{Binding DisplayPreviewSource}"
                                                    Aspect="AspectFill" />
                                         </Border>
 
@@ -174,8 +174,7 @@
 
                                             <Grid>
                                                 <!-- Thumbnail: se non ancora pronto rimane il fondo scuro + play -->
-                                                <Image Source="{Binding VideoThumbnailPath}"
-                                                       IsVisible="{Binding HasVideoThumbnail}"
+                                                <Image Source="{Binding DisplayPreviewSource}"
                                                        Aspect="AspectFill" />
 
                                                 <!-- Play overlay -->

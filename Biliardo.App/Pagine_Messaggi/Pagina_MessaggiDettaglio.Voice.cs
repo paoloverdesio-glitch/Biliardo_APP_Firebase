@@ -8,6 +8,7 @@ using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 
+using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 
@@ -80,6 +81,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 await _voice.StartAsync(_voiceFilePath);
 
                 _voiceWave?.Reset();
+                _recordingWaveform.Clear();
+                _lastWaveformSampleTicks = 0;
 
                 StartVoiceUiLoop();
                 RefreshVoiceBindings();
@@ -304,6 +307,19 @@ namespace Biliardo.App.Pagine_Messaggi
 
                         var level = _voice.TryGetLevel01();
                         var ms = _voice.GetElapsedMs();
+                        var nowTicks = DateTime.UtcNow.Ticks;
+
+                        if (nowTicks - _lastWaveformSampleTicks >= TimeSpan.FromMilliseconds(AppMediaOptions.AudioWaveformSampleIntervalMs).Ticks)
+                        {
+                            _lastWaveformSampleTicks = nowTicks;
+                            var sample = (int)Math.Clamp(level * 100, 0, 100);
+                            lock (_recordingWaveform)
+                            {
+                                if (_recordingWaveform.Count >= AppMediaOptions.AudioWaveformMaxSamples)
+                                    _recordingWaveform.RemoveAt(0);
+                                _recordingWaveform.Add(sample);
+                            }
+                        }
 
                         MainThread.BeginInvokeOnMainThread(() =>
                         {
@@ -439,7 +455,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 LocalPath = filePath,
                 ContentType = "audio/mp4",
                 SizeBytes = new FileInfo(filePath).Length,
-                DurationMs = durationMs > 0 ? durationMs : MediaMetadataHelper.TryGetDurationMs(filePath)
+                DurationMs = durationMs > 0 ? durationMs : MediaMetadataHelper.TryGetDurationMs(filePath),
+                Waveform = GetRecordingWaveformSnapshot()
             };
 
             await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, a);
@@ -452,6 +469,17 @@ namespace Biliardo.App.Pagine_Messaggi
             OnPropertyChanged(nameof(IsVoiceLockPanelVisible));
             OnPropertyChanged(nameof(VoicePauseResumeLabel));
             OnPropertyChanged(nameof(IsNormalComposerVisible));
+        }
+
+        private IReadOnlyList<int>? GetRecordingWaveformSnapshot()
+        {
+            lock (_recordingWaveform)
+            {
+                if (_recordingWaveform.Count == 0)
+                    return null;
+
+                return _recordingWaveform.ToArray();
+            }
         }
 
         // ============================================================

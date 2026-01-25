@@ -168,9 +168,30 @@
                                         <DataTemplate>
                                             <Grid>
                                                 <Image IsVisible="{Binding IsImage}"
-                                                       Source="{Binding DownloadUrl}"
+                                                       Source="{Binding DisplayPreviewSource}"
                                                        Aspect="AspectFill"
                                                        HeightRequest="180" />
+
+                                                <Grid IsVisible="{Binding IsVideo}"
+                                                      HeightRequest="180">
+                                                    <Image Source="{Binding DisplayPreviewSource}"
+                                                           Aspect="AspectFill"
+                                                           HeightRequest="180" />
+                                                    <Border BackgroundColor="#66000000"
+                                                            StrokeThickness="0"
+                                                            HorizontalOptions="Center"
+                                                            VerticalOptions="Center"
+                                                            Padding="10">
+                                                        <Border.StrokeShape>
+                                                            <RoundRectangle CornerRadius="24" />
+                                                        </Border.StrokeShape>
+                                                        <Label Text="▶"
+                                                               TextColor="White"
+                                                               FontSize="20"
+                                                               VerticalOptions="Center"
+                                                               HorizontalOptions="Center" />
+                                                    </Border>
+                                                </Grid>
 
                                                 <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
                                                                         Latitude="{Binding Latitude}"
