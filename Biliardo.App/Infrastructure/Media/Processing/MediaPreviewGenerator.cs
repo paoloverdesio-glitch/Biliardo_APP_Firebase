@@ -7,11 +7,15 @@ using Microsoft.Maui.Storage;
 
 using Biliardo.App.Infrastructure.Media;
 
+using SysFile = global::System.IO.File;
+using SysPath = global::System.IO.Path;
+using JFile = global::Java.IO.File;
+
 #if ANDROID
 using Android.Graphics;
 using Android.Media;
 using Android.Graphics.Pdf;
-using Java.IO;
+using Android.OS;
 #endif
 
 #if WINDOWS
@@ -94,7 +98,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
             if (!string.IsNullOrWhiteSpace(req.ContentType) && req.ContentType.Contains("gif", StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            var ext = Path.GetExtension(req.FileName ?? req.LocalFilePath) ?? "";
+            var ext = SysPath.GetExtension(req.FileName ?? req.LocalFilePath) ?? "";
             return string.Equals(ext, ".gif", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -103,7 +107,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
-                if (!File.Exists(path)) return null;
+                if (!SysFile.Exists(path)) return null;
 
                 using var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
                 BitmapFactory.DecodeFile(path, bounds);
@@ -155,7 +159,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
-                using var file = new File(path);
+                using var file = new JFile(path);
                 using var pfd = ParcelFileDescriptor.Open(file, ParcelFileMode.ReadOnly);
                 using var renderer = new PdfRenderer(pfd);
                 if (renderer.PageCount <= 0) return null;
@@ -207,7 +211,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
-                using var fs = File.Create(path);
+                using var fs = SysFile.Create(path);
                 return bmp.Compress(Bitmap.CompressFormat.Jpeg, quality, fs);
             }
             catch
@@ -237,7 +241,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         private static string CreateTempJpegPath(string prefix)
         {
             var dir = FileSystem.CacheDirectory;
-            return Path.Combine(dir, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg");
+            return SysPath.Combine(dir, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg");
         }
 #endif
 
@@ -246,10 +250,10 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
-                if (!File.Exists(path)) return null;
+                if (!SysFile.Exists(path)) return null;
 
                 var file = await StorageFile.GetFileFromPathAsync(path);
-                await using var stream = await file.OpenReadAsync();
+                using var stream = await file.OpenReadAsync();
                 var decoder = await BitmapDecoder.CreateAsync(stream);
 
                 var (thumbWidth, thumbHeight) = CalculateScaledSize(decoder.PixelWidth, decoder.PixelHeight, AppMediaOptions.ThumbMaxLongSidePx);
@@ -286,7 +290,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
-                if (!File.Exists(path)) return null;
+                if (!SysFile.Exists(path)) return null;
 
                 var file = await StorageFile.GetFileFromPathAsync(path);
                 using var thumb = await file.GetThumbnailAsync(ThumbnailMode.VideosView, (uint)AppMediaOptions.ThumbMaxLongSidePx, ThumbnailOptions.UseCurrentScale);
@@ -326,10 +330,10 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
-                if (!File.Exists(path)) return null;
+                if (!SysFile.Exists(path)) return null;
 
                 var file = await StorageFile.GetFileFromPathAsync(path);
-                using var doc = await PdfDocument.LoadFromFileAsync(file);
+                var doc = await PdfDocument.LoadFromFileAsync(file);
                 if (doc.PageCount == 0) return null;
 
                 using var page = doc.GetPage(0);
@@ -379,9 +383,9 @@ namespace Biliardo.App.Infrastructure.Media.Processing
 
         private static async Task SaveJpegAsync(byte[] pixels, uint width, uint height, string path)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? FileSystem.CacheDirectory);
+            Directory.CreateDirectory(SysPath.GetDirectoryName(path) ?? FileSystem.CacheDirectory);
 
-            await using var file = File.Open(path, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var file = SysFile.Open(path, FileMode.Create, FileAccess.Write, FileShare.None);
             using var stream = file.AsRandomAccessStream();
             var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream);
             encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, width, height, 96, 96, pixels);
@@ -394,7 +398,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
                 return null;
 
             var file = await StorageFile.GetFileFromPathAsync(thumbPath);
-            await using var stream = await file.OpenReadAsync();
+            using var stream = await file.OpenReadAsync();
             var decoder = await BitmapDecoder.CreateAsync(stream);
             var (w, h) = CalculateScaledSize(decoder.PixelWidth, decoder.PixelHeight, AppMediaOptions.LqipMaxLongSidePx);
 
@@ -431,7 +435,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         private static string CreateTempJpegPath(string prefix)
         {
             var dir = FileSystem.CacheDirectory;
-            return Path.Combine(dir, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg");
+            return SysPath.Combine(dir, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg");
         }
 #endif
     }
