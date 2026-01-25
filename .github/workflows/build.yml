@@ -3,7 +3,7 @@ name: build
 
 on:
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master", "feat_toolkit", "componenti_aggiuntivi_start" ]
   push:
     branches: [ "master" ]
 
