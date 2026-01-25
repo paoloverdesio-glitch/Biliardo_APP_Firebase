@@ -7,6 +7,8 @@ using Microsoft.Maui.Controls.Hosting; // necessario per ConfigureEffects
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Effects;
+using CommunityToolkit.Maui;
+
 
 #if ANDROID
 using Plugin.Firebase.Core.Platforms.Android;
@@ -28,6 +30,7 @@ namespace Biliardo.App
 
             builder
                 .UseMauiApp<App>()
+                .UseMauiCommunityToolkit()
                 .ConfigureFonts(fonts =>
                 {
                     fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
