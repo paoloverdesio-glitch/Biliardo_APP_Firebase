@@ -10,12 +10,19 @@
 // =======================================================================
 
 using Biliardo.App.Componenti_UI.Composer;
+using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Cache;
+using Biliardo.App.Infrastructure.Media.Home;
+using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
 using Microsoft.Maui.Graphics;
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -35,6 +42,9 @@ namespace Biliardo.App.Pagine_Home
 
         private readonly FirestoreHomeFeedService _homeFeed = new();
         private readonly IAudioPlayback _audioPlayback;
+        private readonly MediaCacheService _mediaCache = new();
+        private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
+        private readonly HomeMediaPipeline _homeMediaPipeline;
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
 
@@ -55,6 +65,7 @@ namespace Biliardo.App.Pagine_Home
             NavigationPage.SetHasNavigationBar(this, false);
 
             _audioPlayback = AudioPlaybackFactory.Create();
+            _homeMediaPipeline = new HomeMediaPipeline(_previewGenerator);
 
             ApplyHomeFeedScrollTuning();
         }
@@ -174,10 +185,54 @@ namespace Biliardo.App.Pagine_Home
                 Posts.Clear();
                 foreach (var post in res.Items)
                     Posts.Add(HomePostVm.FromService(post));
+
+                _ = Task.Run(PrefetchHomeThumbsAsync);
             }
             catch (Exception ex)
             {
                 await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore feed");
+            }
+        }
+
+        private async Task PrefetchHomeThumbsAsync()
+        {
+            if (!AppMediaOptions.PrefetchThumbsOnScroll)
+                return;
+
+            try
+            {
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                if (string.IsNullOrWhiteSpace(idToken))
+                    return;
+
+                var attachments = new List<HomeAttachmentVm>();
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    foreach (var post in Posts)
+                    {
+                        foreach (var att in post.Attachments)
+                            attachments.Add(att);
+                    }
+                });
+
+                foreach (var att in attachments)
+                {
+                    if (string.IsNullOrWhiteSpace(att.ThumbStoragePath))
+                        continue;
+
+                    if (!string.IsNullOrWhiteSpace(att.ThumbLocalPath) && File.Exists(att.ThumbLocalPath))
+                        continue;
+
+                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.ThumbStoragePath!, att.FileName ?? "thumb.jpg", isThumb: true, CancellationToken.None);
+                    if (string.IsNullOrWhiteSpace(local))
+                        continue;
+
+                    MainThread.BeginInvokeOnMainThread(() => att.ThumbLocalPath = local);
+                }
+            }
+            catch
+            {
+                // best-effort
             }
         }
 
@@ -293,75 +348,10 @@ namespace Biliardo.App.Pagine_Home
         {
             if (item == null) return null;
 
-            if (item.Kind == PendingKind.Location)
-            {
-                var extra = new Dictionary<string, object>
-                {
-                    ["lat"] = FirestoreRestClient.VDouble(item.Latitude ?? 0),
-                    ["lon"] = FirestoreRestClient.VDouble(item.Longitude ?? 0),
-                    ["address"] = FirestoreRestClient.VString(item.Address ?? "")
-                };
-
-                return new FirestoreHomeFeedService.HomeAttachment("location", null, null, null, null, 0, 0, extra);
-            }
-
-            if (item.Kind == PendingKind.Contact)
-            {
-                var extra = new Dictionary<string, object>
-                {
-                    ["name"] = FirestoreRestClient.VString(item.ContactName ?? item.DisplayName),
-                    ["phone"] = FirestoreRestClient.VString(item.ContactPhone ?? "")
-                };
-
-                return new FirestoreHomeFeedService.HomeAttachment("contact", null, null, null, null, 0, 0, extra);
-            }
-
-            if (item.Kind == PendingKind.Poll)
-                return new FirestoreHomeFeedService.HomeAttachment("poll", null, null, null, null, 0, 0, null);
-
-            if (item.Kind == PendingKind.Event)
-                return new FirestoreHomeFeedService.HomeAttachment("event", null, null, null, null, 0, 0, null);
-
-            if (string.IsNullOrWhiteSpace(item.LocalFilePath) || !File.Exists(item.LocalFilePath))
-                return null;
-
             var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
-
-            var fileName = Path.GetFileName(item.LocalFilePath);
-            var objectPath = $"home_posts/media/{Guid.NewGuid():N}/{fileName}";
-
-            var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
-                idToken: idToken,
-                objectPath: objectPath,
-                localFilePath: item.LocalFilePath,
-                contentType: FirebaseStorageRestClient.GuessContentTypeFromPath(item.LocalFilePath),
-                ct: default);
-
-            if (item.Kind == PendingKind.AudioDraft)
-            {
-                try { File.Delete(item.LocalFilePath); } catch { }
-            }
-
-            var type = item.Kind switch
-            {
-                PendingKind.Image => "image",
-                PendingKind.Video => "video",
-                PendingKind.AudioDraft => "audio",
-                PendingKind.File => "file",
-                _ => "file"
-            };
-
-            return new FirestoreHomeFeedService.HomeAttachment(
-                type,
-                upload.StoragePath,
-                upload.DownloadUrl,
-                fileName,
-                upload.ContentType,
-                upload.SizeBytes,
-                item.DurationMs,
-                null);
+            return await _homeMediaPipeline.BuildAttachmentAsync(item, idToken, default);
         }
 
         private async Task PickHomeFromGalleryAsync()
@@ -630,11 +620,10 @@ namespace Biliardo.App.Pagine_Home
             if (string.IsNullOrWhiteSpace(idToken))
                 return null;
 
-            var ext = Path.GetExtension(att.FileName ?? "");
-            if (string.IsNullOrWhiteSpace(ext)) ext = ".m4a";
-            var local = Path.Combine(FileSystem.CacheDirectory, $"home_audio_{Guid.NewGuid():N}{ext}");
+            var local = await _mediaCache.GetOrDownloadAsync(idToken, att.StoragePath, att.FileName ?? "audio.m4a", isThumb: false, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(local))
+                return null;
 
-            await FirebaseStorageRestClient.DownloadToFileAsync(idToken, att.StoragePath, local);
             att.LocalPath = local;
             return local;
         }
@@ -991,6 +980,18 @@ namespace Biliardo.App.Pagine_Home
             public string? FileName { get; set; }
             public long DurationMs { get; set; }
             public string? LocalPath { get; set; }
+            public string? ThumbStoragePath { get; set; }
+            public string? LqipBase64 { get; set; }
+            public string? PreviewType { get; set; }
+            public int? ThumbWidth { get; set; }
+            public int? ThumbHeight { get; set; }
+
+            private string? _thumbLocalPath;
+            public string? ThumbLocalPath
+            {
+                get => _thumbLocalPath;
+                set { _thumbLocalPath = value; OnPropertyChanged(); OnPropertyChanged(nameof(DisplayPreviewSource)); }
+            }
 
             public double? Latitude { get; set; }
             public double? Longitude { get; set; }
@@ -1000,7 +1001,7 @@ namespace Biliardo.App.Pagine_Home
             public bool IsAudio => Type == "audio";
             public bool IsFile => Type == "file";
             public bool IsVideo => Type == "video";
-            public bool IsFileOrVideo => IsFile || IsVideo;
+            public bool IsFileOrVideo => IsFile;
             public bool IsLocation => Type == "location";
             public bool IsContact => Type == "contact";
             public bool IsPoll => Type == "poll";
@@ -1015,6 +1016,30 @@ namespace Biliardo.App.Pagine_Home
 
             public string AudioPlayLabel => IsPlaying ? "Stop" : "Play";
 
+            public ImageSource? DisplayPreviewSource
+            {
+                get
+                {
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(LocalPath) && File.Exists(LocalPath))
+                            return ImageSource.FromFile(LocalPath);
+
+                        if (!string.IsNullOrWhiteSpace(ThumbLocalPath) && File.Exists(ThumbLocalPath))
+                            return ImageSource.FromFile(ThumbLocalPath);
+
+                        if (!string.IsNullOrWhiteSpace(LqipBase64))
+                        {
+                            var bytes = Convert.FromBase64String(LqipBase64);
+                            return ImageSource.FromStream(() => new MemoryStream(bytes));
+                        }
+                    }
+                    catch { }
+
+                    return null;
+                }
+            }
+
             public static HomeAttachmentVm FromService(FirestoreHomeFeedService.HomeAttachment att)
             {
                 var vm = new HomeAttachmentVm
@@ -1023,7 +1048,12 @@ namespace Biliardo.App.Pagine_Home
                     StoragePath = att.StoragePath,
                     DownloadUrl = att.DownloadUrl,
                     FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
-                    DurationMs = att.DurationMs
+                    DurationMs = att.DurationMs,
+                    ThumbStoragePath = att.ThumbStoragePath,
+                    LqipBase64 = att.LqipBase64,
+                    PreviewType = att.PreviewType,
+                    ThumbWidth = att.ThumbWidth,
+                    ThumbHeight = att.ThumbHeight
                 };
 
                 if (att.Extra != null)

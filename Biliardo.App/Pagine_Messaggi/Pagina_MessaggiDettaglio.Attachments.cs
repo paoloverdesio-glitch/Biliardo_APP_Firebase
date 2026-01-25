@@ -13,6 +13,8 @@ using Microsoft.Maui.Storage;
 
 using Biliardo.App.Componenti_UI;
 using Biliardo.App.Componenti_UI.Composer;
+using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
@@ -441,6 +443,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
             var sizeBytes = a.SizeBytes > 0 ? a.SizeBytes : new FileInfo(a.LocalPath).Length;
 
+            var kind = GetMediaKind(contentType, fileName);
+
             var type = a.Kind switch
             {
                 AttachmentKind.Audio => "audio",
@@ -453,6 +457,16 @@ namespace Biliardo.App.Pagine_Messaggi
             if ((type == "audio" || type == "video") && durationMs <= 0)
                 durationMs = MediaMetadataHelper.TryGetDurationMs(a.LocalPath);
 
+            ValidateAttachmentLimits(kind, sizeBytes, durationMs);
+
+            MediaPreviewResult? preview = null;
+            if (kind is MediaKind.Image or MediaKind.Video or MediaKind.Pdf)
+            {
+                preview = await _previewGenerator.GenerateAsync(
+                    new MediaPreviewRequest(a.LocalPath, kind, contentType, fileName, "chat", a.Latitude, a.Longitude),
+                    CancellationToken.None);
+            }
+
             // 7.4) Path oggetto su Storage
             var storagePath = $"chats/{chatId}/media/{msgId}/{fileName}";
 
@@ -463,6 +477,22 @@ namespace Biliardo.App.Pagine_Messaggi
                 localFilePath: a.LocalPath,
                 contentType: contentType,
                 ct: default);
+
+            string? thumbStoragePath = null;
+            if (preview != null && AppMediaOptions.StoreThumbInStorage && File.Exists(preview.ThumbLocalPath))
+            {
+                var baseName = Path.GetFileNameWithoutExtension(fileName);
+                thumbStoragePath = $"chats/{chatId}/media/{msgId}/thumb_{baseName}.jpg";
+
+                await FirebaseStorageRestClient.UploadFileAsync(
+                    idToken: idToken,
+                    objectPath: thumbStoragePath,
+                    localFilePath: preview.ThumbLocalPath,
+                    contentType: "image/jpeg",
+                    ct: default);
+            }
+
+            var previewMap = BuildPreviewPayload(preview, thumbStoragePath);
 
             // 7.6) Scrittura messaggio su Firestore
             await _fsChat.SendFileMessageWithIdAsync(
@@ -475,7 +505,89 @@ namespace Biliardo.App.Pagine_Messaggi
                 durationMs: durationMs,
                 sizeBytes: sizeBytes,
                 fileName: fileName,
-                contentType: contentType);
+                contentType: contentType,
+                previewMap: previewMap,
+                waveform: a.Waveform);
+
+            if (preview != null && !string.IsNullOrWhiteSpace(preview.ThumbLocalPath))
+            {
+                try { if (File.Exists(preview.ThumbLocalPath)) File.Delete(preview.ThumbLocalPath); } catch { }
+            }
+        }
+
+        private static MediaKind GetMediaKind(string contentType, string fileName)
+        {
+            if (!string.IsNullOrWhiteSpace(contentType))
+            {
+                if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                    return MediaKind.Image;
+                if (contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
+                    return MediaKind.Video;
+                if (contentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+                    return MediaKind.Audio;
+                if (contentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase))
+                    return MediaKind.Pdf;
+            }
+
+            var ext = Path.GetExtension(fileName ?? "").ToLowerInvariant();
+            return ext switch
+            {
+                ".jpg" or ".jpeg" or ".png" or ".gif" => MediaKind.Image,
+                ".mp4" or ".mov" => MediaKind.Video,
+                ".m4a" or ".mp3" or ".wav" or ".aac" => MediaKind.Audio,
+                ".pdf" => MediaKind.Pdf,
+                _ => MediaKind.File
+            };
+        }
+
+        private static void ValidateAttachmentLimits(MediaKind kind, long sizeBytes, long durationMs)
+        {
+            switch (kind)
+            {
+                case MediaKind.Image:
+                    if (sizeBytes > AppMediaOptions.MaxImageBytes)
+                        throw new InvalidOperationException("Immagine troppo grande.");
+                    break;
+                case MediaKind.Video:
+                    if (sizeBytes > AppMediaOptions.MaxVideoBytes)
+                        throw new InvalidOperationException("Video troppo grande.");
+                    if (durationMs > AppMediaOptions.MaxVideoDurationMs)
+                        throw new InvalidOperationException("Video troppo lungo.");
+                    break;
+                case MediaKind.Audio:
+                    if (sizeBytes > AppMediaOptions.MaxAudioBytes)
+                        throw new InvalidOperationException("Audio troppo grande.");
+                    break;
+                case MediaKind.Pdf:
+                case MediaKind.File:
+                    if (sizeBytes > AppMediaOptions.MaxDocumentBytes)
+                        throw new InvalidOperationException("Documento troppo grande.");
+                    break;
+            }
+        }
+
+        private static Dictionary<string, object>? BuildPreviewPayload(MediaPreviewResult? preview, string? thumbStoragePath)
+        {
+            if (preview == null)
+                return null;
+
+            var map = new Dictionary<string, object>();
+
+            if (!string.IsNullOrWhiteSpace(thumbStoragePath))
+                map["thumbStoragePath"] = FirestoreRestClient.VString(thumbStoragePath);
+
+            if (!string.IsNullOrWhiteSpace(preview.LqipBase64) && AppMediaOptions.StoreLqipInFirestore)
+                map["lqipBase64"] = FirestoreRestClient.VString(preview.LqipBase64);
+
+            if (preview.Width > 0)
+                map["thumbWidth"] = FirestoreRestClient.VInt(preview.Width);
+            if (preview.Height > 0)
+                map["thumbHeight"] = FirestoreRestClient.VInt(preview.Height);
+
+            if (!string.IsNullOrWhiteSpace(preview.PreviewType))
+                map["previewType"] = FirestoreRestClient.VString(preview.PreviewType);
+
+            return map.Count == 0 ? null : map;
         }
 
         // ============================================================

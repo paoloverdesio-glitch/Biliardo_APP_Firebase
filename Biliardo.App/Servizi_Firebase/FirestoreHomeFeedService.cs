@@ -18,7 +18,13 @@ namespace Biliardo.App.Servizi_Firebase
             string? ContentType,
             long SizeBytes,
             long DurationMs,
-            Dictionary<string, object>? Extra);
+            Dictionary<string, object>? Extra,
+            string? ThumbStoragePath = null,
+            string? LqipBase64 = null,
+            string? PreviewType = null,
+            int? ThumbWidth = null,
+            int? ThumbHeight = null,
+            IReadOnlyList<int>? Waveform = null);
 
         public sealed record HomePostItem(
             string PostId,
@@ -67,7 +73,7 @@ namespace Biliardo.App.Servizi_Firebase
             string? avatarPath = null;
             string? avatarUrl = null;
 
-            // Best-effort: se DirectoryService è protetto da rules, non deve bloccare la creazione post
+            // Best-effort: se DirectoryService ï¿½ protetto da rules, non deve bloccare la creazione post
             try
             {
                 var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
@@ -272,7 +278,7 @@ namespace Biliardo.App.Servizi_Firebase
                 if (IsFirestoreNotFound(ex))
                     return false;
 
-                // Qualsiasi altro errore NON è "non esiste": va propagato (es. 403 rules)
+                // Qualsiasi altro errore NON ï¿½ "non esiste": va propagato (es. 403 rules)
                 throw;
             }
         }
@@ -419,7 +425,13 @@ namespace Biliardo.App.Servizi_Firebase
                 ["contentType"] = string.IsNullOrWhiteSpace(attachment.ContentType) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.ContentType),
                 ["sizeBytes"] = FirestoreRestClient.VInt(attachment.SizeBytes),
                 ["durationMs"] = FirestoreRestClient.VInt(attachment.DurationMs),
-                ["extra"] = attachment.Extra == null ? FirestoreRestClient.VNull() : FirestoreRestClient.VMap(attachment.Extra)
+                ["extra"] = attachment.Extra == null ? FirestoreRestClient.VNull() : FirestoreRestClient.VMap(attachment.Extra),
+                ["thumbStoragePath"] = string.IsNullOrWhiteSpace(attachment.ThumbStoragePath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.ThumbStoragePath),
+                ["lqipBase64"] = string.IsNullOrWhiteSpace(attachment.LqipBase64) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.LqipBase64),
+                ["previewType"] = string.IsNullOrWhiteSpace(attachment.PreviewType) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.PreviewType),
+                ["thumbWidth"] = attachment.ThumbWidth == null ? FirestoreRestClient.VNull() : FirestoreRestClient.VInt(attachment.ThumbWidth.Value),
+                ["thumbHeight"] = attachment.ThumbHeight == null ? FirestoreRestClient.VNull() : FirestoreRestClient.VInt(attachment.ThumbHeight.Value),
+                ["waveform"] = attachment.Waveform == null ? FirestoreRestClient.VNull() : FirestoreRestClient.VArray(attachment.Waveform.Select(x => FirestoreRestClient.VInt(x)).ToArray())
             };
 
             return FirestoreRestClient.VMap(fields);
@@ -511,7 +523,13 @@ namespace Biliardo.App.Servizi_Firebase
                     ContentType: ReadStringField(mapFields, "contentType"),
                     SizeBytes: ReadIntField(mapFields, "sizeBytes") ?? 0,
                     DurationMs: ReadIntField(mapFields, "durationMs") ?? 0,
-                    Extra: ReadMapField(mapFields, "extra")
+                    Extra: ReadMapField(mapFields, "extra"),
+                    ThumbStoragePath: ReadStringField(mapFields, "thumbStoragePath"),
+                    LqipBase64: ReadStringField(mapFields, "lqipBase64"),
+                    PreviewType: ReadStringField(mapFields, "previewType"),
+                    ThumbWidth: ReadIntField(mapFields, "thumbWidth") is { } tw ? (int)tw : null,
+                    ThumbHeight: ReadIntField(mapFields, "thumbHeight") is { } th ? (int)th : null,
+                    Waveform: ReadIntArrayField(mapFields, "waveform")
                 ));
             }
 
@@ -558,6 +576,26 @@ namespace Biliardo.App.Servizi_Firebase
                     return l;
             }
             return null;
+        }
+
+        private static IReadOnlyList<int>? ReadIntArrayField(JsonElement fields, string field)
+        {
+            if (!fields.TryGetProperty(field, out var el) || el.ValueKind != JsonValueKind.Object) return null;
+            if (!el.TryGetProperty("arrayValue", out var arr) || arr.ValueKind != JsonValueKind.Object) return null;
+            if (!arr.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array) return null;
+
+            var list = new List<int>();
+            foreach (var item in values.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (item.TryGetProperty("integerValue", out var v) && v.ValueKind == JsonValueKind.String)
+                {
+                    if (int.TryParse(v.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+                        list.Add(n);
+                }
+            }
+
+            return list.Count == 0 ? null : list;
         }
 
         private static bool? ReadBoolField(JsonElement fields, string field)

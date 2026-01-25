@@ -1,4 +1,7 @@
 ﻿using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Cache;
+using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Microsoft.Maui.Controls;
@@ -48,15 +51,13 @@ namespace Biliardo.App.Pagine_Messaggi
         // 3) PERFORMANCE / SCROLL (anti-jank)
         // ============================================================
         private long _scrollBusyUntilUtcTicks;
-        private const int ScrollBusyHoldMs = 450;
-
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
+        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(AppMediaOptions.ScrollIdleDelayMs);
 
         private bool IsScrollBusy()
             => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
 
         private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(AppMediaOptions.ScrollBusyHoldMs).Ticks);
 
         // ============================================================
         // 4) DIMENSIONI (BOLLE / MEDIA PREVIEW) - BINDING XAML
@@ -216,6 +217,11 @@ namespace Biliardo.App.Pagine_Messaggi
         // 12) SERVIZI FIREBASE (chat)
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
+        private readonly MediaCacheService _mediaCache = new();
+        private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
+
+        private readonly List<int> _recordingWaveform = new();
+        private long _lastWaveformSampleTicks;
 
         // ============================================================
         // 13) POLLING / DIFF / PENDING APPLY (anti-jank)
@@ -273,6 +279,7 @@ namespace Biliardo.App.Pagine_Messaggi
         private IDispatcherTimer? _audioWaveTimer;
         private ChatMessageVm? _audioWaveCurrent;
         private double _audioWavePhase;
+        private int _audioWaveIndex;
 
         // ============================================================
         // 17) INIT: COLLEZIONI + EVENTI + EMOJI

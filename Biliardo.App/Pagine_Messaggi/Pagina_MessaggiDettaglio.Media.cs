@@ -12,7 +12,6 @@ using Microsoft.Maui.Controls;
 using Microsoft.Maui.Storage;
 
 #if ANDROID
-using Android.Graphics;
 using Android.Media;
 #endif
 
@@ -24,6 +23,8 @@ using Windows.Storage.FileProperties;
 using System.Runtime.InteropServices.WindowsRuntime;
 #endif
 
+using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Servizi_Firebase;
 
 using Path = System.IO.Path;
@@ -61,7 +62,13 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                     return;
 
-                var img = new MauiImage { Source = path, Aspect = Aspect.AspectFit };
+                var img = new MauiImage
+                {
+                    Source = path,
+                    Aspect = Aspect.AspectFit,
+                    Opacity = 0,
+                    Scale = 0.95
+                };
 
                 var close = new Button
                 {
@@ -76,17 +83,31 @@ namespace Biliardo.App.Pagine_Messaggi
                     Margin = new Thickness(10)
                 };
 
-                var page = new ContentPage
+                var container = new Grid
                 {
                     BackgroundColor = Colors.Black,
-                    Content = new Grid { Children = { img, close } }
+                    Children = { img, close }
                 };
 
+                var page = new ContentPage { BackgroundColor = Colors.Black, Content = container };
+
                 close.Clicked += async (_, __) => await Navigation.PopModalAsync();
+
+                var tapToClose = new TapGestureRecognizer();
+                tapToClose.Tapped += async (_, __) => await Navigation.PopModalAsync();
+                container.GestureRecognizers.Add(tapToClose);
 
                 // Modal: non fermare polling in OnDisappearing
                 _suppressStopPollingOnce = true;
                 await Navigation.PushModalAsync(page);
+
+                try
+                {
+                    await Task.WhenAll(
+                        img.FadeTo(1, 160, Easing.CubicOut),
+                        img.ScaleTo(1, 160, Easing.CubicOut));
+                }
+                catch { }
             }
             catch { }
         }
@@ -256,7 +277,10 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _audioWaveCurrent = m;
             _audioWavePhase = 0;
+            _audioWaveIndex = 0;
             m.PlaybackWave.Reset();
+
+            var waveform = m.AudioWaveform?.ToArray();
 
             _audioWaveTimer = Dispatcher.CreateTimer();
             _audioWaveTimer.Interval = TimeSpan.FromMilliseconds(80);
@@ -265,13 +289,22 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (_audioWaveCurrent == null)
                     return;
 
-                var level = Math.Abs(Math.Sin(_audioWavePhase));
-                var harmonic = Math.Abs(Math.Sin(_audioWavePhase * 0.37));
-                var combined = 0.15 + (level * 0.85 * (0.6 + harmonic * 0.4));
-                if (combined > 1) combined = 1;
+                float combined;
+                if (waveform != null && waveform.Length > 0)
+                {
+                    var idx = _audioWaveIndex++ % waveform.Length;
+                    combined = Math.Clamp(waveform[idx] / 100f, 0f, 1f);
+                }
+                else
+                {
+                    var level = Math.Abs(Math.Sin(_audioWavePhase));
+                    var harmonic = Math.Abs(Math.Sin(_audioWavePhase * 0.37));
+                    var fallback = 0.15 + (level * 0.85 * (0.6 + harmonic * 0.4));
+                    combined = (float)Math.Min(1, fallback);
+                    _audioWavePhase += 0.35;
+                }
 
-                _audioWaveCurrent.PlaybackWave.AddSample((float)combined);
-                _audioWavePhase += 0.35;
+                _audioWaveCurrent.PlaybackWave.AddSample(combined);
 
                 if (_audioWaveViews.TryGetValue(_audioWaveCurrent, out var view))
                     view.Invalidate();
@@ -308,12 +341,7 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 // 7.1) già in cache
                 if (!string.IsNullOrWhiteSpace(m.MediaLocalPath) && File.Exists(m.MediaLocalPath))
-                {
-                    if (m.IsVideo && !m.HasVideoThumbnail)
-                        _ = EnsureVideoThumbnailAsync(m, CancellationToken.None);
-
                     return m.MediaLocalPath;
-                }
 
                 // 7.2) serve storagePath
                 if (string.IsNullOrWhiteSpace(m.StoragePath))
@@ -324,23 +352,17 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(idToken))
                     return null;
 
-                // 7.4) estensione coerente
-                var ext = Path.GetExtension(m.FileName ?? "");
-                if (string.IsNullOrWhiteSpace(ext))
-                    ext = m.IsPhoto ? ".jpg" : (m.IsAudio ? ".m4a" : (m.IsVideo ? ".mp4" : ".bin"));
-
-                var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{m.Id}_{Guid.NewGuid():N}{ext}");
-
-                await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, m.StoragePath!, local);
+                var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "file.bin", isThumb: false, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(local))
+                    return null;
 
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
                     m.MediaLocalPath = local;
                 });
 
-                // 7.5) per video: genera thumbnail in background
-                if (m.IsVideo && !m.HasVideoThumbnail)
-                    _ = EnsureVideoThumbnailAsync(m, CancellationToken.None);
+                if (AppMediaOptions.GenerateThumbIfMissingAfterDownload && string.IsNullOrWhiteSpace(m.ThumbLocalPath))
+                    _ = GenerateLocalPreviewFallbackAsync(m, local, CancellationToken.None);
 
                 return local;
             }
@@ -384,7 +406,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 {
                     var vm = Messaggi[i];
                     if (vm == null || vm.IsDateSeparator) continue;
-                    if (!vm.IsPhoto && !vm.IsVideo) continue;
+                    if (string.IsNullOrWhiteSpace(vm.ThumbStoragePath)) continue;
                     if (string.IsNullOrWhiteSpace(vm.Id)) continue;
 
                     lock (_prefetchMediaMessageIds)
@@ -410,7 +432,7 @@ namespace Biliardo.App.Pagine_Messaggi
                     if (string.IsNullOrWhiteSpace(idToken))
                         return;
 
-                    using var sem = new SemaphoreSlim(2, 2);
+                    using var sem = new SemaphoreSlim(AppMediaOptions.DownloadConcurrency, AppMediaOptions.DownloadConcurrency);
                     var tasks = new List<Task>();
 
                     foreach (var vm in targets)
@@ -425,32 +447,20 @@ namespace Biliardo.App.Pagine_Messaggi
                                 if (token.IsCancellationRequested)
                                     return;
 
-                                // già scaricato
-                                if (!string.IsNullOrWhiteSpace(vm.MediaLocalPath) && File.Exists(vm.MediaLocalPath))
-                                {
-                                    if (vm.IsVideo && !vm.HasVideoThumbnail)
-                                        await EnsureVideoThumbnailAsync(vm, token);
-                                    return;
-                                }
-
-                                if (string.IsNullOrWhiteSpace(vm.StoragePath))
+                                if (!AppMediaOptions.PrefetchThumbsOnScroll)
                                     return;
 
-                                var ext = Path.GetExtension(vm.FileName ?? "");
-                                if (string.IsNullOrWhiteSpace(ext))
-                                    ext = vm.IsPhoto ? ".jpg" : ".mp4";
+                                if (string.IsNullOrWhiteSpace(vm.ThumbStoragePath))
+                                    return;
 
-                                var local = Path.Combine(FileSystem.CacheDirectory, $"dl_{vm.Id}_{Guid.NewGuid():N}{ext}");
+                                if (!string.IsNullOrWhiteSpace(vm.ThumbLocalPath) && File.Exists(vm.ThumbLocalPath))
+                                    return;
 
-                                await FirebaseStorageRestClient.DownloadToFileAsync(idToken!, vm.StoragePath!, local);
+                                var local = await _mediaCache.GetOrDownloadAsync(idToken!, vm.ThumbStoragePath!, vm.FileName ?? "thumb.jpg", isThumb: true, token);
+                                if (string.IsNullOrWhiteSpace(local))
+                                    return;
 
-                                MainThread.BeginInvokeOnMainThread(() =>
-                                {
-                                    vm.MediaLocalPath = local;
-                                });
-
-                                if (vm.IsVideo && !vm.HasVideoThumbnail)
-                                    await EnsureVideoThumbnailAsync(vm, token);
+                                MainThread.BeginInvokeOnMainThread(() => vm.ThumbLocalPath = local);
                             }
                             catch { }
                             finally
@@ -466,94 +476,46 @@ namespace Biliardo.App.Pagine_Messaggi
             }, token);
         }
 
-        // ============================================================
-        // 9) THUMBNAIL VIDEO
-        // ============================================================
-        private async Task EnsureVideoThumbnailAsync(ChatMessageVm m, CancellationToken ct)
+        private async Task GenerateLocalPreviewFallbackAsync(ChatMessageVm m, string localPath, CancellationToken ct)
         {
-            if (m == null || !m.IsVideo) return;
-            if (m.HasVideoThumbnail) return;
-
-            var videoPath = m.MediaLocalPath;
-            if (string.IsNullOrWhiteSpace(videoPath) || !File.Exists(videoPath))
-                return;
-
             try
             {
-                var thumbPath = Path.Combine(FileSystem.CacheDirectory, $"thumb_{m.Id}_{Guid.NewGuid():N}.jpg");
+                if (m == null || string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+                    return;
 
-#if ANDROID
-                var ok = await Task.Run(() => TryCreateVideoThumbnailAndroid(videoPath!, thumbPath), ct);
-                if (!ok) return;
-#elif WINDOWS
-                var ok = await TryCreateVideoThumbnailWindowsAsync(videoPath!, thumbPath);
-                if (!ok) return;
-#else
-                return;
-#endif
-                if (!File.Exists(thumbPath))
+                var kind = m.IsPhoto ? MediaKind.Image :
+                    m.IsVideo ? MediaKind.Video :
+                    (string.Equals(m.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase) || string.Equals(Path.GetExtension(m.FileName ?? ""), ".pdf", StringComparison.OrdinalIgnoreCase))
+                        ? MediaKind.Pdf
+                        : MediaKind.File;
+
+                if (kind is not (MediaKind.Image or MediaKind.Video or MediaKind.Pdf))
+                    return;
+
+                var preview = await _previewGenerator.GenerateAsync(
+                    new MediaPreviewRequest(localPath, kind, m.ContentType, m.FileName, "chat_download", m.Latitude, m.Longitude),
+                    ct);
+
+                if (preview == null)
                     return;
 
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
-                    m.VideoThumbnailPath = thumbPath;
+                    if (string.IsNullOrWhiteSpace(m.ThumbLocalPath))
+                        m.ThumbLocalPath = preview.ThumbLocalPath;
+
+                    if (AppMediaOptions.GenerateLqipIfMissingAfterDownload && string.IsNullOrWhiteSpace(m.LqipBase64))
+                        m.LqipBase64 = preview.LqipBase64;
                 });
             }
-            catch { }
-        }
-
-#if ANDROID
-        private static bool TryCreateVideoThumbnailAndroid(string videoPath, string outJpgPath)
-        {
-            try
-            {
-                using var retriever = new MediaMetadataRetriever();
-                retriever.SetDataSource(videoPath);
-
-                using var bmp = retriever.GetFrameAtTime(0, Option.ClosestSync);
-                if (bmp == null) return false;
-
-                using var fs = File.Create(outJpgPath);
-                var ok = bmp.Compress(Bitmap.CompressFormat.Jpeg, 82, fs);
-
-                return ok;
-            }
             catch
             {
-                return false;
+                // ignore
             }
         }
-#endif
-
-#if WINDOWS
-        private static async Task<bool> TryCreateVideoThumbnailWindowsAsync(string videoPath, string outJpgPath)
-        {
-            try
-            {
-                var file = await StorageFile.GetFileFromPathAsync(videoPath);
-
-                using var thumb = await file.GetThumbnailAsync(
-                    ThumbnailMode.VideosView,
-                    320,
-                    ThumbnailOptions.UseCurrentScale);
-
-                if (thumb == null) return false;
-
-                using var input = thumb.AsStreamForRead();
-                using var output = File.Create(outJpgPath);
-                await input.CopyToAsync(output);
-
-                return File.Exists(outJpgPath);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-#endif
 
         // ============================================================
-        // 10) PLAYBACK: interfaccia + factory + implementazioni
+        // 9) PLAYBACK: interfaccia + factory + implementazioni
         // ============================================================
         private interface IAudioPlayback
         {

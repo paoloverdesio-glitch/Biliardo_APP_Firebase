@@ -48,6 +48,16 @@ namespace Biliardo.App.Servizi_Firebase
             string? ContentType,
             long SizeBytes,
 
+            // preview
+            string? ThumbStoragePath,
+            string? LqipBase64,
+            int? ThumbWidth,
+            int? ThumbHeight,
+            string? PreviewType,
+
+            // audio waveform
+            IReadOnlyList<int>? Waveform,
+
             // location
             double? Latitude,
             double? Longitude,
@@ -281,6 +291,14 @@ namespace Biliardo.App.Servizi_Firebase
                 var durationMs = ReadMapInt64(fields, "payload", "durationMs");
                 var sizeBytes = ReadMapInt64(fields, "payload", "sizeBytes");
 
+                var thumbStoragePath = ReadNestedMapString(fields, "payload", "preview", "thumbStoragePath");
+                var lqipBase64 = ReadNestedMapString(fields, "payload", "preview", "lqipBase64");
+                var thumbWidth = ReadNestedMapInt(fields, "payload", "preview", "thumbWidth");
+                var thumbHeight = ReadNestedMapInt(fields, "payload", "preview", "thumbHeight");
+                var previewType = ReadNestedMapString(fields, "payload", "preview", "previewType");
+
+                var waveform = ReadMapIntArray(fields, "payload", "waveform");
+
                 // location
                 var lat = ReadMapDouble(fields, "payload", "lat");
                 var lon = ReadMapDouble(fields, "payload", "lon");
@@ -305,6 +323,12 @@ namespace Biliardo.App.Servizi_Firebase
                     FileName: fileName,
                     ContentType: contentType,
                     SizeBytes: sizeBytes,
+                    ThumbStoragePath: thumbStoragePath,
+                    LqipBase64: lqipBase64,
+                    ThumbWidth: thumbWidth,
+                    ThumbHeight: thumbHeight,
+                    PreviewType: previewType,
+                    Waveform: waveform,
                     Latitude: lat,
                     Longitude: lon,
                     ContactName: cn,
@@ -379,6 +403,8 @@ namespace Biliardo.App.Servizi_Firebase
             long sizeBytes,
             string fileName,
             string contentType,
+            Dictionary<string, object>? previewMap = null,
+            IReadOnlyList<int>? waveform = null,
             CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(type)) type = "file";
@@ -387,14 +413,22 @@ namespace Biliardo.App.Servizi_Firebase
 
             var now = DateTimeOffset.UtcNow;
 
-            var payloadMap = FirestoreRestClient.VMap(new Dictionary<string, object>
+            var payloadFields = new Dictionary<string, object>
             {
                 ["storagePath"] = FirestoreRestClient.VString(storagePath),
                 ["durationMs"] = FirestoreRestClient.VInt(durationMs),
                 ["sizeBytes"] = FirestoreRestClient.VInt(sizeBytes),
                 ["fileName"] = FirestoreRestClient.VString(fileName ?? "file.bin"),
                 ["contentType"] = FirestoreRestClient.VString(string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType),
-            });
+            };
+
+            if (previewMap != null && previewMap.Count > 0)
+                payloadFields["preview"] = FirestoreRestClient.VMap(previewMap);
+
+            if (waveform != null && waveform.Count > 0)
+                payloadFields["waveform"] = FirestoreRestClient.VArray(waveform.Select(x => FirestoreRestClient.VInt(x)).ToArray());
+
+            var payloadMap = FirestoreRestClient.VMap(payloadFields);
 
             // (vedi nota sopra: niente "deletedAt" in CREATE)
             var msgFields = new Dictionary<string, object>
@@ -833,6 +867,115 @@ namespace Biliardo.App.Servizi_Firebase
             }
             catch { }
             return null;
+        }
+
+        private static string? ReadNestedMapString(JsonElement fields, string mapFieldName, string nestedMapName, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return null;
+            if (fields.ValueKind != JsonValueKind.Object) return null;
+            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!f.TryGetProperty(nestedMapName, out var nested) || nested.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!nested.TryGetProperty("mapValue", out var nmap) || nmap.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!nmap.TryGetProperty("fields", out var nf) || nf.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!nf.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (entry.TryGetProperty("stringValue", out var sv) && sv.ValueKind == JsonValueKind.String)
+                return sv.GetString();
+
+            return null;
+        }
+
+        private static int? ReadNestedMapInt(JsonElement fields, string mapFieldName, string nestedMapName, string key)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(key)) return null;
+                if (fields.ValueKind != JsonValueKind.Object) return null;
+                if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!f.TryGetProperty(nestedMapName, out var nested) || nested.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!nested.TryGetProperty("mapValue", out var nmap) || nmap.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!nmap.TryGetProperty("fields", out var nf) || nf.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!nf.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (entry.TryGetProperty("integerValue", out var iv))
+                {
+                    if (iv.ValueKind == JsonValueKind.String && int.TryParse(iv.GetString(), out var x))
+                        return x;
+                    if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt32(out var y))
+                        return y;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static IReadOnlyList<int>? ReadMapIntArray(JsonElement fields, string mapFieldName, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return null;
+            if (fields.ValueKind != JsonValueKind.Object) return null;
+            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!f.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!entry.TryGetProperty("arrayValue", out var av) || av.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!av.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var list = new List<int>();
+            foreach (var item in values.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (item.TryGetProperty("integerValue", out var iv))
+                {
+                    if (iv.ValueKind == JsonValueKind.String && int.TryParse(iv.GetString(), out var x))
+                        list.Add(x);
+                    else if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt32(out var y))
+                        list.Add(y);
+                }
+            }
+
+            return list.Count == 0 ? null : list;
         }
     }
 }

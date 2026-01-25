@@ -172,6 +172,12 @@ namespace Biliardo.App.Pagine_Messaggi
                 hc.Add(m.SizeBytes);
                 hc.Add(m.DurationMs);
                 hc.Add(m.StoragePath);
+                hc.Add(m.ThumbStoragePath);
+                hc.Add(m.LqipBase64);
+                hc.Add(m.ThumbWidth);
+                hc.Add(m.ThumbHeight);
+                hc.Add(m.PreviewType);
+                hc.Add(m.Waveform?.Count ?? 0);
             }
 
             return hc.ToHashCode().ToString("X");

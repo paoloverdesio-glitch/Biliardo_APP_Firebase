@@ -43,6 +43,7 @@ namespace Biliardo.App.Pagine_Messaggi
             public string? ContentType { get; set; }
             public long SizeBytes { get; set; }
             public long DurationMs { get; set; }
+            public IReadOnlyList<int>? Waveform { get; set; }
 
             // 3.3) Location
             public double? Latitude { get; set; }
@@ -149,6 +150,23 @@ namespace Biliardo.App.Pagine_Messaggi
             public long SizeBytes { get; set; }
             public long DurationMs { get; set; }
 
+            public string? ThumbStoragePath { get; set; }
+            private string? _lqipBase64;
+            public string? LqipBase64
+            {
+                get => _lqipBase64;
+                set
+                {
+                    _lqipBase64 = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(DisplayPreviewSource));
+                }
+            }
+
+            public int? ThumbWidth { get; set; }
+            public int? ThumbHeight { get; set; }
+            public string? PreviewType { get; set; }
+
             private string? _mediaLocalPath;
             public string? MediaLocalPath
             {
@@ -157,6 +175,19 @@ namespace Biliardo.App.Pagine_Messaggi
                 {
                     _mediaLocalPath = value;
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(DisplayPreviewSource));
+                }
+            }
+
+            private string? _thumbLocalPath;
+            public string? ThumbLocalPath
+            {
+                get => _thumbLocalPath;
+                set
+                {
+                    _thumbLocalPath = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(DisplayPreviewSource));
                 }
             }
 
@@ -195,6 +226,31 @@ namespace Biliardo.App.Pagine_Messaggi
             public WaveformDrawable PlaybackWave { get; } =
                 new(PlaybackWaveHistoryMs, PlaybackWaveTickMs, PlaybackWaveStrokePx, PlaybackWaveMaxPeakToPeakDip);
 
+            public IReadOnlyList<int>? AudioWaveform { get; set; }
+
+            public ImageSource? DisplayPreviewSource
+            {
+                get
+                {
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(MediaLocalPath) && File.Exists(MediaLocalPath))
+                            return ImageSource.FromFile(MediaLocalPath);
+
+                        if (!string.IsNullOrWhiteSpace(ThumbLocalPath) && File.Exists(ThumbLocalPath))
+                            return ImageSource.FromFile(ThumbLocalPath);
+
+                        if (!string.IsNullOrWhiteSpace(LqipBase64))
+                        {
+                            var bytes = Convert.FromBase64String(LqipBase64);
+                            return ImageSource.FromStream(() => new MemoryStream(bytes));
+                        }
+                    }
+                    catch { }
+
+                    return null;
+                }
+            }
             // Flags tipo (usati dal DataTemplate XAML)
             public bool IsAudio => !DeletedForAll && string.Equals(Type, "audio", StringComparison.OrdinalIgnoreCase);
             public bool IsPhoto => !DeletedForAll && string.Equals(Type, "photo", StringComparison.OrdinalIgnoreCase);
@@ -277,6 +333,12 @@ namespace Biliardo.App.Pagine_Messaggi
                     ContentType = m.ContentType,
                     SizeBytes = m.SizeBytes,
                     DurationMs = m.DurationMs,
+                    ThumbStoragePath = m.ThumbStoragePath,
+                    LqipBase64 = m.LqipBase64,
+                    ThumbWidth = m.ThumbWidth,
+                    ThumbHeight = m.ThumbHeight,
+                    PreviewType = m.PreviewType,
+                    AudioWaveform = m.Waveform,
                     Latitude = m.Latitude,
                     Longitude = m.Longitude,
                     ContactName = m.ContactName,

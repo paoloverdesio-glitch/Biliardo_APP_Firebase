@@ -1,4 +1,5 @@
 using System;
+using Biliardo.App.Infrastructure.Media;
 
 namespace Biliardo.App.Impostazioni
 {
@@ -13,6 +14,7 @@ namespace Biliardo.App.Impostazioni
         {
             var clamped = Math.Clamp(RallentamentoScroll, 1, 20);
             var scale = 10f / clamped;
+            scale *= (float)AppMediaOptions.ScrollAccelerationFactor;
             return Math.Clamp(scale, 0.6f, 2.2f);
         }
 
@@ -20,6 +22,7 @@ namespace Biliardo.App.Impostazioni
         {
             var clamped = Math.Clamp(RallentamentoScroll, 1, 20);
             var scale = 10.0 / clamped;
+            scale *= AppMediaOptions.ScrollDecelerationFactor;
             return Math.Clamp(scale, 0.85, 1.35);
         }
     }
