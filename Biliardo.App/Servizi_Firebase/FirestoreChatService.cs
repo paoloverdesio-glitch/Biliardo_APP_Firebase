@@ -65,7 +65,57 @@ namespace Biliardo.App.Servizi_Firebase
             // contact
             string? ContactName,
             string? ContactPhone
-        );
+        )
+        {
+            public MessageItem(
+                string MessageId,
+                string SenderId,
+                string Type,
+                string Text,
+                DateTimeOffset CreatedAtUtc,
+                IReadOnlyList<string> DeliveredTo,
+                IReadOnlyList<string> ReadBy,
+                bool DeletedForAll,
+                IReadOnlyList<string> DeletedFor,
+                DateTimeOffset? DeletedAtUtc,
+                string? StoragePath,
+                long DurationMs,
+                string? FileName,
+                string? ContentType,
+                long SizeBytes,
+                double? Latitude,
+                double? Longitude,
+                string? ContactName,
+                string? ContactPhone)
+                : this(
+                    MessageId,
+                    SenderId,
+                    Type,
+                    Text,
+                    CreatedAtUtc,
+                    DeliveredTo,
+                    ReadBy,
+                    DeletedForAll,
+                    DeletedFor,
+                    DeletedAtUtc,
+                    StoragePath,
+                    DurationMs,
+                    FileName,
+                    ContentType,
+                    SizeBytes,
+                    ThumbStoragePath: null,
+                    LqipBase64: null,
+                    ThumbWidth: null,
+                    ThumbHeight: null,
+                    PreviewType: null,
+                    Waveform: null,
+                    Latitude,
+                    Longitude,
+                    ContactName,
+                    ContactPhone)
+            {
+            }
+        }
 
         public static string GetDeterministicDmChatId(string uidA, string uidB)
         {

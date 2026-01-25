@@ -46,11 +46,11 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             Task<string?> task;
             lock (_lock)
             {
-                if (_inflight.TryGetValue(key, out task!))
-                    return await task.ConfigureAwait(false);
-
-                task = DownloadAndStoreAsync(key, idToken, storagePath, fileName, isThumb, ct);
-                _inflight[key] = task;
+                if (!_inflight.TryGetValue(key, out task!))
+                {
+                    task = DownloadAndStoreAsync(key, idToken, storagePath, fileName, isThumb, ct);
+                    _inflight[key] = task;
+                }
             }
 
             try
