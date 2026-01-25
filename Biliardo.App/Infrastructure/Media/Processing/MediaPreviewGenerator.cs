@@ -7,11 +7,19 @@ using Microsoft.Maui.Storage;
 
 using Biliardo.App.Infrastructure.Media;
 
+// =========================================================
+// Alias espliciti per evitare ambiguità tra namespace.
+// - SysFile/SysPath: usati sempre (tutte le piattaforme)
+// =========================================================
 using SysFile = global::System.IO.File;
 using SysPath = global::System.IO.Path;
-using JFile = global::Java.IO.File;
 
 #if ANDROID
+// =========================================================
+// ANDROID: alias e namespace specifici
+// =========================================================
+using JFile = global::Java.IO.File;
+
 using Android.Graphics;
 using Android.Media;
 using Android.Graphics.Pdf;
@@ -19,6 +27,9 @@ using Android.OS;
 #endif
 
 #if WINDOWS
+// =========================================================
+// WINDOWS: namespace specifici WinRT
+// =========================================================
 using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Data.Pdf;
 using Windows.Graphics.Imaging;
@@ -31,6 +42,11 @@ namespace Biliardo.App.Infrastructure.Media.Processing
 {
     public sealed class MediaPreviewGenerator : IMediaPreviewGenerator
     {
+        // =========================================================
+        // API PUBBLICA
+        // - Genera anteprime “best effort” (thumb + LQIP) da file locale
+        // - Deve rimanere non bloccante: lavoro pesante fuori dal thread UI
+        // =========================================================
         public Task<MediaPreviewResult?> GenerateAsync(MediaPreviewRequest req, CancellationToken ct)
         {
             if (req == null || string.IsNullOrWhiteSpace(req.LocalFilePath))
@@ -43,6 +59,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
                     if (ct.IsCancellationRequested)
                         return null;
 
+                    // Sezione: dispatch per tipo contenuto
                     return req.Kind switch
                     {
                         MediaKind.Image => await GenerateImagePreviewAsync(req, ct),
@@ -53,46 +70,66 @@ namespace Biliardo.App.Infrastructure.Media.Processing
                 }
                 catch
                 {
+                    // Best-effort: non bloccare mai la pipeline per errori preview
                     return null;
                 }
             }, ct);
         }
 
+        // =========================================================
+        // IMMAGINI
+        // =========================================================
         private async Task<MediaPreviewResult?> GenerateImagePreviewAsync(MediaPreviewRequest req, CancellationToken ct)
         {
+            // Nota: per GIF generiamo una preview “still” (primo frame / decodifica standard)
             var previewType = IsGif(req) ? "gif_still" : "image";
 
 #if ANDROID
+            // Android: decode + resize + jpeg
             return await Task.Run(() => GenerateAndroidImagePreview(req.LocalFilePath, previewType), ct);
 #elif WINDOWS
+            // Windows: decoder WinRT + transform + jpeg
             return await GenerateWindowsImagePreviewAsync(req.LocalFilePath, previewType, ct);
 #else
             return null;
 #endif
         }
 
+        // =========================================================
+        // VIDEO (poster frame)
+        // =========================================================
         private async Task<MediaPreviewResult?> GenerateVideoPreviewAsync(MediaPreviewRequest req, CancellationToken ct)
         {
 #if ANDROID
+            // Android: MediaMetadataRetriever -> frame -> resize + jpeg
             return await Task.Run(() => GenerateAndroidVideoPreview(req.LocalFilePath), ct);
 #elif WINDOWS
+            // Windows: thumbnail WinRT -> resize + jpeg
             return await GenerateWindowsVideoPreviewAsync(req.LocalFilePath, ct);
 #else
             return null;
 #endif
         }
 
+        // =========================================================
+        // PDF (prima pagina)
+        // =========================================================
         private async Task<MediaPreviewResult?> GeneratePdfPreviewAsync(MediaPreviewRequest req, CancellationToken ct)
         {
 #if ANDROID
+            // Android: PdfRenderer -> render page 0 -> resize + jpeg
             return await Task.Run(() => GenerateAndroidPdfPreview(req.LocalFilePath), ct);
 #elif WINDOWS
+            // Windows: Windows.Data.Pdf -> render page 0 -> resize + jpeg
             return await GenerateWindowsPdfPreviewAsync(req.LocalFilePath, ct);
 #else
             return null;
 #endif
         }
 
+        // =========================================================
+        // UTIL: riconoscimento GIF
+        // =========================================================
         private static bool IsGif(MediaPreviewRequest req)
         {
             if (!string.IsNullOrWhiteSpace(req.ContentType) && req.ContentType.Contains("gif", StringComparison.OrdinalIgnoreCase))
@@ -103,25 +140,36 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         }
 
 #if ANDROID
+        // =========================================================
+        // ANDROID IMPLEMENTATION
+        // =========================================================
+
         private static MediaPreviewResult? GenerateAndroidImagePreview(string path, string previewType)
         {
             try
             {
                 if (!SysFile.Exists(path)) return null;
 
+                // 1) Legge dimensioni senza decodificare tutto
                 using var bounds = new BitmapFactory.Options { InJustDecodeBounds = true };
                 BitmapFactory.DecodeFile(path, bounds);
 
+                // 2) Calcola downsample per ridurre memoria/CPU
                 var sample = CalculateInSampleSize(bounds.OutWidth, bounds.OutHeight, AppMediaOptions.ThumbMaxLongSidePx);
 
+                // 3) Decodifica downsampled
                 using var opts = new BitmapFactory.Options { InSampleSize = sample };
                 using var bmp = BitmapFactory.DecodeFile(path, opts);
                 if (bmp == null) return null;
 
+                // 4) Resize finale “thumb”
                 using var thumb = ResizeBitmapIfNeeded(bmp, AppMediaOptions.ThumbMaxLongSidePx);
+
+                // 5) Salva thumb JPG su file temporaneo
                 var thumbPath = CreateTempJpegPath("thumb");
                 if (!SaveJpeg(thumb, thumbPath, AppMediaOptions.ThumbJpegQuality)) return null;
 
+                // 6) LQIP (ultra compresso) da thumb
                 var (lqip, width, height) = BuildLqipFromBitmap(thumb, thumbPath);
 
                 return new MediaPreviewResult(thumbPath, lqip, width, height, previewType);
@@ -136,8 +184,10 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
+                // Estrae un fotogramma (poster) e lo usa come thumb
                 using var retriever = new MediaMetadataRetriever();
                 retriever.SetDataSource(path);
+
                 using var bmp = retriever.GetFrameAtTime(0, Option.ClosestSync);
                 if (bmp == null) return null;
 
@@ -159,14 +209,17 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             try
             {
+                // PdfRenderer richiede un ParcelFileDescriptor
                 using var file = new JFile(path);
                 using var pfd = ParcelFileDescriptor.Open(file, ParcelFileMode.ReadOnly);
                 using var renderer = new PdfRenderer(pfd);
                 if (renderer.PageCount <= 0) return null;
 
                 using var page = renderer.OpenPage(0);
+
                 var width = page.Width;
                 var height = page.Height;
+
                 using var bmp = Bitmap.CreateBitmap(width, height, Bitmap.Config.Argb8888);
                 page.Render(bmp, null, null, PdfRenderMode.ForDisplay);
 
@@ -183,6 +236,10 @@ namespace Biliardo.App.Infrastructure.Media.Processing
                 return null;
             }
         }
+
+        // =========================================================
+        // ANDROID HELPERS
+        // =========================================================
 
         private static int CalculateInSampleSize(int width, int height, int reqSize)
         {
@@ -224,9 +281,12 @@ namespace Biliardo.App.Infrastructure.Media.Processing
         {
             var width = thumb.Width;
             var height = thumb.Height;
+
+            // Se disabilitato via opzioni, non generiamo LQIP
             if (!AppMediaOptions.StoreLqipInFirestore)
                 return (null, width, height);
 
+            // Attenzione: questa funzione ridimensiona ulteriormente per ottenere un JPEG piccolissimo (base64)
             using var lqipBmp = ResizeBitmapIfNeeded(thumb, AppMediaOptions.LqipMaxLongSidePx);
             using var ms = new MemoryStream();
             lqipBmp.Compress(Bitmap.CompressFormat.Jpeg, AppMediaOptions.LqipJpegQuality, ms);
@@ -240,12 +300,17 @@ namespace Biliardo.App.Infrastructure.Media.Processing
 
         private static string CreateTempJpegPath(string prefix)
         {
+            // File temporanei in cache; verranno puliti dal chiamante o dal sistema
             var dir = FileSystem.CacheDirectory;
             return SysPath.Combine(dir, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg");
         }
 #endif
 
 #if WINDOWS
+        // =========================================================
+        // WINDOWS IMPLEMENTATION
+        // =========================================================
+
         private static async Task<MediaPreviewResult?> GenerateWindowsImagePreviewAsync(string path, string previewType, CancellationToken ct)
         {
             try
@@ -293,7 +358,11 @@ namespace Biliardo.App.Infrastructure.Media.Processing
                 if (!SysFile.Exists(path)) return null;
 
                 var file = await StorageFile.GetFileFromPathAsync(path);
-                using var thumb = await file.GetThumbnailAsync(ThumbnailMode.VideosView, (uint)AppMediaOptions.ThumbMaxLongSidePx, ThumbnailOptions.UseCurrentScale);
+                using var thumb = await file.GetThumbnailAsync(
+                    ThumbnailMode.VideosView,
+                    (uint)AppMediaOptions.ThumbMaxLongSidePx,
+                    ThumbnailOptions.UseCurrentScale);
+
                 if (thumb == null) return null;
 
                 var decoder = await BitmapDecoder.CreateAsync(thumb);
@@ -337,6 +406,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
                 if (doc.PageCount == 0) return null;
 
                 using var page = doc.GetPage(0);
+
                 var (thumbWidth, thumbHeight) = CalculateScaledSize((uint)page.Size.Width, (uint)page.Size.Height, AppMediaOptions.ThumbMaxLongSidePx);
 
                 using var stream = new InMemoryRandomAccessStream();
@@ -370,6 +440,10 @@ namespace Biliardo.App.Infrastructure.Media.Processing
             }
         }
 
+        // =========================================================
+        // WINDOWS HELPERS
+        // =========================================================
+
         private static (uint Width, uint Height) CalculateScaledSize(uint width, uint height, int maxSide)
         {
             if (width == 0 || height == 0) return (1, 1);
@@ -383,10 +457,13 @@ namespace Biliardo.App.Infrastructure.Media.Processing
 
         private static async Task SaveJpegAsync(byte[] pixels, uint width, uint height, string path)
         {
+            // Crea directory se manca
             Directory.CreateDirectory(SysPath.GetDirectoryName(path) ?? FileSystem.CacheDirectory);
 
+            // Scrive JPEG via BitmapEncoder
             using var file = SysFile.Open(path, FileMode.Create, FileAccess.Write, FileShare.None);
             using var stream = file.AsRandomAccessStream();
+
             var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, stream);
             encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, width, height, 96, 96, pixels);
             await encoder.FlushAsync();
@@ -400,6 +477,7 @@ namespace Biliardo.App.Infrastructure.Media.Processing
             var file = await StorageFile.GetFileFromPathAsync(thumbPath);
             using var stream = await file.OpenReadAsync();
             var decoder = await BitmapDecoder.CreateAsync(stream);
+
             var (w, h) = CalculateScaledSize(decoder.PixelWidth, decoder.PixelHeight, AppMediaOptions.LqipMaxLongSidePx);
 
             var transform = new BitmapTransform
