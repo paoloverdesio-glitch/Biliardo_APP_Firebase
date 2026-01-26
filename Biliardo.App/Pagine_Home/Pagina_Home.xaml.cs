@@ -29,7 +29,9 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using MauiMediaSource = Microsoft.Maui.Controls.MediaSource;
+using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
+
+
 
 #if WINDOWS
 using WindowsMediaSource = Windows.Media.Core.MediaSource;
@@ -770,7 +772,8 @@ namespace Biliardo.App.Pagine_Home
 
             if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
             {
-                await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromFile(att.LocalPath), att.DisplayPreviewSource));
+                await Navigation.PushAsync(new VideoPlayerPage(att.LocalPath!, att.DisplayPreviewSource));
+
                 return;
             }
 
@@ -782,13 +785,14 @@ namespace Biliardo.App.Pagine_Home
                 ? att.DownloadUrl
                 : FirebaseStorageRestClient.BuildAuthDownloadUrl(FirebaseStorageRestClient.DefaultStorageBucket, att.StoragePath);
 
-            await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromUri(new Uri(url)), att.DisplayPreviewSource));
+            await Navigation.PushAsync(new VideoPlayerPage(url, att.DisplayPreviewSource));
+
 
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, att.FileName ?? \"video.mp4\", isThumb: false, CancellationToken.None);
+                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, att.FileName ?? "video.mp4", isThumb: false, CancellationToken.None);
                     if (!string.IsNullOrWhiteSpace(local))
                         att.LocalPath = local;
                 }

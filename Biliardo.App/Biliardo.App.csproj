@@ -69,6 +69,7 @@
 	<ItemGroup>
 		<!-- MAUI Controls esplicito, come richiesto dal warning MA002 -->
 		<PackageReference Include="CommunityToolkit.Maui" Version="9.0.3" />
+		<PackageReference Include="CommunityToolkit.Maui.MediaElement" Version="4.1.2" />
 		<PackageReference Include="Microsoft.Maui.Controls" Version="8.0.100" />
 
 		<!-- Logging debug: ALLINEATO a .NET 8 (non 9.x) -->

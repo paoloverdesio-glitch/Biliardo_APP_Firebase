@@ -5,16 +5,18 @@ namespace Biliardo.App.Pagine_Media
 {
     public partial class VideoPlayerPage : ContentPage
     {
-        public VideoPlayerPage(MediaSource source, ImageSource? poster)
+        public VideoPlayerPage(string source, ImageSource? poster)
         {
             InitializeComponent();
-            MediaSource = source;
+
+            MediaSource = source ?? string.Empty;
             PosterSource = poster;
             BindingContext = this;
             IsBuffering = true;
         }
 
-        public MediaSource MediaSource { get; }
+        // Nota: MediaElement.Source accetta string/Uri (type converter + operatori impliciti)
+        public string MediaSource { get; }
         public ImageSource? PosterSource { get; }
 
         private bool _isBuffering;

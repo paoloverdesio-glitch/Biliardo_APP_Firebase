@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Net.Mail;
 using System.Threading;
+using System.Threading.Tasks;
+
 // ============================================================
 // Alias coerenti (evita ambiguità e rende il codice uniforme)
 // ============================================================
@@ -223,7 +225,11 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private readonly MediaCacheService _mediaCache = new();
+
+        // FIX CS0246: ChatLocalCache non esisteva nel progetto -> definito qui (stub minimo compilabile).
+        // Se/Quando creerai una vera cache persistente, rimuovi questa classe annidata e usa l’implementazione reale.
         private readonly ChatLocalCache _chatCache = new();
+
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 
         private readonly List<int> _recordingWaveform = new();
@@ -323,6 +329,72 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             // Nota: CvMessaggi è definito in XAML, quindi disponibile qui.
             ChatScrollTuning.Apply(CvMessaggi);
+        }
+
+        // ============================================================
+        // 19) CHAT LOCAL CACHE (STUB MINIMO PER RISOLVERE CS0246)
+        // ============================================================
+        private sealed class ChatLocalCache
+        {
+            private sealed class Entry
+            {
+                public List<FirestoreChatService.MessageItem> Items { get; }
+                public DateTimeOffset SavedAtUtc { get; }
+
+                public Entry(List<FirestoreChatService.MessageItem> items)
+                {
+                    Items = items;
+                    SavedAtUtc = DateTimeOffset.UtcNow;
+                }
+            }
+
+            private readonly Dictionary<string, Entry> _mem = new(StringComparer.Ordinal);
+            private readonly object _lock = new();
+
+            public Task<List<FirestoreChatService.MessageItem>?> TryLoadAsync(string cacheKey, CancellationToken ct = default)
+            {
+                if (string.IsNullOrWhiteSpace(cacheKey))
+                    return Task.FromResult<List<FirestoreChatService.MessageItem>?>(null);
+
+                lock (_lock)
+                {
+                    if (_mem.TryGetValue(cacheKey, out var e))
+                        return Task.FromResult<List<FirestoreChatService.MessageItem>?>(new List<FirestoreChatService.MessageItem>(e.Items));
+                }
+
+                return Task.FromResult<List<FirestoreChatService.MessageItem>?>(null);
+            }
+
+            public Task SaveAsync(string cacheKey, IEnumerable<FirestoreChatService.MessageItem> items, CancellationToken ct = default)
+            {
+                if (string.IsNullOrWhiteSpace(cacheKey))
+                    return Task.CompletedTask;
+
+                var list = items is List<FirestoreChatService.MessageItem> l ? new List<FirestoreChatService.MessageItem>(l)
+                    : new List<FirestoreChatService.MessageItem>(items ?? Array.Empty<FirestoreChatService.MessageItem>());
+
+                lock (_lock)
+                {
+                    _mem[cacheKey] = new Entry(list);
+                }
+
+                return Task.CompletedTask;
+            }
+
+            public Task ClearAsync(CancellationToken ct = default)
+            {
+                lock (_lock) { _mem.Clear(); }
+                return Task.CompletedTask;
+            }
+
+            public Task RemoveAsync(string cacheKey, CancellationToken ct = default)
+            {
+                if (string.IsNullOrWhiteSpace(cacheKey))
+                    return Task.CompletedTask;
+
+                lock (_lock) { _mem.Remove(cacheKey); }
+                return Task.CompletedTask;
+            }
         }
     }
 }

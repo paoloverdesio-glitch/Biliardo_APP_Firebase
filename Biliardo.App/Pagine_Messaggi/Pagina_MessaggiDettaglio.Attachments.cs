@@ -113,39 +113,42 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (!string.IsNullOrWhiteSpace(payload.Text))
                 {
                     var msgId = Guid.NewGuid().ToString("N");
-                    var vm = CreateOptimisticTextMessage(msgId, myUid!, payload.Text);
-                    vm.RetryCommand = RetrySendCommand;
-                    AddOptimisticMessage(vm);
+                    var vmText = CreateOptimisticTextMessage(msgId, myUid!, payload.Text);
+                    vmText.RetryCommand = RetrySendCommand;
+                    AddOptimisticMessage(vmText);
 
-                    pendingSend.Add((vm, async () =>
+                    pendingSend.Add((vmText, async () =>
                     {
                         await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId!, msgId, myUid!, payload.Text);
-                        MarkOptimisticSent(vm);
-                    }));
+                        MarkOptimisticSent(vmText);
+                    }
+                    ));
                 }
 
                 var items = payload.PendingItems ?? Array.Empty<PendingItemVm>();
                 foreach (var item in items)
                 {
-                    var attachment = ToAttachmentVm(item);
-                    if (attachment == null) continue;
+                    // ✅ FIX CS0136: evita nome "attachment" (che in altre parti del file/progetto può già esistere nello stesso ambito)
+                    var attVm = ToAttachmentVm(item);
+                    if (attVm == null) continue;
 
                     var msgId = Guid.NewGuid().ToString("N");
-                    var vm = CreateOptimisticAttachmentMessage(msgId, myUid!, attachment);
-                    vm.PendingLocalPath = attachment.LocalPath;
-                    vm.RetryCommand = RetrySendCommand;
-                    AddOptimisticMessage(vm);
+                    var vmAtt = CreateOptimisticAttachmentMessage(msgId, myUid!, attVm);
+                    vmAtt.PendingLocalPath = attVm.LocalPath;
+                    vmAtt.RetryCommand = RetrySendCommand;
+                    AddOptimisticMessage(vmAtt);
 
-                    pendingSend.Add((vm, async () =>
+                    pendingSend.Add((vmAtt, async () =>
                     {
-                        await SendAttachmentAsync(idToken!, myUid!, peerId, chatId!, attachment, msgId);
-                        MarkOptimisticSent(vm);
+                        await SendAttachmentAsync(idToken!, myUid!, peerId, chatId!, attVm, msgId);
+                        MarkOptimisticSent(vmAtt);
 
                         if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
                         {
                             try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
                         }
-                    }));
+                    }
+                    ));
                 }
 
                 // 2.5) Aggiorna UI composer subito
@@ -756,7 +759,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     if (vm.Latitude == null || vm.Longitude == null)
                         throw new InvalidOperationException("Posizione non valida.");
 
-                    var attachment = new AttachmentVm
+                    // ✅ FIX CS0136: evita nome "attachment"
+                    var attLocation = new AttachmentVm
                     {
                         Kind = AttachmentKind.Location,
                         DisplayName = "Posizione",
@@ -764,14 +768,15 @@ namespace Biliardo.App.Pagine_Messaggi
                         Longitude = vm.Longitude
                     };
 
-                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment, vm.Id);
+                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attLocation, vm.Id);
                     MarkOptimisticSent(vm);
                     return;
                 }
 
                 if (string.Equals(vm.Type, "contact", StringComparison.OrdinalIgnoreCase))
                 {
-                    var attachment = new AttachmentVm
+                    // ✅ FIX CS0136: evita nome "attachment"
+                    var attContact = new AttachmentVm
                     {
                         Kind = AttachmentKind.Contact,
                         DisplayName = vm.ContactName ?? "Contatto",
@@ -779,7 +784,7 @@ namespace Biliardo.App.Pagine_Messaggi
                         ContactPhone = vm.ContactPhone
                     };
 
-                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment, vm.Id);
+                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attContact, vm.Id);
                     MarkOptimisticSent(vm);
                     return;
                 }
@@ -787,7 +792,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(vm.PendingLocalPath) || !File.Exists(vm.PendingLocalPath))
                     throw new InvalidOperationException("File locale non disponibile per il retry.");
 
-                var attachment = new AttachmentVm
+                // ✅ FIX CS0136: evita nome "attachment"
+                var attRetry = new AttachmentVm
                 {
                     Kind = vm.Type switch
                     {
@@ -804,7 +810,7 @@ namespace Biliardo.App.Pagine_Messaggi
                     Waveform = vm.AudioWaveform
                 };
 
-                await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment, vm.Id);
+                await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attRetry, vm.Id);
                 MarkOptimisticSent(vm);
             }
             catch (Exception ex)

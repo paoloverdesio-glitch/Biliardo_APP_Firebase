@@ -17,8 +17,8 @@
                            VerticalOptions="Center" />
         <toolkit:MediaElement x:Name="Player"
                               Source="{Binding MediaSource}"
-                              AutoPlay="True"
-                              ShowsPlaybackControls="True"
+                              ShouldAutoPlay="True"
+                              ShouldShowPlaybackControls="True" 
                               Aspect="AspectFit"
                               MediaOpened="OnMediaOpened"
                               MediaFailed="OnMediaFailed" />

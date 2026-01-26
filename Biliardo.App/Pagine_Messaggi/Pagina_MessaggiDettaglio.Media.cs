@@ -27,7 +27,10 @@ using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
-using MauiMediaSource = Microsoft.Maui.Controls.MediaSource;
+
+// ✅ FIX: MediaSource corretto (CommunityToolkit)
+using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
+
 
 using Path = System.IO.Path;
 using MauiImage = Microsoft.Maui.Controls.Image;
@@ -203,7 +206,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
             if (!string.IsNullOrWhiteSpace(m.MediaLocalPath) && File.Exists(m.MediaLocalPath))
             {
-                await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromFile(m.MediaLocalPath), m.DisplayPreviewSource));
+                await Navigation.PushAsync(new VideoPlayerPage(m.MediaLocalPath, m.DisplayPreviewSource));
+
                 return;
             }
 
@@ -212,7 +216,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             var url = FirebaseStorageRestClient.BuildAuthDownloadUrl(FirebaseStorageRestClient.DefaultStorageBucket, m.StoragePath);
-            await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromUri(new Uri(url)), m.DisplayPreviewSource));
+            await Navigation.PushAsync(new VideoPlayerPage(url, m.DisplayPreviewSource));
+
 
             _ = Task.Run(async () =>
             {
