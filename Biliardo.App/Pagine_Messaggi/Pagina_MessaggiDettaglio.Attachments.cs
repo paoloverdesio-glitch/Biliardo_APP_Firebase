@@ -9,6 +9,7 @@ using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.ApplicationModel.Communication;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Devices.Sensors;
+using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 
 using Biliardo.App.Componenti_UI;
@@ -85,6 +86,10 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _isSending = true;
 
+            string? idToken = null;
+            string? myUid = null;
+            string? chatId = null;
+
             try
             {
                 // 2.1) Solo provider Firebase (questa pagina è progettata per Firebase)
@@ -93,39 +98,57 @@ namespace Biliardo.App.Pagine_Messaggi
                     throw new InvalidOperationException("Questa pagina è implementata per provider Firebase.");
 
                 // 2.2) Token + uid
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-                var myUid = FirebaseSessionePersistente.GetLocalId();
+                idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                myUid = FirebaseSessionePersistente.GetLocalId();
 
                 if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
                     throw new InvalidOperationException("Sessione Firebase assente/scaduta. Rifai login.");
 
                 // 2.3) chatId
-                var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
+                chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
 
-                // 2.4) Invio testo (se presente)
+                // 2.4) Creazione VM ottimistiche (testo + allegati)
+                var pendingSend = new List<(ChatMessageVm Vm, Func<Task> Send)>();
+
                 if (!string.IsNullOrWhiteSpace(payload.Text))
                 {
                     var msgId = Guid.NewGuid().ToString("N");
-                    await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId, msgId, myUid!, payload.Text);
+                    var vm = CreateOptimisticTextMessage(msgId, myUid!, payload.Text);
+                    vm.RetryCommand = RetrySendCommand;
+                    AddOptimisticMessage(vm);
+
+                    pendingSend.Add((vm, async () =>
+                    {
+                        await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId!, msgId, myUid!, payload.Text);
+                        MarkOptimisticSent(vm);
+                    }));
                 }
 
-                // 2.5) Invio allegati pending dal Composer
                 var items = payload.PendingItems ?? Array.Empty<PendingItemVm>();
                 foreach (var item in items)
                 {
                     var attachment = ToAttachmentVm(item);
                     if (attachment == null) continue;
 
-                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment);
+                    var msgId = Guid.NewGuid().ToString("N");
+                    var vm = CreateOptimisticAttachmentMessage(msgId, myUid!, attachment);
+                    vm.PendingLocalPath = attachment.LocalPath;
+                    vm.RetryCommand = RetrySendCommand;
+                    AddOptimisticMessage(vm);
 
-                    // 2.6) Se bozza audio: elimina file locale dopo invio
-                    if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
+                    pendingSend.Add((vm, async () =>
                     {
-                        try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
-                    }
+                        await SendAttachmentAsync(idToken!, myUid!, peerId, chatId!, attachment, msgId);
+                        MarkOptimisticSent(vm);
+
+                        if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
+                        {
+                            try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
+                        }
+                    }));
                 }
 
-                // 2.7) Aggiorna UI composer
+                // 2.5) Aggiorna UI composer subito
                 if (sentSingleLocalId != null)
                 {
                     var pending = ComposerBar.PendingItems.FirstOrDefault(x => x.LocalId == sentSingleLocalId);
@@ -137,9 +160,25 @@ namespace Biliardo.App.Pagine_Messaggi
                     ComposerBar.ClearComposer();
                 }
 
-                // 2.8) Post-invio: torno in fondo e ricarico una volta
-                _userNearBottom = true;
-                await LoadOnceAsync(CancellationToken.None);
+                _isSending = false;
+                OnPropertyChanged(nameof(CanSendTextOrAttachments));
+                OnPropertyChanged(nameof(CanShowMic));
+
+                // 2.6) Invio in background (non blocco UI)
+                foreach (var item in pendingSend)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await item.Send();
+                        }
+                        catch (Exception ex)
+                        {
+                            MarkOptimisticFailed(item.Vm, ex);
+                        }
+                    });
+                }
             }
             catch (Exception ex)
             {
@@ -147,11 +186,12 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             finally
             {
-                _isSending = false;
-
-                // 2.9) Aggiorna proprietà dipendenti
-                OnPropertyChanged(nameof(CanSendTextOrAttachments));
-                OnPropertyChanged(nameof(CanShowMic));
+                if (_isSending)
+                {
+                    _isSending = false;
+                    OnPropertyChanged(nameof(CanSendTextOrAttachments));
+                    OnPropertyChanged(nameof(CanShowMic));
+                }
             }
         }
 
@@ -405,11 +445,11 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 7) SEND ATTACHMENT: upload su Storage + messaggio su Firestore
         // ============================================================
-        private async Task SendAttachmentAsync(string idToken, string myUid, string peerUid, string chatId, AttachmentVm a)
+        private async Task SendAttachmentAsync(string idToken, string myUid, string peerUid, string chatId, AttachmentVm a, string? messageId = null)
         {
             if (a == null) return;
 
-            var msgId = Guid.NewGuid().ToString("N");
+            var msgId = string.IsNullOrWhiteSpace(messageId) ? Guid.NewGuid().ToString("N") : messageId;
 
             // 7.1) Location -> messaggio diretto (niente Storage)
             if (a.Kind == AttachmentKind.Location)
@@ -588,6 +628,189 @@ namespace Biliardo.App.Pagine_Messaggi
                 map["previewType"] = FirestoreRestClient.VString(preview.PreviewType);
 
             return map.Count == 0 ? null : map;
+        }
+
+        private ChatMessageVm CreateOptimisticTextMessage(string msgId, string myUid, string text)
+        {
+            return new ChatMessageVm
+            {
+                Id = msgId,
+                IsMine = true,
+                Type = "text",
+                Text = text ?? "",
+                CreatedAt = DateTimeOffset.Now,
+                StatusLabel = "✓",
+                StatusColor = Colors.LightGray,
+                IsPendingUpload = true
+            };
+        }
+
+        private ChatMessageVm CreateOptimisticAttachmentMessage(string msgId, string myUid, AttachmentVm a)
+        {
+            var type = a.Kind switch
+            {
+                AttachmentKind.Photo => "photo",
+                AttachmentKind.Video => "video",
+                AttachmentKind.Audio => "audio",
+                AttachmentKind.File => "file",
+                AttachmentKind.Location => "location",
+                AttachmentKind.Contact => "contact",
+                _ => "file"
+            };
+
+            var contentType = a.ContentType;
+            if (string.IsNullOrWhiteSpace(contentType) && !string.IsNullOrWhiteSpace(a.LocalPath))
+                contentType = MediaMetadataHelper.GuessContentType(a.LocalPath);
+
+            return new ChatMessageVm
+            {
+                Id = msgId,
+                IsMine = true,
+                Type = type,
+                FileName = string.IsNullOrWhiteSpace(a.LocalPath) ? a.DisplayName : Path.GetFileName(a.LocalPath),
+                ContentType = contentType,
+                DurationMs = a.DurationMs,
+                SizeBytes = a.SizeBytes,
+                MediaLocalPath = a.Kind is AttachmentKind.Photo ? a.LocalPath : null,
+                CreatedAt = DateTimeOffset.Now,
+                StatusLabel = "✓",
+                StatusColor = Colors.LightGray,
+                IsPendingUpload = true,
+                AudioWaveform = a.Waveform,
+                Latitude = a.Latitude,
+                Longitude = a.Longitude,
+                ContactName = a.ContactName,
+                ContactPhone = a.ContactPhone
+            };
+        }
+
+        private void AddOptimisticMessage(ChatMessageVm vm)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
+                var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
+                var newDay = vm.CreatedAt.ToLocalTime().Date;
+
+                if (lastDay == null || newDay != lastDay.Value)
+                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(newDay));
+
+                Messaggi.Add(vm);
+                _userNearBottom = true;
+                ScrollToMessage(vm);
+            });
+        }
+
+        private void MarkOptimisticSent(ChatMessageVm vm)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.IsPendingUpload = false;
+                vm.HasSendError = false;
+                vm.StatusLabel = "✓✓";
+                vm.StatusColor = Colors.LightGray;
+            });
+        }
+
+        private void MarkOptimisticFailed(ChatMessageVm vm, Exception ex)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.IsPendingUpload = false;
+                vm.HasSendError = true;
+                vm.StatusLabel = "Errore";
+                vm.StatusColor = Colors.OrangeRed;
+            });
+        }
+
+        private async Task RetrySendAsync(ChatMessageVm? vm)
+        {
+            if (vm == null || !vm.IsMine)
+                return;
+
+            try
+            {
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                var myUid = FirebaseSessionePersistente.GetLocalId();
+                var peerId = (_peerUserId ?? "").Trim();
+
+                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid) || string.IsNullOrWhiteSpace(peerId))
+                    return;
+
+                var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId);
+
+                vm.HasSendError = false;
+                vm.IsPendingUpload = true;
+                vm.StatusLabel = "✓";
+                vm.StatusColor = Colors.LightGray;
+
+                if (string.Equals(vm.Type, "text", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _fsChat.SendTextMessageWithIdAsync(idToken!, chatId, vm.Id, myUid!, vm.Text ?? "");
+                    MarkOptimisticSent(vm);
+                    return;
+                }
+
+                if (string.Equals(vm.Type, "location", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (vm.Latitude == null || vm.Longitude == null)
+                        throw new InvalidOperationException("Posizione non valida.");
+
+                    var attachment = new AttachmentVm
+                    {
+                        Kind = AttachmentKind.Location,
+                        DisplayName = "Posizione",
+                        Latitude = vm.Latitude,
+                        Longitude = vm.Longitude
+                    };
+
+                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment, vm.Id);
+                    MarkOptimisticSent(vm);
+                    return;
+                }
+
+                if (string.Equals(vm.Type, "contact", StringComparison.OrdinalIgnoreCase))
+                {
+                    var attachment = new AttachmentVm
+                    {
+                        Kind = AttachmentKind.Contact,
+                        DisplayName = vm.ContactName ?? "Contatto",
+                        ContactName = vm.ContactName,
+                        ContactPhone = vm.ContactPhone
+                    };
+
+                    await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment, vm.Id);
+                    MarkOptimisticSent(vm);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(vm.PendingLocalPath) || !File.Exists(vm.PendingLocalPath))
+                    throw new InvalidOperationException("File locale non disponibile per il retry.");
+
+                var attachment = new AttachmentVm
+                {
+                    Kind = vm.Type switch
+                    {
+                        "photo" => AttachmentKind.Photo,
+                        "video" => AttachmentKind.Video,
+                        "audio" => AttachmentKind.Audio,
+                        _ => AttachmentKind.File
+                    },
+                    DisplayName = vm.FileName ?? "File",
+                    LocalPath = vm.PendingLocalPath,
+                    DurationMs = vm.DurationMs,
+                    SizeBytes = vm.SizeBytes,
+                    ContentType = vm.ContentType,
+                    Waveform = vm.AudioWaveform
+                };
+
+                await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, attachment, vm.Id);
+                MarkOptimisticSent(vm);
+            }
+            catch (Exception ex)
+            {
+                MarkOptimisticFailed(vm!, ex);
+            }
         }
 
         // ============================================================

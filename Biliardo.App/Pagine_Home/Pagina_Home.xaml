@@ -12,7 +12,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:composer="clr-namespace:Biliardo.App.Componenti_UI.Composer"
              xmlns:ui="clr-namespace:Biliardo.App.Componenti_UI"
+             xmlns:media="clr-namespace:Biliardo.App.Componenti_UI.Media"
              x:Class="Biliardo.App.Pagine_Home.Pagina_Home"
+             x:Name="ThisPage"
              Title="Biliardo">
 
     <!-- ===================== [A] SFONDO GRADIENTE SCURO ==================== -->
@@ -154,6 +156,21 @@
                                     </VerticalStackLayout>
                                 </HorizontalStackLayout>
 
+                                <HorizontalStackLayout Spacing="10"
+                                                      IsVisible="{Binding HasStatus}">
+                                    <Label Text="{Binding StatusLabel}"
+                                           TextColor="{Binding StatusColor}"
+                                           FontSize="12" />
+                                    <Button Text="Riprova"
+                                            IsVisible="{Binding HasSendError}"
+                                            Command="{Binding RetryCommand}"
+                                            CommandParameter="{Binding .}"
+                                            BackgroundColor="#B00020"
+                                            TextColor="White"
+                                            FontSize="12"
+                                            Padding="6,2" />
+                                </HorizontalStackLayout>
+
                                 <Label Text="{Binding Text}"
                                        TextColor="White"
                                        LineBreakMode="WordWrap"
@@ -174,6 +191,9 @@
 
                                                 <Grid IsVisible="{Binding IsVideo}"
                                                       HeightRequest="180">
+                                                    <Grid.GestureRecognizers>
+                                                        <TapGestureRecognizer Tapped="OnOpenVideoTapped" />
+                                                    </Grid.GestureRecognizers>
                                                     <Image Source="{Binding DisplayPreviewSource}"
                                                            Aspect="AspectFill"
                                                            HeightRequest="180" />
@@ -198,22 +218,17 @@
                                                                         Longitude="{Binding Longitude}"
                                                                         Address="{Binding AddressLabel}" />
 
-                                                <Border IsVisible="{Binding IsAudio}"
-                                                        Stroke="#2B2B2B"
-                                                        StrokeThickness="1"
-                                                        BackgroundColor="#1A1A1A"
-                                                        Padding="8">
-                                                    <HorizontalStackLayout Spacing="10">
-                                                        <Button Text="{Binding AudioPlayLabel}"
-                                                                Clicked="OnFeedAudioClicked"
-                                                                CommandParameter="{Binding .}"
-                                                                BackgroundColor="#2A2A2A"
-                                                                TextColor="White" />
-                                                        <Label Text="{Binding FileName}"
-                                                               TextColor="White"
-                                                               VerticalTextAlignment="Center" />
-                                                    </HorizontalStackLayout>
-                                                </Border>
+                                                <media:AudioWavePlayerView IsVisible="{Binding IsAudio}"
+                                                                           StoragePath="{Binding StoragePath}"
+                                                                           FileName="{Binding FileName}"
+                                                                           DurationMs="{Binding DurationMs}"
+                                                                           Waveform="{Binding Waveform}" />
+
+                                                <media:PdfAttachmentView IsVisible="{Binding IsPdf}"
+                                                                         PreviewSource="{Binding DisplayPreviewSource}"
+                                                                         FileName="{Binding FileName}"
+                                                                         OpenCommand="{Binding Source={x:Reference ThisPage}, Path=OpenPdfCommand}"
+                                                                         OpenCommandParameter="{Binding .}" />
 
                                                 <Border IsVisible="{Binding IsFileOrVideo}"
                                                         Stroke="#2B2B2B"
@@ -433,6 +448,10 @@
                         <Button Text="Info su BiliardoApp"
                                 Style="{StaticResource LogoutMenuVoice}"
                                 Clicked="OnLogoutInfoClicked" />
+
+                        <Button Text="Info Cache"
+                                Style="{StaticResource LogoutMenuVoice}"
+                                Clicked="OnInfoCacheClicked" />
 
                         <Button Text="Esci →"
                                 Style="{StaticResource LogoutMenuVoice}"

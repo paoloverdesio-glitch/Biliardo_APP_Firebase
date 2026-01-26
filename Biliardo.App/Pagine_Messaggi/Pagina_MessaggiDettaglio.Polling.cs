@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Maui.Graphics;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls;
 
@@ -33,6 +34,9 @@ namespace Biliardo.App.Pagine_Messaggi
 
             // 1.5) Se ho aggiornamenti pending, prova ad applicarli quando lo scroll va idle
             SchedulePendingApply();
+
+            if (e.FirstVisibleItemIndex <= 1)
+                _ = LoadOlderMessagesAsync();
         }
 
         // ============================================================
@@ -122,6 +126,121 @@ namespace Biliardo.App.Pagine_Messaggi
             _ = Task.Run(() => PollLoopAsync(_pollCts.Token));
         }
 
+        private async Task LoadCachedMessagesAsync()
+        {
+            if (_loadedFromCache)
+                return;
+
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(peerId))
+                return;
+
+            var myUid = FirebaseSessionePersistente.GetLocalId();
+            if (string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
+            var cached = await _chatCache.TryReadAsync(_chatCacheKey, CancellationToken.None);
+            if (cached.Count == 0)
+                return;
+
+            _loadedFromCache = true;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (Messaggi.Count > 0)
+                    return;
+
+                DateTime? lastDay = null;
+                foreach (var m in cached.OrderBy(x => x.CreatedAtUtc))
+                {
+                    var day = m.CreatedAtUtc.ToLocalTime().Date;
+                    if (lastDay == null || day != lastDay.Value)
+                    {
+                        Messaggi.Add(ChatMessageVm.CreateDateSeparator(day));
+                        lastDay = day;
+                    }
+
+                    Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid!, peerId));
+                }
+
+                IsLoadingMessages = false;
+                ScrollToEnd();
+            });
+        }
+
+        private async Task LoadOlderMessagesAsync()
+        {
+            if (_isLoadingOlder)
+                return;
+
+            var idToken = _lastIdToken;
+            var myUid = _lastMyUid;
+            var peerId = _lastPeerId;
+            var chatId = _lastChatId;
+
+            if (string.IsNullOrWhiteSpace(idToken) ||
+                string.IsNullOrWhiteSpace(myUid) ||
+                string.IsNullOrWhiteSpace(peerId) ||
+                string.IsNullOrWhiteSpace(chatId))
+                return;
+
+            var oldest = Messaggi.FirstOrDefault(x => !x.IsDateSeparator);
+            if (oldest == null)
+                return;
+
+            _isLoadingOlder = true;
+            try
+            {
+                var older = await _fsChat.GetMessagesBeforeAsync(idToken!, chatId!, oldest.CreatedAt, limit: 40, ct: CancellationToken.None);
+                if (older.Count == 0)
+                    return;
+
+                var ordered = older.OrderBy(x => x.CreatedAtUtc).ToList();
+
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    var insertIndex = 0;
+                    var existingFirstDay = oldest.CreatedAt.ToLocalTime().Date;
+
+                    DateTime? lastDay = null;
+                    foreach (var m in ordered)
+                    {
+                        if (m.DeletedFor != null && m.DeletedFor.Contains(myUid!, StringComparer.Ordinal))
+                            continue;
+
+                        var day = m.CreatedAtUtc.ToLocalTime().Date;
+                        if (lastDay == null || day != lastDay.Value)
+                        {
+                            if (day != existingFirstDay)
+                                Messaggi.Insert(insertIndex++, ChatMessageVm.CreateDateSeparator(day));
+                            lastDay = day;
+                        }
+
+                        Messaggi.Insert(insertIndex++, ChatMessageVm.FromFirestore(m, myUid!, peerId!));
+                    }
+                });
+
+                _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId!);
+                var existingCache = await _chatCache.TryReadAsync(_chatCacheKey, CancellationToken.None);
+                var merged = existingCache.Concat(older)
+                    .GroupBy(m => m.MessageId)
+                    .Select(g => g.OrderBy(x => x.CreatedAtUtc).First())
+                    .OrderBy(m => m.CreatedAtUtc)
+                    .ToList();
+
+                await _chatCache.WriteAsync(_chatCacheKey, merged, maxItems: 300, CancellationToken.None);
+            }
+            catch
+            {
+                // ignore
+            }
+            finally
+            {
+                _isLoadingOlder = false;
+            }
+        }
+
         private void StopPolling()
         {
             var cts = _pollCts;
@@ -204,6 +323,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             // 4.4) chatId
             var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
+            _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
 
             // 4.5) cache contesto per pending apply
             _lastIdToken = idToken;
@@ -340,8 +460,13 @@ namespace Biliardo.App.Pagine_Messaggi
                                     .Contains(peerId, StringComparer.Ordinal);
 
                                 var newStatus = (read || delivered) ? "✓✓" : "✓";
+                                var newColor = read ? Colors.DeepSkyBlue : Colors.LightGray;
+
                                 if (!string.Equals(existing.StatusLabel, newStatus, StringComparison.Ordinal))
                                     existing.StatusLabel = newStatus;
+
+                                if (existing.StatusColor != newColor)
+                                    existing.StatusColor = newColor;
                             }
 
                             // Patch metadati media che possono arrivare in ritardo
@@ -413,6 +538,16 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (appended && _userNearBottom)
                     ScrollToEnd();
             });
+
+            try
+            {
+                _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
+                await _chatCache.WriteAsync(_chatCacheKey, ordered, maxItems: 300, ct);
+            }
+            catch
+            {
+                // ignore cache errors
+            }
         }
 
         // ============================================================
@@ -445,6 +580,18 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
 
                 CvMessaggi.ScrollTo(Messaggi.Count - 1, position: ScrollToPosition.End, animate: false);
+            }
+            catch { }
+        }
+
+        private void ScrollToMessage(ChatMessageVm vm)
+        {
+            try
+            {
+                if (vm == null)
+                    return;
+
+                CvMessaggi.ScrollTo(vm, position: ScrollToPosition.End, animate: false);
             }
             catch { }
         }

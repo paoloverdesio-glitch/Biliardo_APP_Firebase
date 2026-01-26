@@ -17,6 +17,15 @@ namespace Biliardo.App.Infrastructure.Media.Cache
 {
     public sealed class MediaCacheService
     {
+        public sealed record MediaCacheEntry(
+            string FileName,
+            string LocalPath,
+            long Bytes,
+            DateTimeOffset AddedAtUtc,
+            DateTimeOffset LastAccessUtc,
+            bool IsThumb,
+            string StoragePath);
+
         private readonly string _root;
         private readonly string _indexPath;
         private readonly SemaphoreSlim _downloadSemaphore;
@@ -87,6 +96,35 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             return Task.CompletedTask;
         }
 
+        public Task<IReadOnlyList<MediaCacheEntry>> ListEntriesAsync()
+        {
+            lock (_lock)
+            {
+                var list = _index.Entries.Values
+                    .Select(e => new MediaCacheEntry(
+                        FileName: Path.GetFileName(e.LocalPath),
+                        LocalPath: e.LocalPath,
+                        Bytes: e.SizeBytes,
+                        AddedAtUtc: e.AddedAtUtc,
+                        LastAccessUtc: e.LastAccessUtc,
+                        IsThumb: e.IsThumb,
+                        StoragePath: e.StoragePath))
+                    .OrderByDescending(e => e.AddedAtUtc)
+                    .ToList();
+
+                return Task.FromResult<IReadOnlyList<MediaCacheEntry>>(list);
+            }
+        }
+
+        public Task<long> GetTotalBytesAsync()
+        {
+            lock (_lock)
+            {
+                var total = _index.Entries.Values.Sum(x => x.SizeBytes);
+                return Task.FromResult(total);
+            }
+        }
+
         public Task PruneIfNeededAsync(CancellationToken ct)
         {
             lock (_lock)
@@ -95,7 +133,7 @@ namespace Biliardo.App.Infrastructure.Media.Cache
                 if (total <= AppMediaOptions.CacheMaxBytes)
                     return Task.CompletedTask;
 
-                foreach (var entry in _index.Entries.Values.OrderBy(x => x.LastAccessUtc).ToList())
+                foreach (var entry in _index.Entries.Values.OrderBy(x => x.AddedAtUtc).ToList())
                 {
                     if (ct.IsCancellationRequested)
                         break;
@@ -167,15 +205,27 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             var size = File.Exists(localPath) ? new FileInfo(localPath).Length : 0;
             lock (_lock)
             {
-                _index.Entries[key] = new CacheEntry
+                if (_index.Entries.TryGetValue(key, out var existing))
                 {
-                    Key = key,
-                    StoragePath = storagePath,
-                    LocalPath = localPath,
-                    SizeBytes = size,
-                    IsThumb = isThumb,
-                    LastAccessUtc = DateTimeOffset.UtcNow
-                };
+                    existing.StoragePath = storagePath;
+                    existing.LocalPath = localPath;
+                    existing.SizeBytes = size;
+                    existing.IsThumb = isThumb;
+                    existing.LastAccessUtc = DateTimeOffset.UtcNow;
+                }
+                else
+                {
+                    _index.Entries[key] = new CacheEntry
+                    {
+                        Key = key,
+                        StoragePath = storagePath,
+                        LocalPath = localPath,
+                        SizeBytes = size,
+                        IsThumb = isThumb,
+                        AddedAtUtc = DateTimeOffset.UtcNow,
+                        LastAccessUtc = DateTimeOffset.UtcNow
+                    };
+                }
 
                 SaveIndex();
             }
@@ -263,6 +313,7 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             public string LocalPath { get; set; } = "";
             public long SizeBytes { get; set; }
             public bool IsThumb { get; set; }
+            public DateTimeOffset AddedAtUtc { get; set; } = DateTimeOffset.UtcNow;
             public DateTimeOffset LastAccessUtc { get; set; }
         }
     }

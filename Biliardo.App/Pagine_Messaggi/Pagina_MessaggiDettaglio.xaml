@@ -6,6 +6,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
     xmlns:composer="clr-namespace:Biliardo.App.Componenti_UI.Composer"
     xmlns:ui="clr-namespace:Biliardo.App.Componenti_UI"
+    xmlns:media="clr-namespace:Biliardo.App.Componenti_UI.Media"
     Title="Chat"
     BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=PageBgColor}">
 
@@ -212,7 +213,7 @@
                                         </Border>
 
                                         <!-- DOCUMENTO / FILE -->
-                                        <Border IsVisible="{Binding IsFile}"
+                                        <Border IsVisible="{Binding IsFileNonPdf}"
                                                 StrokeThickness="0"
                                                 Padding="10"
                                                 BackgroundColor="#1C1C1C"
@@ -252,40 +253,19 @@
                                             </Grid>
                                         </Border>
 
-                                        <!-- AUDIO -->
-                                        <Border IsVisible="{Binding IsAudio}"
-                                                StrokeThickness="0"
-                                                Padding="10"
-                                                BackgroundColor="#1C1C1C"
-                                                HorizontalOptions="Start"
-                                                MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}">
-                                            <Border.StrokeShape>
-                                                <RoundRectangle CornerRadius="12" />
-                                            </Border.StrokeShape>
+                                        <!-- PDF -->
+                                        <media:PdfAttachmentView IsVisible="{Binding IsPdf}"
+                                                                 PreviewSource="{Binding DisplayPreviewSource}"
+                                                                 FileName="{Binding FileName}"
+                                                                 OpenCommand="{Binding Source={x:Reference ThisPage}, Path=OpenPdfCommand}"
+                                                                 OpenCommandParameter="{Binding .}" />
 
-                                            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="4">
-                                                <Button Grid.RowSpan="2"
-                                                        Text="{Binding AudioPlayStopLabel}"
-                                                        BackgroundColor="#2A2A2A"
-                                                        TextColor="White"
-                                                        FontSize="18"
-                                                        Clicked="OnPlayAudioClicked"
-                                                        CommandParameter="{Binding}"
-                                                        WidthRequest="44"
-                                                        HeightRequest="44"
-                                                        CornerRadius="22" />
-                                                <GraphicsView Grid.Column="1"
-                                                              HeightRequest="40"
-                                                              Loaded="OnAudioWaveLoaded"
-                                                              Unloaded="OnAudioWaveUnloaded" />
-                                                <Label Grid.Row="1"
-                                                       Grid.Column="1"
-                                                       Text="{Binding DurationLabel}"
-                                                       TextColor="White"
-                                                       FontSize="12"
-                                                       Opacity="0.7" />
-                                            </Grid>
-                                        </Border>
+                                        <!-- AUDIO -->
+                                        <media:AudioWavePlayerView IsVisible="{Binding IsAudio}"
+                                                                   StoragePath="{Binding StoragePath}"
+                                                                   FileName="{Binding FileName}"
+                                                                   DurationMs="{Binding DurationMs}"
+                                                                   Waveform="{Binding AudioWaveform}" />
 
                                         <!-- LOCATION -->
                                         <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
@@ -321,6 +301,15 @@
                                             </VerticalStackLayout>
                                         </Border>
 
+                                        <Button Text="Riprova"
+                                                IsVisible="{Binding ShowRetry}"
+                                                Command="{Binding RetryCommand}"
+                                                CommandParameter="{Binding .}"
+                                                BackgroundColor="#B00020"
+                                                TextColor="White"
+                                                FontSize="12"
+                                                HorizontalOptions="Start" />
+
                                     </VerticalStackLayout>
 
                                     <!-- Meta: ora + spunte (gap minimo, sempre vicino al contenuto) -->
@@ -333,7 +322,7 @@
                                                Opacity="0.7" />
                                         <Label Text="{Binding StatusLabel}"
                                                IsVisible="{Binding HasStatus}"
-                                               TextColor="White"
+                                               TextColor="{Binding StatusColor}"
                                                FontSize="10"
                                                Opacity="0.7" />
                                     </HorizontalStackLayout>

@@ -20,6 +20,8 @@ namespace Biliardo.App.Pagine_Messaggi
             InitVoiceSubsystem();        // Vocale + waveform
             InitUiCollections();         // Emoji, eventi collezioni, binding state
             InitScrollTuning();          // Tuning scroll CollectionView
+            OpenPdfCommand = new Command<ChatMessageVm>(async vm => await OnOpenPdfAsync(vm));
+            RetrySendCommand = new Command<ChatMessageVm>(async vm => await RetrySendAsync(vm));
 
             // 1.2) Stato iniziale UI
             TitoloChat = "Chat";
@@ -47,6 +49,7 @@ namespace Biliardo.App.Pagine_Messaggi
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
 
+            _ = LoadCachedMessagesAsync();
             StartPolling();
             RefreshVoiceBindings();
 

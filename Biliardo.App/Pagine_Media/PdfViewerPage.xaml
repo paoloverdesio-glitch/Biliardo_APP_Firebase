@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Pagine_Media.PdfViewerPage"
+             Title="PDF">
+    <Grid RowDefinitions="Auto,*,Auto" Padding="12" RowSpacing="12" BackgroundColor="#111111">
+        <Label Text="{Binding FileName}"
+               TextColor="White"
+               FontAttributes="Bold"
+               LineBreakMode="TailTruncation" />
+
+        <Border Grid.Row="1" Stroke="#2B2B2B" StrokeThickness="1" BackgroundColor="#1A1A1A" Padding="6">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="10" />
+            </Border.StrokeShape>
+            <Image Source="{Binding PreviewSource}" Aspect="AspectFit" />
+        </Border>
+
+        <Button Grid.Row="2"
+                Text="Apri esternamente"
+                Clicked="OnOpenExternalClicked"
+                BackgroundColor="#2A2A2A"
+                TextColor="White" />
+    </Grid>
+</ContentPage>

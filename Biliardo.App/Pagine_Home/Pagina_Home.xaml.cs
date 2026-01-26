@@ -15,10 +15,13 @@ using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Home;
 using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Pagine_Autenticazione;
+using Biliardo.App.Pagine_Debug;
+using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
 using Microsoft.Maui.Graphics;
+using Microsoft.Maui.ApplicationModel;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -26,9 +29,10 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using MauiMediaSource = Microsoft.Maui.Controls.MediaSource;
 
 #if WINDOWS
-using Windows.Media.Core;
+using WindowsMediaSource = Windows.Media.Core.MediaSource;
 using Windows.Media.Playback;
 #endif
 
@@ -45,6 +49,8 @@ namespace Biliardo.App.Pagine_Home
         private readonly MediaCacheService _mediaCache = new();
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
         private readonly HomeMediaPipeline _homeMediaPipeline;
+        public Command<HomeAttachmentVm> OpenPdfCommand { get; }
+        public Command<HomePostVm> RetryHomePostCommand { get; }
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
 
@@ -66,6 +72,8 @@ namespace Biliardo.App.Pagine_Home
 
             _audioPlayback = AudioPlaybackFactory.Create();
             _homeMediaPipeline = new HomeMediaPipeline(_previewGenerator);
+            OpenPdfCommand = new Command<HomeAttachmentVm>(async att => await OnOpenPdfFromHome(att));
+            RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
 
             ApplyHomeFeedScrollTuning();
         }
@@ -306,42 +314,38 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task SendHomePostAsync(ComposerSendPayload payload, string? sentSingleLocalId)
         {
-            try
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            if (string.IsNullOrWhiteSpace(payload.Text) && !payload.PendingItems.Any())
+                return;
+
+            var optimistic = CreateOptimisticPost(payload);
+            optimistic.RetryCommand = RetryHomePostCommand;
+            AddOptimisticPost(optimistic);
+
+            if (sentSingleLocalId != null)
             {
-                if (!await EnsureFirebaseSessionOrBackToLoginAsync())
-                    return;
-
-                if (string.IsNullOrWhiteSpace(payload.Text) && !payload.PendingItems.Any())
-                    return;
-
-                var attachments = new List<FirestoreHomeFeedService.HomeAttachment>();
-
-                foreach (var item in payload.PendingItems)
-                {
-                    var att = await BuildHomeAttachmentAsync(item);
-                    if (att != null)
-                        attachments.Add(att);
-                }
-
-                await _homeFeed.CreatePostAsync(payload.Text ?? "", attachments);
-
-                if (sentSingleLocalId != null)
-                {
-                    var pending = HomeComposer.PendingItems.FirstOrDefault(x => x.LocalId == sentSingleLocalId);
-                    if (pending != null)
-                        HomeComposer.PendingItems.Remove(pending);
-                }
-                else
-                {
-                    HomeComposer.ClearComposer();
-                }
-
-                await LoadFeedAsync();
+                var pending = HomeComposer.PendingItems.FirstOrDefault(x => x.LocalId == sentSingleLocalId);
+                if (pending != null)
+                    HomeComposer.PendingItems.Remove(pending);
             }
-            catch (Exception ex)
+            else
             {
-                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore invio");
+                HomeComposer.ClearComposer();
             }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await SendHomePostOptimisticAsync(payload, optimistic);
+                }
+                catch (Exception ex)
+                {
+                    MarkHomePostFailed(optimistic, ex);
+                }
+            });
         }
 
         private async Task<FirestoreHomeFeedService.HomeAttachment?> BuildHomeAttachmentAsync(PendingItemVm item)
@@ -352,6 +356,139 @@ namespace Biliardo.App.Pagine_Home
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
             return await _homeMediaPipeline.BuildAttachmentAsync(item, idToken, default);
+        }
+
+        private HomePostVm CreateOptimisticPost(ComposerSendPayload payload)
+        {
+            var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
+            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? FirebaseSessionePersistente.GetEmail() ?? "Io";
+
+            var vm = new HomePostVm
+            {
+                PostId = $"local_{Guid.NewGuid():N}",
+                AuthorUid = myUid,
+                AuthorNickname = nickname,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                Text = payload.Text ?? "",
+                IsPendingUpload = true,
+                HasSendError = false,
+                PendingText = payload.Text ?? ""
+            };
+
+            foreach (var item in payload.PendingItems ?? Array.Empty<PendingItemVm>())
+            {
+                vm.PendingItems.Add(new PendingItemVm
+                {
+                    Kind = item.Kind,
+                    DisplayName = item.DisplayName,
+                    LocalFilePath = item.LocalFilePath,
+                    DurationMs = item.DurationMs,
+                    SizeBytes = item.SizeBytes,
+                    Latitude = item.Latitude,
+                    Longitude = item.Longitude,
+                    Address = item.Address,
+                    ContactName = item.ContactName,
+                    ContactPhone = item.ContactPhone
+                });
+
+                var attVm = CreateOptimisticAttachment(item);
+                if (attVm != null)
+                    vm.Attachments.Add(attVm);
+            }
+
+            return vm;
+        }
+
+        private static HomeAttachmentVm? CreateOptimisticAttachment(PendingItemVm item)
+        {
+            if (item == null)
+                return null;
+
+            var type = item.Kind switch
+            {
+                PendingKind.Image => "image",
+                PendingKind.Video => "video",
+                PendingKind.AudioDraft => "audio",
+                PendingKind.File => "file",
+                PendingKind.Location => "location",
+                PendingKind.Contact => "contact",
+                PendingKind.Poll => "poll",
+                PendingKind.Event => "event",
+                _ => "file"
+            };
+
+            var vm = new HomeAttachmentVm
+            {
+                Type = type,
+                FileName = item.DisplayName,
+                LocalPath = item.LocalFilePath,
+                DurationMs = item.DurationMs,
+                Latitude = item.Latitude,
+                Longitude = item.Longitude,
+                Address = item.Address
+            };
+
+            return vm;
+        }
+
+        private void AddOptimisticPost(HomePostVm vm)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.RetryCommand = RetryHomePostCommand;
+                Posts.Insert(0, vm);
+                FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+            });
+        }
+
+        private async Task SendHomePostOptimisticAsync(ComposerSendPayload payload, HomePostVm vm)
+        {
+            var attachments = new List<FirestoreHomeFeedService.HomeAttachment>();
+
+            foreach (var item in vm.PendingItems)
+            {
+                var att = await BuildHomeAttachmentAsync(item);
+                if (att != null)
+                    attachments.Add(att);
+            }
+
+            var postId = await _homeFeed.CreatePostAsync(vm.PendingText ?? "", attachments);
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.PostId = postId;
+                vm.IsPendingUpload = false;
+                vm.HasSendError = false;
+                vm.Attachments.Clear();
+                foreach (var att in attachments)
+                    vm.Attachments.Add(HomeAttachmentVm.FromService(att));
+            });
+        }
+
+        private void MarkHomePostFailed(HomePostVm vm, Exception ex)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.IsPendingUpload = false;
+                vm.HasSendError = true;
+            });
+        }
+
+        private async Task RetryHomePostAsync(HomePostVm? vm)
+        {
+            if (vm == null)
+                return;
+
+            try
+            {
+                vm.HasSendError = false;
+                vm.IsPendingUpload = true;
+                await SendHomePostOptimisticAsync(new ComposerSendPayload(vm.PendingText, vm.PendingItems), vm);
+            }
+            catch (Exception ex)
+            {
+                MarkHomePostFailed(vm, ex);
+            }
         }
 
         private async Task PickHomeFromGalleryAsync()
@@ -608,6 +745,57 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
+        private async void OnOpenVideoTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not HomeAttachmentVm att)
+                    return;
+
+                await OpenVideoFromHomeAsync(att);
+            }
+            catch (Exception ex)
+            {
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore video");
+            }
+        }
+
+        private async Task OpenVideoFromHomeAsync(HomeAttachmentVm att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
+            {
+                await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromFile(att.LocalPath), att.DisplayPreviewSource));
+                return;
+            }
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+            if (string.IsNullOrWhiteSpace(idToken))
+                return;
+
+            var url = !string.IsNullOrWhiteSpace(att.DownloadUrl)
+                ? att.DownloadUrl
+                : FirebaseStorageRestClient.BuildAuthDownloadUrl(FirebaseStorageRestClient.DefaultStorageBucket, att.StoragePath);
+
+            await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromUri(new Uri(url)), att.DisplayPreviewSource));
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, att.FileName ?? \"video.mp4\", isThumb: false, CancellationToken.None);
+                    if (!string.IsNullOrWhiteSpace(local))
+                        att.LocalPath = local;
+                }
+                catch { }
+            });
+        }
+
         private async Task<string?> EnsureHomeAudioDownloadedAsync(HomeAttachmentVm att)
         {
             if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
@@ -626,6 +814,32 @@ namespace Biliardo.App.Pagine_Home
 
             att.LocalPath = local;
             return local;
+        }
+
+        private async Task OnOpenPdfFromHome(HomeAttachmentVm? att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+            if (string.IsNullOrWhiteSpace(idToken))
+                return;
+
+            var fileName = att.FileName ?? "document.pdf";
+            if (!string.Equals(Path.GetExtension(fileName), ".pdf", StringComparison.OrdinalIgnoreCase))
+                fileName = $"{Path.GetFileNameWithoutExtension(fileName)}.pdf";
+
+            var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, fileName, isThumb: false, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+            {
+                await ShowPopupAsync("PDF non disponibile.", "Info");
+                return;
+            }
+
+            await Navigation.PushAsync(new PdfViewerPage(local, fileName));
         }
 
         private static async Task<string> CopyToCacheAsync(FileResult fr, string prefix)
@@ -788,6 +1002,16 @@ namespace Biliardo.App.Pagine_Home
             await ShowInfoBiliardoAppAsync();
         }
 
+        private async void OnInfoCacheClicked(object? sender, EventArgs e)
+        {
+            if (_logoutMenuAperto)
+            {
+                await ToggleLogoutMenuAsync();
+            }
+
+            await Navigation.PushAsync(new InfoCachePage());
+        }
+
         private async void OnLogoutExitClicked(object? sender, EventArgs e)
         {
             if (_logoutMenuAperto)
@@ -895,6 +1119,9 @@ namespace Biliardo.App.Pagine_Home
 
         public sealed class HomePostVm : BindableObject
         {
+            private bool _isPendingUpload;
+            private bool _hasSendError;
+
             public string PostId { get; set; } = "";
             public string AuthorUid { get; set; } = "";
             public string AuthorNickname { get; set; } = "";
@@ -916,6 +1143,40 @@ namespace Biliardo.App.Pagine_Home
 
             // Mantengo IsLiked (può servire in futuro), ma NON guida più il colore.
             public bool IsLiked { get; set; }
+
+            public bool IsPendingUpload
+            {
+                get => _isPendingUpload;
+                set
+                {
+                    _isPendingUpload = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(StatusLabel));
+                    OnPropertyChanged(nameof(HasStatus));
+                    OnPropertyChanged(nameof(StatusColor));
+                }
+            }
+
+            public bool HasSendError
+            {
+                get => _hasSendError;
+                set
+                {
+                    _hasSendError = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(StatusLabel));
+                    OnPropertyChanged(nameof(HasStatus));
+                    OnPropertyChanged(nameof(StatusColor));
+                }
+            }
+
+            public bool HasStatus => IsPendingUpload || HasSendError;
+            public string StatusLabel => HasSendError ? "Errore invio" : IsPendingUpload ? "In invio" : "";
+            public Color StatusColor => HasSendError ? Colors.OrangeRed : Colors.LightGray;
+
+            public Command<HomePostVm>? RetryCommand { get; set; }
+            public string PendingText { get; set; } = "";
+            public List<PendingItemVm> PendingItems { get; } = new();
 
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
             public bool HasAttachments => Attachments != null && Attachments.Count > 0;
@@ -960,7 +1221,9 @@ namespace Biliardo.App.Pagine_Home
                     LikeCount = post.LikeCount,
                     CommentCount = post.CommentCount,
                     ShareCount = post.ShareCount,
-                    IsLiked = post.IsLiked
+                    IsLiked = post.IsLiked,
+                    IsPendingUpload = false,
+                    HasSendError = false
                 };
 
                 foreach (var att in post.Attachments)
@@ -978,6 +1241,7 @@ namespace Biliardo.App.Pagine_Home
             public string? StoragePath { get; set; }
             public string? DownloadUrl { get; set; }
             public string? FileName { get; set; }
+            public string? ContentType { get; set; }
             public long DurationMs { get; set; }
             public string? LocalPath { get; set; }
             public string? ThumbStoragePath { get; set; }
@@ -985,6 +1249,7 @@ namespace Biliardo.App.Pagine_Home
             public string? PreviewType { get; set; }
             public int? ThumbWidth { get; set; }
             public int? ThumbHeight { get; set; }
+            public IReadOnlyList<int>? Waveform { get; set; }
 
             private string? _thumbLocalPath;
             public string? ThumbLocalPath
@@ -1001,7 +1266,9 @@ namespace Biliardo.App.Pagine_Home
             public bool IsAudio => Type == "audio";
             public bool IsFile => Type == "file";
             public bool IsVideo => Type == "video";
-            public bool IsFileOrVideo => IsFile;
+            public bool IsPdf => IsFile && (string.Equals(ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(Path.GetExtension(FileName ?? string.Empty), ".pdf", StringComparison.OrdinalIgnoreCase));
+            public bool IsFileOrVideo => IsFile && !IsPdf;
             public bool IsLocation => Type == "location";
             public bool IsContact => Type == "contact";
             public bool IsPoll => Type == "poll";
@@ -1048,12 +1315,14 @@ namespace Biliardo.App.Pagine_Home
                     StoragePath = att.StoragePath,
                     DownloadUrl = att.DownloadUrl,
                     FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
+                    ContentType = att.ContentType,
                     DurationMs = att.DurationMs,
                     ThumbStoragePath = att.ThumbStoragePath,
                     LqipBase64 = att.LqipBase64,
                     PreviewType = att.PreviewType,
                     ThumbWidth = att.ThumbWidth,
-                    ThumbHeight = att.ThumbHeight
+                    ThumbHeight = att.ThumbHeight,
+                    Waveform = att.Waveform
                 };
 
                 if (att.Extra != null)
@@ -1137,7 +1406,7 @@ namespace Biliardo.App.Pagine_Home
             {
                 StopPlaybackSafe();
                 _player = new MediaPlayer();
-                _player.Source = MediaSource.CreateFromUri(new Uri(filePath));
+                _player.Source = WindowsMediaSource.CreateFromUri(new Uri(filePath));
                 _player.MediaEnded += (_, __) => StopPlaybackSafe();
                 _player.Play();
                 return Task.CompletedTask;
