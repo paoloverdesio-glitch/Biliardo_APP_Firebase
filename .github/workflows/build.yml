@@ -2,13 +2,6 @@ name: build
 
 on:
   pull_request:
-    # Abilita build per PR verso i branch di lavoro (aggiungi qui i target che usi davvero)
-    branches:
-      - master
-      - feat_toolkit
-      - componenti_aggiuntivi_start
-      - verifiche_media_remoto
-      - risoluzione_bachi_codex_remoto
   push:
     branches:
       - master
