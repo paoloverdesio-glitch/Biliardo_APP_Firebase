@@ -12,7 +12,7 @@ on:
       - master
       - feat_toolkit
       - verifiche_media_remoto
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -38,7 +38,7 @@ jobs:
         run: dotnet workload install maui-windows
 
       - name: Restore (Windows)
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj -f net8.0-windows10.0.19041.0
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-windows10.0.19041.0
 
       - name: Build (Windows)
         run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
@@ -68,7 +68,7 @@ jobs:
         run: dotnet workload install maui-android
 
       - name: Restore (Android)
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj -f net8.0-android
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-android
 
       - name: Build (Android)
         run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
