@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.Graphics;
 
 using Biliardo.App.Componenti_UI;
 using Biliardo.App.Servizi_Firebase;
@@ -141,6 +142,46 @@ namespace Biliardo.App.Pagine_Messaggi
 
             public bool HasStatus => !string.IsNullOrWhiteSpace(StatusLabel);
 
+            private Color _statusColor = Colors.White;
+            public Color StatusColor
+            {
+                get => _statusColor;
+                set
+                {
+                    _statusColor = value;
+                    OnPropertyChanged();
+                }
+            }
+
+            private bool _isPendingUpload;
+            public bool IsPendingUpload
+            {
+                get => _isPendingUpload;
+                set
+                {
+                    _isPendingUpload = value;
+                    OnPropertyChanged();
+                }
+            }
+
+            private bool _hasSendError;
+            public bool HasSendError
+            {
+                get => _hasSendError;
+                set
+                {
+                    _hasSendError = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(ShowRetry));
+                }
+            }
+
+            public bool ShowRetry => HasSendError;
+
+            public Command<ChatMessageVm>? RetryCommand { get; set; }
+
+            public string? PendingLocalPath { get; set; }
+
             // ------------------------------------------------------------
             // 4.7) Media/File (storage + metadati)
             // ------------------------------------------------------------
@@ -256,6 +297,9 @@ namespace Biliardo.App.Pagine_Messaggi
             public bool IsPhoto => !DeletedForAll && string.Equals(Type, "photo", StringComparison.OrdinalIgnoreCase);
             public bool IsVideo => !DeletedForAll && string.Equals(Type, "video", StringComparison.OrdinalIgnoreCase);
             public bool IsFile => !DeletedForAll && string.Equals(Type, "file", StringComparison.OrdinalIgnoreCase);
+            public bool IsPdf => IsFile && (string.Equals(ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(Path.GetExtension(FileName ?? string.Empty), ".pdf", StringComparison.OrdinalIgnoreCase));
+            public bool IsFileNonPdf => IsFile && !IsPdf;
             public bool IsFileOrVideo => IsFile || IsVideo;
 
             public string FileSizeLabel => SizeBytes > 0 ? FormatBytes(SizeBytes) : "";
@@ -358,13 +402,26 @@ namespace Biliardo.App.Pagine_Messaggi
                     var delivered = (m.DeliveredTo ?? Array.Empty<string>()).Contains(peerUid, StringComparer.Ordinal);
                     var read = (m.ReadBy ?? Array.Empty<string>()).Contains(peerUid, StringComparer.Ordinal);
 
-                    if (read) vm.StatusLabel = "✓✓";
-                    else if (delivered) vm.StatusLabel = "✓✓";
-                    else vm.StatusLabel = "✓";
+                    if (read)
+                    {
+                        vm.StatusLabel = "✓✓";
+                        vm.StatusColor = Colors.DeepSkyBlue;
+                    }
+                    else if (delivered)
+                    {
+                        vm.StatusLabel = "✓✓";
+                        vm.StatusColor = Colors.LightGray;
+                    }
+                    else
+                    {
+                        vm.StatusLabel = "✓";
+                        vm.StatusColor = Colors.LightGray;
+                    }
                 }
                 else
                 {
                     vm.StatusLabel = "";
+                    vm.StatusColor = Colors.White;
                 }
 
                 return vm;

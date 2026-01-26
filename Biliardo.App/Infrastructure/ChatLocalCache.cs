@@ -15,6 +15,8 @@ namespace Biliardo.App.Infrastructure
     {
         private const int SchemaVersion = 1;
 
+        public sealed record ChatCacheSummary(string ChatId, int MessageCount, long Bytes);
+
         // ============================================================
         // REGISTRAZIONE "SICURA" (CACHE) = NO CORRUZIONE / NO RACE
         // - lock I/O per evitare Read/Write concorrenti nello stesso processo
@@ -227,6 +229,35 @@ namespace Biliardo.App.Infrastructure
                 ContactName = m.ContactName,
                 ContactPhone = m.ContactPhone
             };
+        }
+
+        public async Task<IReadOnlyList<ChatCacheSummary>> ListSummariesAsync(CancellationToken ct)
+        {
+            var list = new List<ChatCacheSummary>();
+            var dir = Path.Combine(FileSystem.AppDataDirectory, "chat_cache");
+            if (!Directory.Exists(dir))
+                return list;
+
+            foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var bytes = new FileInfo(file).Length;
+                    await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    var payload = await JsonSerializer.DeserializeAsync<CachePayload>(stream, cancellationToken: ct);
+                    var count = payload?.Messages?.Count ?? 0;
+                    var chatId = Path.GetFileNameWithoutExtension(file) ?? file;
+                    list.Add(new ChatCacheSummary(chatId, count, bytes));
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ChatLocalCache] Summary read failed: {ex.Message}");
+                }
+            }
+
+            return list;
         }
 
         private static FirestoreChatService.MessageItem MapFromCache(CacheMessage m)

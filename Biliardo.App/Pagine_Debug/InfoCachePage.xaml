@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Pagine_Debug.InfoCachePage"
+             Title="Info Cache">
+    <Grid RowDefinitions="Auto,*" Padding="12" BackgroundColor="#111111">
+        <Border Stroke="#2B2B2B" StrokeThickness="1" BackgroundColor="#1A1A1A" Padding="10">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="10" />
+            </Border.StrokeShape>
+            <VerticalStackLayout Spacing="4">
+                <Label Text="{Binding TotalLabel}"
+                       TextColor="White"
+                       FontAttributes="Bold" />
+                <Label Text="{Binding PercentLabel}"
+                       TextColor="White"
+                       Opacity="0.7" />
+            </VerticalStackLayout>
+        </Border>
+
+        <ScrollView Grid.Row="1">
+            <VerticalStackLayout Spacing="12">
+                <Label Text="Media Cache"
+                       TextColor="White"
+                       FontAttributes="Bold" />
+                <CollectionView ItemsSource="{Binding MediaEntries}">
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid ColumnDefinitions="*,Auto" Padding="6">
+                                <VerticalStackLayout Spacing="2">
+                                    <Label Text="{Binding FileName}" TextColor="White" />
+                                    <Label Text="{Binding SizeLabel}" TextColor="White" FontSize="12" Opacity="0.7" />
+                                </VerticalStackLayout>
+                                <Button Grid.Column="1"
+                                        Text="Apri"
+                                        BackgroundColor="#2A2A2A"
+                                        TextColor="White"
+                                        Command="{Binding OpenCommand}"
+                                        CommandParameter="{Binding .}" />
+                            </Grid>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+
+                <Label Text="Chat Cache"
+                       TextColor="White"
+                       FontAttributes="Bold" />
+                <CollectionView ItemsSource="{Binding ChatEntries}">
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid ColumnDefinitions="*,Auto" Padding="6">
+                                <VerticalStackLayout Spacing="2">
+                                    <Label Text="{Binding ChatLabel}" TextColor="White" />
+                                    <Label Text="{Binding SizeLabel}" TextColor="White" FontSize="12" Opacity="0.7" />
+                                </VerticalStackLayout>
+                                <Label Grid.Column="1" Text="{Binding CountLabel}" TextColor="White" FontSize="12" />
+                            </Grid>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+            </VerticalStackLayout>
+        </ScrollView>
+    </Grid>
+</ContentPage>

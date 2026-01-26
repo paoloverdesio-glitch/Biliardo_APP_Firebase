@@ -16,7 +16,7 @@ using Android.Media;
 #endif
 
 #if WINDOWS
-using Windows.Media.Core;
+using WindowsMediaSource = Windows.Media.Core.MediaSource;
 using Windows.Media.Playback;
 using Windows.Storage;
 using Windows.Storage.FileProperties;
@@ -25,7 +25,9 @@ using System.Runtime.InteropServices.WindowsRuntime;
 
 using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Processing;
+using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
+using MauiMediaSource = Microsoft.Maui.Controls.MediaSource;
 
 using Path = System.IO.Path;
 using MauiImage = Microsoft.Maui.Controls.Image;
@@ -145,7 +147,19 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task OpenMediaAsync(ChatMessageVm m)
         {
-            if (!m.IsPhoto && !m.IsFileOrVideo)
+            if (m.IsVideo)
+            {
+                await OpenVideoAsync(m);
+                return;
+            }
+
+            if (m.IsPdf)
+            {
+                await OnOpenPdfAsync(m);
+                return;
+            }
+
+            if (!m.IsPhoto && !m.IsFileNonPdf)
                 return;
 
             var path = await EnsureMediaDownloadedAsync(m);
@@ -160,6 +174,57 @@ namespace Biliardo.App.Pagine_Messaggi
             await Launcher.Default.OpenAsync(new OpenFileRequest
             {
                 File = new ReadOnlyFile(path)
+            });
+        }
+
+        private async Task OnOpenPdfAsync(ChatMessageVm m)
+        {
+            if (m == null)
+                return;
+
+            var path = await EnsureMediaDownloadedAsync(m);
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                await DisplayAlert("Info", "PDF non disponibile.", "OK");
+                return;
+            }
+
+            var fileName = m.FileName ?? "document.pdf";
+            if (!string.Equals(Path.GetExtension(fileName), ".pdf", StringComparison.OrdinalIgnoreCase))
+                fileName = $"{Path.GetFileNameWithoutExtension(fileName)}.pdf";
+
+            await Navigation.PushAsync(new PdfViewerPage(path, fileName));
+        }
+
+        private async Task OpenVideoAsync(ChatMessageVm m)
+        {
+            if (m == null || string.IsNullOrWhiteSpace(m.StoragePath))
+                return;
+
+            if (!string.IsNullOrWhiteSpace(m.MediaLocalPath) && File.Exists(m.MediaLocalPath))
+            {
+                await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromFile(m.MediaLocalPath), m.DisplayPreviewSource));
+                return;
+            }
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+            if (string.IsNullOrWhiteSpace(idToken))
+                return;
+
+            var url = FirebaseStorageRestClient.BuildAuthDownloadUrl(FirebaseStorageRestClient.DefaultStorageBucket, m.StoragePath);
+            await Navigation.PushAsync(new VideoPlayerPage(MauiMediaSource.FromUri(new Uri(url)), m.DisplayPreviewSource));
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "video.mp4", isThumb: false, CancellationToken.None);
+                    if (!string.IsNullOrWhiteSpace(local))
+                    {
+                        MainThread.BeginInvokeOnMainThread(() => m.MediaLocalPath = local);
+                    }
+                }
+                catch { }
             });
         }
 
@@ -596,7 +661,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 StopPlaybackSafe();
                 _playTcs = new TaskCompletionSource<bool>();
                 _player = new MediaPlayer();
-                _player.Source = MediaSource.CreateFromUri(new Uri(filePath));
+                _player.Source = WindowsMediaSource.CreateFromUri(new Uri(filePath));
                 _player.MediaEnded += (_, __) => StopPlaybackSafe();
                 _player.Play();
                 return _playTcs.Task;

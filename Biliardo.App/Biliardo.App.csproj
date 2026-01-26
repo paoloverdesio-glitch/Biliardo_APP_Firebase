@@ -112,6 +112,12 @@
 		<MauiXaml Update="Componenti_UI\LocationPreviewView.xaml">
 		  <Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\Media\AudioWavePlayerView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\Media\PdfAttachmentView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\SelettoreUtenteAutocomplete.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
@@ -129,11 +135,20 @@
 		<MauiXaml Update="Pagine_Debug\DebugNotifichePage.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="Pagine_Debug\InfoCachePage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 
 		<MauiXaml Update="Pagine_Home\Pagina_Home.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Pagine_Home\PostDetailPage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Pagine_Media\PdfViewerPage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Pagine_Media\VideoPlayerPage.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 

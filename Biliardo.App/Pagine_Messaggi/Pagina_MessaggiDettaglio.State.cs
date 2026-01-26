@@ -96,6 +96,8 @@ namespace Biliardo.App.Pagine_Messaggi
         public ObservableCollection<ChatMessageVm> Messaggi { get; } = new();
         public ObservableCollection<AttachmentVm> AllegatiSelezionati { get; } = new();
         public ObservableCollection<string> EmojiItems { get; } = new();
+        public Command<ChatMessageVm> OpenPdfCommand { get; set; } = null!;
+        public Command<ChatMessageVm> RetrySendCommand { get; set; } = null!;
 
         // ============================================================
         // 6) HEADER / TITOLI (BINDING XAML)
@@ -207,8 +209,11 @@ namespace Biliardo.App.Pagine_Messaggi
         private string? _lastChatId;
 
         private string? _chatIdCached;
+        private string? _chatCacheKey;
+        private bool _loadedFromCache;
 
         private bool _userNearBottom = true;
+        private bool _isLoadingOlder;
 
         // Modali: evita stop polling quando apro un modal (foto fullscreen, bottom sheet, ecc.)
         private bool _suppressStopPollingOnce;
@@ -218,6 +223,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private readonly MediaCacheService _mediaCache = new();
+        private readonly ChatLocalCache _chatCache = new();
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 
         private readonly List<int> _recordingWaveform = new();
