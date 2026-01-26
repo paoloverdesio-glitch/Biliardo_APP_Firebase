@@ -1,16 +1,24 @@
 name: build
 
 on:
-  pull_request: {}
+  pull_request:
+    branches:
+      - master
+      - feat_toolkit
+      - componenti_aggiuntivi_start
+      - verifiche_media_remoto
   push:
-    branches: [ "master" ]
-  workflow_dispatch: {}
+    branches:
+      - master
+      - feat_toolkit
+      - verifiche_media_remoto
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -19,10 +27,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup .NET (from global.json)
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
 
@@ -30,7 +38,7 @@ jobs:
         run: dotnet workload install maui-windows
 
       - name: Restore (Windows)
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-windows10.0.19041.0
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -f net8.0-windows10.0.19041.0
 
       - name: Build (Windows)
         run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
@@ -40,10 +48,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup .NET (from global.json)
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
 
@@ -60,7 +68,7 @@ jobs:
         run: dotnet workload install maui-android
 
       - name: Restore (Android)
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-android
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -f net8.0-android
 
       - name: Build (Android)
         run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
