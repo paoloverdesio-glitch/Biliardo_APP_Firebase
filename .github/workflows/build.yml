@@ -1,11 +1,17 @@
-﻿
 name: build
 
 on:
   pull_request:
-    branches: [ "master" ]
+    # Abilita build per PR verso i branch di lavoro (aggiungi qui i target che usi davvero)
+    branches:
+      - master
+      - feat_toolkit
+      - componenti_aggiuntivi_start
+      - verifiche_media_remoto
+      - risoluzione_bachi_codex_remoto
   push:
-    branches: [ "master" ]
+    branches:
+      - master
 
 permissions:
   contents: read
@@ -36,7 +42,6 @@ jobs:
 
       - name: Build (Windows)
         run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
-
 
   android:
     name: Build Android (MAUI)
