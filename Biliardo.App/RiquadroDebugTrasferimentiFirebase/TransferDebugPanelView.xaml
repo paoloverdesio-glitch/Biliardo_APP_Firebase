@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.RiquadroDebugTrasferimentiFirebase.TransferDebugPanelView"
+             IsVisible="{Binding ShowOverlay}">
+    <Border BackgroundColor="Black"
+            StrokeThickness="0"
+            StrokeShape="RoundRectangle 0"
+            HeightRequest="60"
+            MinimumHeightRequest="54">
+        <Grid RowDefinitions="*,10"
+              RowSpacing="0"
+              Padding="6,4">
+            <VerticalStackLayout Spacing="3"
+                                 BindableLayout.ItemsSource="{Binding TopStorageTransfers}">
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate>
+                        <ProgressBar Progress="{Binding Progress}"
+                                     HeightRequest="3"
+                                     BackgroundColor="#222222">
+                            <ProgressBar.Triggers>
+                                <DataTrigger TargetType="ProgressBar" Binding="{Binding Direction}" Value="Up">
+                                    <Setter Property="ProgressColor" Value="#4DA3FF" />
+                                </DataTrigger>
+                                <DataTrigger TargetType="ProgressBar" Binding="{Binding Direction}" Value="Down">
+                                    <Setter Property="ProgressColor" Value="#FF3B30" />
+                                </DataTrigger>
+                            </ProgressBar.Triggers>
+                        </ProgressBar>
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </VerticalStackLayout>
+
+            <ScrollView Grid.Row="1"
+                        Orientation="Horizontal"
+                        HorizontalScrollBarVisibility="Never">
+                <HorizontalStackLayout Spacing="4"
+                                       BindableLayout.ItemsSource="{Binding ActiveApiTransfers}">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate>
+                            <Frame WidthRequest="6"
+                                   HeightRequest="6"
+                                   Padding="0"
+                                   CornerRadius="3"
+                                   BackgroundColor="#4DA3FF"
+                                   HasShadow="False">
+                                <Frame.Triggers>
+                                    <DataTrigger TargetType="Frame" Binding="{Binding Direction}" Value="Up">
+                                        <Setter Property="BackgroundColor" Value="#4DA3FF" />
+                                    </DataTrigger>
+                                    <DataTrigger TargetType="Frame" Binding="{Binding Direction}" Value="Down">
+                                        <Setter Property="BackgroundColor" Value="#FF3B30" />
+                                    </DataTrigger>
+                                </Frame.Triggers>
+                            </Frame>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </HorizontalStackLayout>
+            </ScrollView>
+        </Grid>
+    </Border>
+</ContentView>

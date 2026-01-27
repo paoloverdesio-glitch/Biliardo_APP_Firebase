@@ -159,6 +159,12 @@
 		<MauiXaml Update="Pagine_Messaggi\Pagina_MessaggiDettaglio.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="RiquadroDebugTrasferimentiFirebase\LogTrasferimentiPage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="RiquadroDebugTrasferimentiFirebase\TransferDebugPanelView.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 
 		<MauiXaml Update="Temi_Stili\Colori.xaml">
 			<Generator>MSBuild:Compile</Generator>

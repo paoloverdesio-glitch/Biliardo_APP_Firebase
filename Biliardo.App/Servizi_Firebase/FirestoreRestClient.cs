@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
 
 namespace Biliardo.App.Servizi_Firebase
 {
@@ -24,7 +25,8 @@ namespace Biliardo.App.Servizi_Firebase
         // Quasi sempre è (default). Se hai creato un DB con ID diverso, si cambia qui.
         private const string DatabaseId = "(default)";
 
-        private static readonly HttpClient _http = new HttpClient
+        private static readonly HttpClient _http = new HttpClient(
+            new TransferDebugHttpHandler(\"Firestore\", FirebaseTransferDebugMonitor.Instance))
         {
             Timeout = TimeSpan.FromSeconds(25)
         };
