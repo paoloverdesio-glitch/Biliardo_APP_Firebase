@@ -18,6 +18,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
 
 namespace Biliardo.App.Servizi_Firebase
 {
@@ -35,7 +36,8 @@ namespace Biliardo.App.Servizi_Firebase
         // Presa dal tuo Platforms/Android/google-services.json -> client[0].api_key[0].current_key
         private const string ApiKey = "AIzaSyALuzYgz9kGXlsc_0WDQ_xGiSTyeWoqlM4";
 
-        private static readonly HttpClient _http = new HttpClient
+        private static readonly HttpClient _http = new HttpClient(
+            new TransferDebugHttpHandler("Auth", FirebaseTransferDebugMonitor.Instance))
         {
             Timeout = TimeSpan.FromSeconds(25)
         };

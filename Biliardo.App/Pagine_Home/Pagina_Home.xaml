@@ -13,6 +13,7 @@
              xmlns:composer="clr-namespace:Biliardo.App.Componenti_UI.Composer"
              xmlns:ui="clr-namespace:Biliardo.App.Componenti_UI"
              xmlns:media="clr-namespace:Biliardo.App.Componenti_UI.Media"
+             xmlns:dbg="clr-namespace:Biliardo.App.RiquadroDebugTrasferimentiFirebase"
              x:Class="Biliardo.App.Pagine_Home.Pagina_Home"
              x:Name="ThisPage"
              Title="Biliardo">
@@ -65,6 +66,11 @@
                        VerticalOptions="Center"
                        HorizontalOptions="Center" />
             </Frame>
+
+            <dbg:TransferDebugPanelView Grid.Column="1"
+                                        VerticalOptions="Center"
+                                        HorizontalOptions="Fill"
+                                        Margin="6,0" />
 
             <!-- [B1.2] ICONA MERCATINO (CARRELLO) -->
             <Grid Grid.Column="2"
@@ -452,6 +458,10 @@
                         <Button Text="Info Cache"
                                 Style="{StaticResource LogoutMenuVoice}"
                                 Clicked="OnInfoCacheClicked" />
+
+                        <Button Text="LOG"
+                                Style="{StaticResource LogoutMenuVoice}"
+                                Clicked="OnLogoutLogClicked" />
 
                         <Button Text="Esci →"
                                 Style="{StaticResource LogoutMenuVoice}"

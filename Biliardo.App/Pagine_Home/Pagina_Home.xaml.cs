@@ -16,6 +16,7 @@ using Biliardo.App.Infrastructure.Media.Home;
 using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Pagine_Debug;
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
 using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
@@ -1014,6 +1015,16 @@ namespace Biliardo.App.Pagine_Home
             }
 
             await Navigation.PushAsync(new InfoCachePage());
+        }
+
+        private async void OnLogoutLogClicked(object? sender, EventArgs e)
+        {
+            if (_logoutMenuAperto)
+            {
+                await ToggleLogoutMenuAsync();
+            }
+
+            await Navigation.PushAsync(new LogTrasferimentiPage());
         }
 
         private async void OnLogoutExitClicked(object? sender, EventArgs e)
