@@ -9,7 +9,6 @@ using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Effects;
 using CommunityToolkit.Maui;
 
-
 #if ANDROID
 using Plugin.Firebase.Core.Platforms.Android;
 using Plugin.Firebase.CloudMessaging;
@@ -28,9 +27,11 @@ namespace Biliardo.App
         {
             var builder = MauiApp.CreateBuilder();
 
+            // FIX MCTME001: UseMauiCommunityToolkitMediaElement() deve essere nella stessa catena di UseMauiApp<App>()
             builder
                 .UseMauiApp<App>()
                 .UseMauiCommunityToolkit()
+                .UseMauiCommunityToolkitMediaElement()
                 .ConfigureFonts(fonts =>
                 {
                     fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");

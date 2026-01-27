@@ -83,7 +83,9 @@ namespace Biliardo.App.Pagine_Debug
 
             if (ext is ".mp4" or ".mov")
             {
-                await Navigation.PushAsync(new VideoPlayerPage(MediaSource.FromFile(entry.LocalPath), null));
+                // FIX CS0103: MediaSource non esiste in questo contesto.
+                // VideoPlayerPage nel progetto ora accetta una stringa (path/url).
+                await Navigation.PushAsync(new VideoPlayerPage(entry.LocalPath, null));
                 return;
             }
 

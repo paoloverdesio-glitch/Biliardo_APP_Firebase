@@ -226,9 +226,8 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private readonly MediaCacheService _mediaCache = new();
 
-        // FIX CS0246: ChatLocalCache non esisteva nel progetto -> definito qui (stub minimo compilabile).
-        // Se/Quando creerai una vera cache persistente, rimuovi questa classe annidata e usa l’implementazione reale.
-        private readonly ChatLocalCache _chatCache = new();
+        // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
+        private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
 
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 

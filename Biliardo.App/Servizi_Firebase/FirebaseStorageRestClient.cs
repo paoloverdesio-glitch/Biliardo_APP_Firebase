@@ -29,7 +29,7 @@ namespace Biliardo.App.Servizi_Firebase
 
         private static readonly HttpClient _http = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(60)
+            Timeout = TimeSpan.FromMinutes(10)
         };
 
         private static string BaseUrl(string bucket) =>
