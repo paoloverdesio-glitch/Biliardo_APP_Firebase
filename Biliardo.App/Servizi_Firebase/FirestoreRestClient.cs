@@ -8,6 +8,8 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
+
 namespace Biliardo.App.Servizi_Firebase
 {
     /// <summary>
@@ -24,10 +26,21 @@ namespace Biliardo.App.Servizi_Firebase
         // Quasi sempre è (default). Se hai creato un DB con ID diverso, si cambia qui.
         private const string DatabaseId = "(default)";
 
-        private static readonly HttpClient _http = new HttpClient
+        // HTTP client strumentato per generare i pallini (API transfers).
+        private static readonly HttpClient _http = CreateHttpClient();
+
+        private static HttpClient CreateHttpClient()
         {
-            Timeout = TimeSpan.FromSeconds(25)
-        };
+            // Label che comparirà nei log/pallini: "Firestore ..."
+            var handler = new TransferDebugHttpHandler("Firestore", FirebaseTransferDebugMonitor.Instance);
+
+            var http = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(25)
+            };
+
+            return http;
+        }
 
         private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
         {
@@ -202,10 +215,6 @@ namespace Biliardo.App.Servizi_Firebase
             if (transforms == null || transforms.Count == 0) throw new ArgumentException("transforms vuoti", nameof(transforms));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            // FIX CRITICO:
-            // Firestore commit API vuole un resource name del tipo:
-            // projects/{projectId}/databases/{databaseId}/documents/{path}
-            // NON un URL HTTPS.
             var docName = BuildDocumentResourceName(documentPath);
 
             var fieldTransforms = transforms.Select(t =>
@@ -272,7 +281,6 @@ namespace Biliardo.App.Servizi_Firebase
             if (structuredQuery == null) throw new ArgumentNullException(nameof(structuredQuery));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            // Regola API: parent è parte dell’URL: .../documents oppure .../documents/{document_path}
             var url = string.IsNullOrWhiteSpace(parentDocumentPath)
                 ? RunQueryUrlRoot
                 : $"{BaseDocumentsUrl}/{parentDocumentPath}:runQuery";
@@ -303,7 +311,6 @@ namespace Biliardo.App.Servizi_Firebase
 
         public static object VBool(bool value) => new Dictionary<string, object> { ["booleanValue"] = value };
 
-        // Firestore REST vuole integerValue come stringa
         public static object VInt(long value) => new Dictionary<string, object> { ["integerValue"] = value.ToString() };
 
         public static object VDouble(double value) => new Dictionary<string, object> { ["doubleValue"] = value };

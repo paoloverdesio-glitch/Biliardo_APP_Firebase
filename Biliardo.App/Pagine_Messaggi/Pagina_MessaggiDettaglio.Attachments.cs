@@ -143,10 +143,10 @@ namespace Biliardo.App.Pagine_Messaggi
                         await SendAttachmentAsync(idToken!, myUid!, peerId, chatId!, attVm, msgId);
                         MarkOptimisticSent(vmAtt);
 
-                        if (item.Kind == PendingKind.AudioDraft && !string.IsNullOrWhiteSpace(item.LocalFilePath))
-                        {
-                            try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
-                        }
+                        // ✅ CHANGE:
+                        // NON cancellare il file locale (specialmente per AudioDraft) perché serve
+                        // per riapertura immediata dalla cache senza download.
+                        // In futuro si potrà fare una "promozione" in cache persistente e poi cancellare.
                     }
                     ));
                 }
@@ -665,6 +665,12 @@ namespace Biliardo.App.Pagine_Messaggi
             if (string.IsNullOrWhiteSpace(contentType) && !string.IsNullOrWhiteSpace(a.LocalPath))
                 contentType = MediaMetadataHelper.GuessContentType(a.LocalPath);
 
+            // ✅ CHANGE: per ogni allegato basato su file, memorizzo subito il path locale
+            // così la prima riapertura non deve scaricare da Firebase.
+            var localPath = (a.Kind is AttachmentKind.Photo or AttachmentKind.Video or AttachmentKind.Audio or AttachmentKind.File)
+                ? a.LocalPath
+                : null;
+
             return new ChatMessageVm
             {
                 Id = msgId,
@@ -674,7 +680,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 ContentType = contentType,
                 DurationMs = a.DurationMs,
                 SizeBytes = a.SizeBytes,
-                MediaLocalPath = a.Kind is AttachmentKind.Photo ? a.LocalPath : null,
+                MediaLocalPath = localPath,
                 CreatedAt = DateTimeOffset.Now,
                 StatusLabel = "✓",
                 StatusColor = Colors.LightGray,

@@ -16,6 +16,10 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
         // Throttling UI progress update: 100 ms => max ~10 update/sec per trasferimento.
         private const int StorageProgressUiMinIntervalMs = 100;
 
+        // Per rendere visibile il pallino anche se la chiamata dura pochi ms:
+        // lo teniamo in UI almeno per un frame abbondante (50ms), poi scompare.
+        private const int ApiDotMinVisibleMs = 50;
+
         private readonly object _lock = new();
         private readonly Dictionary<Guid, BarTransferVm> _storageTransfers = new();
         private readonly Dictionary<Guid, DotTransferVm> _apiTransfers = new();
@@ -92,8 +96,6 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             if (vm.TotalBytes > 0 && bytesTransferred > vm.TotalBytes)
                 bytesTransferred = vm.TotalBytes;
 
-            // Throttle: aggiorna UI al massimo ogni 100 ms,
-            // oppure forza aggiornamento quando siamo a fine trasferimento.
             var nowTick = Environment.TickCount64;
             var force = vm.TotalBytes > 0 && bytesTransferred >= vm.TotalBytes;
             if (!force && (nowTick - lastTick) < StorageProgressUiMinIntervalMs)
@@ -106,7 +108,6 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
-                // Aggiorna SOLO il progress; non ricalcolare la top list (costoso e inutile qui).
                 vm.TransferredBytes = bytesTransferred;
             });
         }
@@ -125,7 +126,6 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
 
             var endTime = DateTime.Now;
 
-            // Imposta i campi finali su UI thread (più sicuro se le VM notificano proprietà).
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 vm.EndTime = endTime;
@@ -133,7 +133,6 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
                 vm.Success = success;
                 vm.ErrorMessage = errorMessage ?? "";
 
-                // Assicura progress a fine se serve
                 if (vm.TotalBytes > 0 && vm.TransferredBytes < vm.TotalBytes && success)
                     vm.TransferredBytes = vm.TotalBytes;
 
@@ -182,6 +181,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
 
             var endTime = DateTime.Now;
 
+            // Aggiorno i campi finali subito (UI thread).
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 vm.EndTime = endTime;
@@ -190,8 +190,23 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
                 vm.StatusCode = statusCode;
                 vm.ResponseBytes = responseBytes;
                 vm.ErrorMessage = errorMessage ?? "";
+            });
 
-                ActiveApiTransfers.Remove(vm);
+            // Rimozione "minimamente ritardata" per garantire che la UI faccia in tempo a renderizzare il pallino.
+            var delay = ApiDotMinVisibleMs;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (delay > 0)
+                        await Task.Delay(delay).ConfigureAwait(false);
+                }
+                catch { }
+
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    ActiveApiTransfers.Remove(vm);
+                });
             });
 
             _ = Task.Run(() => CsvLoggers.AppendDotAsync(vm));
