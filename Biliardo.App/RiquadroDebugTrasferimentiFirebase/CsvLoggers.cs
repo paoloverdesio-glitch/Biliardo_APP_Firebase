@@ -12,11 +12,17 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
     {
         private static readonly SemaphoreSlim FileLock = new(1, 1);
 
+        // Excel/locale IT-friendly delimiter
+        private const char Sep = ';';
+
         public static string BarsFilePath => Path.Combine(FileSystem.AppDataDirectory, "TrasfBarre.csv");
         public static string DotsFilePath => Path.Combine(FileSystem.AppDataDirectory, "TrasfPallini.csv");
 
-        private const string BarsHeader = "Tipo,NomeFile,StoragePath,DimensioneKB,DataInizio,OraInizio,MsInizio,DataFine,OraFine,MsFine,DurataMs,Esito,Errore";
-        private const string DotsHeader = "Tipo,MetodoHTTP,EndpointLabel,RequestBytes,ResponseBytes,StatusCode,DataInizio,OraInizio,MsInizio,DataFine,OraFine,MsFine,DurataMs,Esito,Errore";
+        private const string BarsHeader =
+            "Tipo;NomeFile;StoragePath;DimensioneKB;DataInizio;OraInizio;MsInizio;DataFine;OraFine;MsFine;DurataMs;Esito;Errore";
+
+        private const string DotsHeader =
+            "Tipo;MetodoHTTP;EndpointLabel;RequestBytes;ResponseBytes;StatusCode;DataInizio;OraInizio;MsInizio;DataFine;OraFine;MsFine;DurataMs;Esito;Errore";
 
         public static async Task EnsureFilesAsync()
         {
@@ -33,11 +39,12 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             if (vm == null) return;
             await EnsureFileAsync(BarsFilePath, BarsHeader);
 
+            // Keep InvariantCulture for stable logs (Excel can still read as text).
             var totalKb = vm.TotalBytes > 0
                 ? (vm.TotalBytes / 1024d).ToString("0.0", CultureInfo.InvariantCulture)
                 : "";
 
-            var line = string.Join(",",
+            var line = string.Join(Sep,
                 Csv(vm.Direction == TransferDirection.Up ? "UP" : "DOWN"),
                 Csv(vm.FileName),
                 Csv(vm.StoragePath),
@@ -60,7 +67,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             if (vm == null) return;
             await EnsureFileAsync(DotsFilePath, DotsHeader);
 
-            var line = string.Join(",",
+            var line = string.Join(Sep,
                 Csv(vm.Direction == TransferDirection.Up ? "UP" : "DOWN"),
                 Csv(vm.Method),
                 Csv(vm.EndpointLabel),
@@ -153,11 +160,14 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             if (value == null) return "";
             var s = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
             s = s.Replace("\r", " ").Replace("\n", " ");
-            if (s.Contains(',') || s.Contains('"'))
+
+            // Quote fields if they contain separator or quotes
+            if (s.IndexOf(Sep) >= 0 || s.Contains('"'))
             {
                 s = s.Replace("\"", "\"\"");
                 s = $"\"{s}\"";
             }
+
             return s;
         }
     }

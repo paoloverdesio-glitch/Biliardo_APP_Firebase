@@ -13,18 +13,22 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
     {
         private const string PreferenceKey = "DebugTransferOverlayEnabled";
 
+        // Throttling UI progress update: 100 ms => max ~10 update/sec per trasferimento.
+        private const int StorageProgressUiMinIntervalMs = 100;
+
         private readonly object _lock = new();
         private readonly Dictionary<Guid, BarTransferVm> _storageTransfers = new();
         private readonly Dictionary<Guid, DotTransferVm> _apiTransfers = new();
+
+        // Per evitare di martellare la UI.
+        private readonly Dictionary<Guid, long> _lastStorageUiTick = new();
 
         private bool _showOverlay;
 
         public static FirebaseTransferDebugMonitor Instance { get; } = new();
 
         public ObservableCollection<BarTransferVm> ActiveStorageTransfers { get; } = new();
-
         public ObservableCollection<BarTransferVm> TopStorageTransfers { get; } = new();
-
         public ObservableCollection<DotTransferVm> ActiveApiTransfers { get; } = new();
 
         private FirebaseTransferDebugMonitor()
@@ -60,12 +64,13 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             lock (_lock)
             {
                 _storageTransfers[token.Id] = vm;
+                _lastStorageUiTick[token.Id] = 0;
             }
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 ActiveStorageTransfers.Add(vm);
-                RecalculateTopStorage();
+                RecalculateTopStorage(); // SOLO quando cambia l’elenco (add/remove)
             });
 
             return token;
@@ -74,39 +79,66 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
         public void ReportStorageProgress(StorageToken token, long bytesTransferred)
         {
             if (token == null) return;
+
             BarTransferVm? vm;
+            long lastTick;
             lock (_lock)
             {
                 if (!_storageTransfers.TryGetValue(token.Id, out vm)) return;
+                _lastStorageUiTick.TryGetValue(token.Id, out lastTick);
+            }
+
+            if (bytesTransferred < 0) bytesTransferred = 0;
+            if (vm.TotalBytes > 0 && bytesTransferred > vm.TotalBytes)
+                bytesTransferred = vm.TotalBytes;
+
+            // Throttle: aggiorna UI al massimo ogni 100 ms,
+            // oppure forza aggiornamento quando siamo a fine trasferimento.
+            var nowTick = Environment.TickCount64;
+            var force = vm.TotalBytes > 0 && bytesTransferred >= vm.TotalBytes;
+            if (!force && (nowTick - lastTick) < StorageProgressUiMinIntervalMs)
+                return;
+
+            lock (_lock)
+            {
+                _lastStorageUiTick[token.Id] = nowTick;
             }
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
+                // Aggiorna SOLO il progress; non ricalcolare la top list (costoso e inutile qui).
                 vm.TransferredBytes = bytesTransferred;
-                RecalculateTopStorage();
             });
         }
 
         public void EndStorage(StorageToken token, bool success, string? errorMessage)
         {
             if (token == null) return;
+
             BarTransferVm? vm;
             lock (_lock)
             {
                 if (!_storageTransfers.TryGetValue(token.Id, out vm)) return;
                 _storageTransfers.Remove(token.Id);
+                _lastStorageUiTick.Remove(token.Id);
             }
 
             var endTime = DateTime.Now;
-            vm.EndTime = endTime;
-            vm.DurationMs = (long)(endTime - vm.StartTime).TotalMilliseconds;
-            vm.Success = success;
-            vm.ErrorMessage = errorMessage ?? "";
 
+            // Imposta i campi finali su UI thread (più sicuro se le VM notificano proprietà).
             MainThread.BeginInvokeOnMainThread(() =>
             {
+                vm.EndTime = endTime;
+                vm.DurationMs = (long)(endTime - vm.StartTime).TotalMilliseconds;
+                vm.Success = success;
+                vm.ErrorMessage = errorMessage ?? "";
+
+                // Assicura progress a fine se serve
+                if (vm.TotalBytes > 0 && vm.TransferredBytes < vm.TotalBytes && success)
+                    vm.TransferredBytes = vm.TotalBytes;
+
                 ActiveStorageTransfers.Remove(vm);
-                RecalculateTopStorage();
+                RecalculateTopStorage(); // SOLO quando cambia l’elenco (add/remove)
             });
 
             _ = Task.Run(() => CsvLoggers.AppendBarAsync(vm));
@@ -140,6 +172,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
         public void EndApi(ApiToken token, bool success, int? statusCode, long? responseBytes, string? errorMessage)
         {
             if (token == null) return;
+
             DotTransferVm? vm;
             lock (_lock)
             {
@@ -148,15 +181,16 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             }
 
             var endTime = DateTime.Now;
-            vm.EndTime = endTime;
-            vm.DurationMs = (long)(endTime - vm.StartTime).TotalMilliseconds;
-            vm.Success = success;
-            vm.StatusCode = statusCode;
-            vm.ResponseBytes = responseBytes;
-            vm.ErrorMessage = errorMessage ?? "";
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
+                vm.EndTime = endTime;
+                vm.DurationMs = (long)(endTime - vm.StartTime).TotalMilliseconds;
+                vm.Success = success;
+                vm.StatusCode = statusCode;
+                vm.ResponseBytes = responseBytes;
+                vm.ErrorMessage = errorMessage ?? "";
+
                 ActiveApiTransfers.Remove(vm);
             });
 
@@ -165,6 +199,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
 
         private void RecalculateTopStorage()
         {
+            // Top 8 più grandi per TotalBytes (come richiesto).
             var ordered = ActiveStorageTransfers
                 .OrderByDescending(x => x.TotalBytes)
                 .ThenBy(x => x.StartTime)
