@@ -61,6 +61,10 @@ namespace Biliardo.App.Pagine_Debug
                 var chatSummaries = await _chatCache.ListSummariesAsync(CancellationToken.None);
                 foreach (var summary in chatSummaries)
                     ChatEntries.Add(new ChatEntryVm(summary.ChatId, summary.MessageCount, summary.Bytes));
+
+#if DEBUG
+                await CacheDebugHarness.RunAsync();
+#endif
             }
             catch
             {

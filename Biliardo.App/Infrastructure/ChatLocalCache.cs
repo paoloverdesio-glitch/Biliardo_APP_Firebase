@@ -45,24 +45,8 @@ namespace Biliardo.App.Infrastructure
             await _ioLock.WaitAsync(ct);
             try
             {
-                // FileShare.ReadWrite: consente lettura anche se qualche altro thread sta aprendo il file.
-                // Con commit atomico (tmp -> replace/move) si minimizzano i casi sporchi.
-                await using var stream = new FileStream(
-                    path,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite);
-
-                var payload = await JsonSerializer.DeserializeAsync<CachePayload>(stream, cancellationToken: ct);
-
-                if (payload == null)
-                    return Array.Empty<FirestoreChatService.MessageItem>();
-
-                // Se cambia schema in futuro: ignora cache vecchia.
-                if (payload.Version != SchemaVersion)
-                    return Array.Empty<FirestoreChatService.MessageItem>();
-
-                if (payload.Messages == null || payload.Messages.Count == 0)
+                var payload = await TryReadPayloadNoLockAsync(cacheKey, ct);
+                if (payload?.Messages == null || payload.Messages.Count == 0)
                     return Array.Empty<FirestoreChatService.MessageItem>();
 
                 return payload.Messages.Select(MapFromCache).ToList();
@@ -89,55 +73,8 @@ namespace Biliardo.App.Infrastructure
             await _ioLock.WaitAsync(ct);
             try
             {
-                var trimmed = messages
-                    .OrderByDescending(m => m.CreatedAtUtc)
-                    .Take(Math.Max(1, maxItems))
-                    .OrderBy(m => m.CreatedAtUtc)
-                    .Select(MapToCache)
-                    .ToList();
-
-                var payload = new CachePayload
-                {
-                    Version = SchemaVersion,
-                    SavedAtUtc = DateTimeOffset.UtcNow,
-                    Messages = trimmed
-                };
-
-                var path = GetCachePath(cacheKey);
-                var dir = Path.GetDirectoryName(path);
-                if (string.IsNullOrWhiteSpace(dir))
-                    return;
-
-                Directory.CreateDirectory(dir);
-
-                // Write su file temporaneo nello stesso folder (commit più affidabile)
-                var tmpPath = path + ".tmp";
-                var bakPath = path + ".bak";
-
-                try
-                {
-                    await using (var stream = new FileStream(
-                        tmpPath,
-                        FileMode.Create,
-                        FileAccess.Write,
-                        FileShare.None,
-                        bufferSize: 64 * 1024,
-                        options: FileOptions.None))
-                    {
-                        await JsonSerializer.SerializeAsync(stream, payload, cancellationToken: ct);
-                        await stream.FlushAsync(ct);
-
-                        // Su alcune piattaforme Flush(true) può non essere supportato -> fallback silenzioso.
-                        try { stream.Flush(flushToDisk: true); } catch { }
-                    }
-
-                    CommitReplace(tmpPath, path, bakPath);
-                }
-                finally
-                {
-                    // Se per qualche motivo il tmp non è stato spostato, lo elimino.
-                    TryDeleteFile(tmpPath);
-                }
+                var payload = BuildPayload(messages, maxItems);
+                await WritePayloadNoLockAsync(cacheKey, payload, ct);
             }
             catch (Exception ex)
             {
@@ -146,6 +83,134 @@ namespace Biliardo.App.Infrastructure
             finally
             {
                 _ioLock.Release();
+            }
+        }
+
+        public async Task UpsertAppendAsync(string cacheKey, IEnumerable<FirestoreChatService.MessageItem> incoming, int maxItems, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey))
+                return;
+
+            if (incoming == null)
+                return;
+
+            await _ioLock.WaitAsync(ct);
+            try
+            {
+                IReadOnlyList<FirestoreChatService.MessageItem> existing = Array.Empty<FirestoreChatService.MessageItem>();
+                try
+                {
+                    var payload = await TryReadPayloadNoLockAsync(cacheKey, ct);
+                    if (payload?.Messages != null && payload.Messages.Count > 0)
+                        existing = payload.Messages.Select(MapFromCache).ToList();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ChatLocalCache] Upsert read failed: {ex.Message}");
+                }
+
+                var merged = existing
+                    .Concat(incoming ?? Array.Empty<FirestoreChatService.MessageItem>())
+                    .Where(m => !string.IsNullOrWhiteSpace(m.MessageId))
+                    .GroupBy(m => m.MessageId)
+                    .Select(g => g.OrderBy(x => x.CreatedAtUtc).Last())
+                    .OrderByDescending(m => m.CreatedAtUtc)
+                    .Take(Math.Max(1, maxItems))
+                    .OrderBy(m => m.CreatedAtUtc)
+                    .ToList();
+
+                var payloadToWrite = BuildPayload(merged, maxItems);
+                await WritePayloadNoLockAsync(cacheKey, payloadToWrite, ct);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ChatLocalCache] Upsert failed: {ex.Message}");
+            }
+            finally
+            {
+                _ioLock.Release();
+            }
+        }
+
+        private async Task<CachePayload?> TryReadPayloadNoLockAsync(string cacheKey, CancellationToken ct)
+        {
+            var path = GetCachePath(cacheKey);
+            if (!File.Exists(path))
+                return null;
+
+            // FileShare.ReadWrite: consente lettura anche se qualche altro thread sta aprendo il file.
+            // Con commit atomico (tmp -> replace/move) si minimizzano i casi sporchi.
+            await using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite);
+
+            var payload = await JsonSerializer.DeserializeAsync<CachePayload>(stream, cancellationToken: ct);
+
+            if (payload == null)
+                return null;
+
+            // Se cambia schema in futuro: ignora cache vecchia.
+            if (payload.Version != SchemaVersion)
+                return null;
+
+            return payload;
+        }
+
+        private static CachePayload BuildPayload(IEnumerable<FirestoreChatService.MessageItem> messages, int maxItems)
+        {
+            var trimmed = messages
+                .OrderByDescending(m => m.CreatedAtUtc)
+                .Take(Math.Max(1, maxItems))
+                .OrderBy(m => m.CreatedAtUtc)
+                .Select(MapToCache)
+                .ToList();
+
+            return new CachePayload
+            {
+                Version = SchemaVersion,
+                SavedAtUtc = DateTimeOffset.UtcNow,
+                Messages = trimmed
+            };
+        }
+
+        private static async Task WritePayloadNoLockAsync(string cacheKey, CachePayload payload, CancellationToken ct)
+        {
+            var path = GetCachePath(cacheKey);
+            var dir = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(dir))
+                return;
+
+            Directory.CreateDirectory(dir);
+
+            // Write su file temporaneo nello stesso folder (commit più affidabile)
+            var tmpPath = path + ".tmp";
+            var bakPath = path + ".bak";
+
+            try
+            {
+                await using (var stream = new FileStream(
+                    tmpPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 64 * 1024,
+                    options: FileOptions.None))
+                {
+                    await JsonSerializer.SerializeAsync(stream, payload, cancellationToken: ct);
+                    await stream.FlushAsync(ct);
+
+                    // Su alcune piattaforme Flush(true) può non essere supportato -> fallback silenzioso.
+                    try { stream.Flush(flushToDisk: true); } catch { }
+                }
+
+                CommitReplace(tmpPath, path, bakPath);
+            }
+            finally
+            {
+                // Se per qualche motivo il tmp non è stato spostato, lo elimino.
+                TryDeleteFile(tmpPath);
             }
         }
 

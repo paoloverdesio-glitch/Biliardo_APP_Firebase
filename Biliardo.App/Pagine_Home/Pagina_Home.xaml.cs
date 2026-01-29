@@ -21,6 +21,9 @@ using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
+using Biliardo.App.Cache_Locale.Home;
+using Biliardo.App.Realtime;
+using Biliardo.App.Utilita;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.ApplicationModel;
 using System;
@@ -30,6 +33,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
 
 
@@ -48,6 +52,8 @@ namespace Biliardo.App.Pagine_Home
         private bool _logoutMenuAperto = false;
 
         private readonly FirestoreHomeFeedService _homeFeed = new();
+        private readonly HomeFeedLocalCache _homeFeedCache = new();
+        private readonly HomeLikesLocalCache _homeLikesCache = new();
         private readonly IAudioPlayback _audioPlayback;
         private readonly MediaCacheService _mediaCache = new();
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
@@ -56,6 +62,8 @@ namespace Biliardo.App.Pagine_Home
         public Command<HomePostVm> RetryHomePostCommand { get; }
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
+        private HashSet<string> _likedPostIds = new(StringComparer.Ordinal);
+        private string _currentUid = "";
 
         // Popup personalizzato
         private TaskCompletionSource<bool>? _popupTcs;
@@ -63,6 +71,11 @@ namespace Biliardo.App.Pagine_Home
         // Tuning scroll (Android: disabilita change animations, cache, fixed size)
         private readonly ScrollWorkCoordinator _feedCoordinator = new();
         private CollectionViewNativeScrollStateTracker? _feedTracker;
+        private readonly SemaphoreSlim _pollLock = new(1, 1);
+        private CancellationTokenSource? _pollCts;
+        private bool _realtimeSubscribed;
+        private FirstRenderGate? _firstRenderGate;
+        private CancellationTokenSource? _appearanceCts;
 
         // ===================== 3) COSTRUTTORE ============================
         public Pagina_Home()
@@ -79,19 +92,35 @@ namespace Biliardo.App.Pagine_Home
             RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
 
             ApplyHomeFeedScrollTuning();
+            _firstRenderGate = new FirstRenderGate(this, FeedCollection);
         }
         // =================================================================
 
-        protected override async void OnAppearing()
+        protected override void OnAppearing()
         {
             base.OnAppearing();
+            _ = OnAppearingAsync();
+        }
+
+        private async Task OnAppearingAsync()
+        {
+            StopPolling();
+            _appearanceCts?.Cancel();
+            _appearanceCts = new CancellationTokenSource();
+            var ct = _appearanceCts.Token;
+
+            ApplyHomeFeedScrollTuning();
+            await LoadFromCacheAndRenderImmediatelyAsync();
+
+            await _firstRenderGate!.WaitAsync();
+            if (ct.IsCancellationRequested)
+                return;
 
             if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                 return;
 
-            ApplyHomeFeedScrollTuning();
-
-            await LoadFeedAsync();
+            StartRealtimeUpdatesAfterFirstRender();
+            StartPollingAfterFirstRender(TimeSpan.FromSeconds(5));
         }
 
         protected override void OnDisappearing()
@@ -104,6 +133,10 @@ namespace Biliardo.App.Pagine_Home
                 _feedTracker = null;
             }
             catch { }
+
+            StopRealtimeUpdates();
+            StopPolling();
+            _appearanceCts?.Cancel();
         }
 
         private void ApplyHomeFeedScrollTuning()
@@ -187,22 +220,191 @@ namespace Biliardo.App.Pagine_Home
             return msg;
         }
 
-        private async Task LoadFeedAsync()
+        private async Task LoadFromCacheAndRenderImmediatelyAsync()
         {
             try
             {
-                var res = await _homeFeed.ListPostsAsync(20, null);
+                _currentUid = FirebaseSessionePersistente.GetLocalId() ?? "";
+                _likedPostIds = await _homeLikesCache.LoadAsync(_currentUid);
+
+                var cached = await _homeFeedCache.LoadAsync();
+                var ordered = cached
+                    .OrderByDescending(x => x.CreatedAtUtc)
+                    .ToList();
 
                 Posts.Clear();
-                foreach (var post in res.Items)
-                    Posts.Add(HomePostVm.FromService(post));
+                foreach (var post in ordered)
+                {
+                    var vm = HomePostVm.FromCached(post);
+                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                    vm.RetryCommand = RetryHomePostCommand;
+                    Posts.Add(vm);
+                }
 
                 _ = Task.Run(PrefetchHomeThumbsAsync);
             }
-            catch (Exception ex)
+            catch
             {
-                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore feed");
+                // cache best-effort
             }
+        }
+
+        private void StartPollingAfterFirstRender(TimeSpan initialDelay)
+        {
+            if (_pollCts != null)
+                return;
+
+            _pollCts = new CancellationTokenSource();
+            var ct = _pollCts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (initialDelay > TimeSpan.Zero)
+                        await Task.Delay(initialDelay, ct);
+                }
+                catch
+                {
+                    return;
+                }
+
+                while (!ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await PollHomeOnceAsync(ct);
+                    }
+                    catch
+                    {
+                        // best-effort: riprova al tick successivo
+                    }
+
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+
+        private void StopPolling()
+        {
+            var cts = _pollCts;
+            _pollCts = null;
+
+            if (cts != null)
+            {
+                try { cts.Cancel(); } catch { }
+                try { cts.Dispose(); } catch { }
+            }
+        }
+
+        private async Task PollHomeOnceAsync(CancellationToken ct)
+        {
+            if (!await _pollLock.WaitAsync(0, ct))
+                return;
+
+            try
+            {
+                var res = await _homeFeed.ListPostsAsync(20, null, ct);
+                if (res.Items.Count == 0)
+                    return;
+
+                var existingIds = new HashSet<string>(Posts.Select(x => x.PostId), StringComparer.Ordinal);
+                var existingNonces = new HashSet<string>(
+                    Posts.Where(x => !string.IsNullOrWhiteSpace(x.ClientNonce)).Select(x => x.ClientNonce!),
+                    StringComparer.Ordinal);
+
+                var topCreatedAt = Posts.FirstOrDefault()?.CreatedAtUtc ?? DateTimeOffset.MinValue;
+                var newPosts = new List<HomePostVm>();
+                var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
+
+                foreach (var post in res.Items)
+                {
+                    if (post.CreatedAtUtc <= topCreatedAt)
+                        continue;
+
+                    if (!string.IsNullOrWhiteSpace(post.ClientNonce) && existingNonces.Contains(post.ClientNonce))
+                    {
+                        await MainThread.InvokeOnMainThreadAsync(() =>
+                        {
+                            var pending = Posts.FirstOrDefault(x => x.ClientNonce == post.ClientNonce);
+                            if (pending != null)
+                                ApplyServerPostToPending(pending, post);
+                        });
+
+                        cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post, pending: false, sendError: false));
+                        continue;
+                    }
+
+                    if (existingIds.Contains(post.PostId))
+                        continue;
+
+                    var vm = HomePostVm.FromService(post);
+                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                    vm.RetryCommand = RetryHomePostCommand;
+                    newPosts.Add(vm);
+                    cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post, pending: false, sendError: false));
+                }
+
+                if (newPosts.Count == 0)
+                    return;
+
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    foreach (var vm in newPosts.OrderByDescending(x => x.CreatedAtUtc))
+                        Posts.Insert(0, vm);
+                });
+
+                await _homeFeedCache.MergeNewTop(cachedToMerge, ct);
+            }
+            finally
+            {
+                _pollLock.Release();
+            }
+        }
+
+        private void StartRealtimeUpdatesAfterFirstRender()
+        {
+            if (_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = true;
+            BusEventiRealtime.Instance.NewHomePostNotification += OnRealtimeHomePost;
+        }
+
+        private void StopRealtimeUpdates()
+        {
+            if (!_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = false;
+            BusEventiRealtime.Instance.NewHomePostNotification -= OnRealtimeHomePost;
+        }
+
+        private void OnRealtimeHomePost(object? sender, RealtimeEventPayload e)
+        {
+            if (e.Data == null || e.Data.Count == 0)
+                return;
+
+            _ = PollHomeOnceAsync(CancellationToken.None);
+        }
+
+        private void ApplyServerPostToPending(HomePostVm pending, FirestoreHomeFeedService.HomePostItem post)
+        {
+            pending.PostId = post.PostId;
+            pending.IsPendingUpload = false;
+            pending.HasSendError = false;
+            pending.CreatedAtUtc = post.CreatedAtUtc;
+            pending.Text = post.Text ?? "";
+            pending.Attachments.Clear();
+            foreach (var att in post.Attachments)
+                pending.Attachments.Add(HomeAttachmentVm.FromService(att));
         }
 
         private async Task PrefetchHomeThumbsAsync()
@@ -365,10 +567,12 @@ namespace Biliardo.App.Pagine_Home
         {
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
             var nickname = FirebaseSessionePersistente.GetDisplayName() ?? FirebaseSessionePersistente.GetEmail() ?? "Io";
+            var clientNonce = Guid.NewGuid().ToString("N");
 
             var vm = new HomePostVm
             {
-                PostId = $"local_{Guid.NewGuid():N}",
+                PostId = $"local-{clientNonce}",
+                ClientNonce = clientNonce,
                 AuthorUid = myUid,
                 AuthorNickname = nickname,
                 CreatedAtUtc = DateTimeOffset.UtcNow,
@@ -425,6 +629,7 @@ namespace Biliardo.App.Pagine_Home
                 Type = type,
                 FileName = item.DisplayName,
                 LocalPath = item.LocalFilePath,
+                SizeBytes = item.SizeBytes,
                 DurationMs = item.DurationMs,
                 Latitude = item.Latitude,
                 Longitude = item.Longitude,
@@ -442,6 +647,8 @@ namespace Biliardo.App.Pagine_Home
                 Posts.Insert(0, vm);
                 FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
             });
+
+            _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
         }
 
         private async Task SendHomePostOptimisticAsync(ComposerSendPayload payload, HomePostVm vm)
@@ -455,7 +662,7 @@ namespace Biliardo.App.Pagine_Home
                     attachments.Add(att);
             }
 
-            var postId = await _homeFeed.CreatePostAsync(vm.PendingText ?? "", attachments);
+            var postId = await _homeFeed.CreatePostAsync(vm.PendingText ?? "", attachments, clientNonce: vm.ClientNonce);
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
@@ -466,6 +673,8 @@ namespace Biliardo.App.Pagine_Home
                 foreach (var att in attachments)
                     vm.Attachments.Add(HomeAttachmentVm.FromService(att));
             });
+
+            await _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
         }
 
         private void MarkHomePostFailed(HomePostVm vm, Exception ex)
@@ -475,6 +684,8 @@ namespace Biliardo.App.Pagine_Home
                 vm.IsPendingUpload = false;
                 vm.HasSendError = true;
             });
+
+            _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
         }
 
         private async Task RetryHomePostAsync(HomePostVm? vm)
@@ -647,19 +858,48 @@ namespace Biliardo.App.Pagine_Home
             if (e?.Parameter is not HomePostVm post)
                 return;
 
+            var wasLiked = _likedPostIds.Contains(post.PostId);
+            var before = post.LikeCount;
+
             try
             {
                 if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                     return;
 
-                var res = await _homeFeed.ToggleLikeWithResultAsync(post.PostId);
+                post.IsLiked = !wasLiked;
+                post.LikeCount = Math.Max(0, before + (wasLiked ? -1 : 1));
+                post.NotifyCounters();
+
+                if (post.IsLiked)
+                    _likedPostIds.Add(post.PostId);
+                else
+                    _likedPostIds.Remove(post.PostId);
+
+                _ = _homeLikesCache.SetLiked(_currentUid, post.PostId, post.IsLiked);
+
+                var res = await _homeFeed.ToggleLikeOptimisticAsync(post.PostId, wasLiked, before);
 
                 post.IsLiked = res.IsLikedNow;
                 post.LikeCount = Math.Max(0, res.LikeCount);
                 post.NotifyCounters();
+
+                if (res.IsLikedNow)
+                    _likedPostIds.Add(post.PostId);
+                else
+                    _likedPostIds.Remove(post.PostId);
+
+                _ = _homeLikesCache.SetLiked(_currentUid, post.PostId, res.IsLikedNow);
             }
             catch (Exception ex)
             {
+                post.IsLiked = wasLiked;
+                post.LikeCount = Math.Max(0, before);
+                post.NotifyCounters();
+                if (wasLiked)
+                    _likedPostIds.Add(post.PostId);
+                else
+                    _likedPostIds.Remove(post.PostId);
+                _ = _homeLikesCache.SetLiked(_currentUid, post.PostId, wasLiked);
                 await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore like");
             }
         }
@@ -1138,6 +1378,7 @@ namespace Biliardo.App.Pagine_Home
             private bool _hasSendError;
 
             public string PostId { get; set; } = "";
+            public string? ClientNonce { get; set; }
             public string AuthorUid { get; set; } = "";
             public string AuthorNickname { get; set; } = "";
             public string? AuthorAvatarPath { get; set; }
@@ -1227,6 +1468,7 @@ namespace Biliardo.App.Pagine_Home
                 var vm = new HomePostVm
                 {
                     PostId = post.PostId,
+                    ClientNonce = post.ClientNonce,
                     AuthorUid = post.AuthorUid,
                     AuthorNickname = post.AuthorNickname,
                     AuthorAvatarPath = post.AuthorAvatarPath,
@@ -1246,6 +1488,102 @@ namespace Biliardo.App.Pagine_Home
 
                 return vm;
             }
+
+            public static HomePostVm FromCached(HomeFeedLocalCache.CachedHomePost post)
+            {
+                var vm = new HomePostVm
+                {
+                    PostId = post.PostId,
+                    ClientNonce = post.ClientNonce,
+                    AuthorUid = post.AuthorUid,
+                    AuthorNickname = post.AuthorNickname,
+                    AuthorAvatarPath = post.AuthorAvatarPath,
+                    AuthorAvatarUrl = post.AuthorAvatarUrl,
+                    CreatedAtUtc = post.CreatedAtUtc,
+                    Text = post.Text ?? "",
+                    LikeCount = post.LikeCount,
+                    CommentCount = post.CommentCount,
+                    ShareCount = post.ShareCount,
+                    IsLiked = false,
+                    IsPendingUpload = post.PendingUpload,
+                    HasSendError = post.SendError,
+                    PendingText = post.Text ?? ""
+                };
+
+                foreach (var att in post.Attachments ?? new List<HomeFeedLocalCache.CachedHomeAttachment>())
+                    vm.Attachments.Add(HomeAttachmentVm.FromService(HomeFeedLocalCache.ToAttachment(att)));
+
+                return vm;
+            }
+        }
+
+        private static class HomeFeedLocalCacheMapper
+        {
+            public static HomeFeedLocalCache.CachedHomePost ToCached(HomePostVm vm)
+            {
+                return new HomeFeedLocalCache.CachedHomePost
+                {
+                    PostId = vm.PostId,
+                    ClientNonce = vm.ClientNonce,
+                    CreatedAtUtc = vm.CreatedAtUtc,
+                    AuthorUid = vm.AuthorUid,
+                    AuthorNickname = vm.AuthorNickname,
+                    AuthorAvatarPath = vm.AuthorAvatarPath,
+                    AuthorAvatarUrl = vm.AuthorAvatarUrl,
+                    Text = vm.Text ?? "",
+                    Attachments = vm.Attachments.Select(ToCachedAttachment).ToList(),
+                    LikeCount = vm.LikeCount,
+                    CommentCount = vm.CommentCount,
+                    ShareCount = vm.ShareCount,
+                    PendingUpload = vm.IsPendingUpload,
+                    SendError = vm.HasSendError
+                };
+            }
+
+            public static HomeFeedLocalCache.CachedHomePost ToCached(
+                FirestoreHomeFeedService.HomePostItem post,
+                bool pending,
+                bool sendError)
+            {
+                return new HomeFeedLocalCache.CachedHomePost
+                {
+                    PostId = post.PostId,
+                    ClientNonce = post.ClientNonce,
+                    CreatedAtUtc = post.CreatedAtUtc,
+                    AuthorUid = post.AuthorUid,
+                    AuthorNickname = post.AuthorNickname,
+                    AuthorAvatarPath = post.AuthorAvatarPath,
+                    AuthorAvatarUrl = post.AuthorAvatarUrl,
+                    Text = post.Text ?? "",
+                    Attachments = post.Attachments.Select(HomeFeedLocalCache.FromAttachment).ToList(),
+                    LikeCount = post.LikeCount,
+                    CommentCount = post.CommentCount,
+                    ShareCount = post.ShareCount,
+                    PendingUpload = pending,
+                    SendError = sendError
+                };
+            }
+
+            private static HomeFeedLocalCache.CachedHomeAttachment ToCachedAttachment(HomeAttachmentVm vm)
+            {
+                return new HomeFeedLocalCache.CachedHomeAttachment
+                {
+                    Type = vm.Type,
+                    StoragePath = vm.StoragePath,
+                    DownloadUrl = vm.DownloadUrl,
+                    FileName = vm.FileName,
+                    ContentType = vm.ContentType,
+                    SizeBytes = vm.SizeBytes,
+                    DurationMs = vm.DurationMs,
+                    Extra = null,
+                    ThumbStoragePath = vm.ThumbStoragePath,
+                    LqipBase64 = vm.LqipBase64,
+                    PreviewType = vm.PreviewType,
+                    ThumbWidth = vm.ThumbWidth,
+                    ThumbHeight = vm.ThumbHeight,
+                    Waveform = vm.Waveform?.ToList()
+                };
+            }
         }
 
         public sealed class HomeAttachmentVm : BindableObject
@@ -1257,6 +1595,7 @@ namespace Biliardo.App.Pagine_Home
             public string? DownloadUrl { get; set; }
             public string? FileName { get; set; }
             public string? ContentType { get; set; }
+            public long SizeBytes { get; set; }
             public long DurationMs { get; set; }
             public string? LocalPath { get; set; }
             public string? ThumbStoragePath { get; set; }
@@ -1331,6 +1670,7 @@ namespace Biliardo.App.Pagine_Home
                     DownloadUrl = att.DownloadUrl,
                     FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
                     ContentType = att.ContentType,
+                    SizeBytes = att.SizeBytes,
                     DurationMs = att.DurationMs,
                     ThumbStoragePath = att.ThumbStoragePath,
                     LqipBase64 = att.LqipBase64,

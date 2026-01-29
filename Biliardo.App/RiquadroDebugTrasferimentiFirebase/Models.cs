@@ -118,6 +118,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
         private long? _requestBytes;
         private long? _responseBytes;
         private int? _statusCode;
+        private TransferOutcome _outcome;
 
         public string Id { get; init; } = Guid.NewGuid().ToString("N");
 
@@ -159,5 +160,25 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
                 OnPropertyChanged();
             }
         }
+
+        public TransferOutcome Outcome
+        {
+            get => _outcome;
+            set
+            {
+                if (_outcome == value) return;
+                _outcome = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(OutcomeLabel));
+            }
+        }
+
+        public string OutcomeLabel => Outcome switch
+        {
+            TransferOutcome.Success => "OK",
+            TransferOutcome.Cancelled => "CANCELLED",
+            TransferOutcome.Timeout => "TIMEOUT",
+            _ => "FAIL"
+        };
     }
 }

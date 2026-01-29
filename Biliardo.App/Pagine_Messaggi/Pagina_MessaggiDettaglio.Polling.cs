@@ -9,6 +9,7 @@ using Microsoft.Maui.Controls;
 
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Sicurezza;
+using Biliardo.App.Realtime;
 
 namespace Biliardo.App.Pagine_Messaggi
 {
@@ -118,15 +119,15 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 3) POLLING LOOP
         // ============================================================
-        private void StartPolling()
+        private void StartPollingAfterFirstRender(TimeSpan initialDelay, TimeSpan interval)
         {
             if (_pollCts != null) return;
 
             _pollCts = new CancellationTokenSource();
-            _ = Task.Run(() => PollLoopAsync(_pollCts.Token));
+            _ = Task.Run(() => PollLoopAsync(initialDelay, interval, _pollCts.Token));
         }
 
-        private async Task LoadCachedMessagesAsync()
+        private async Task LoadFromCacheAndRenderImmediatelyAsync()
         {
             if (_loadedFromCache)
                 return;
@@ -165,7 +166,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 }
 
                 IsLoadingMessages = false;
-                ScrollToEnd();
+                ScrollBottomImmediately(force: true);
             });
         }
 
@@ -222,14 +223,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 });
 
                 _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId!);
-                var existingCache = await _chatCache.TryReadAsync(_chatCacheKey, CancellationToken.None);
-                var merged = existingCache.Concat(older)
-                    .GroupBy(m => m.MessageId)
-                    .Select(g => g.OrderBy(x => x.CreatedAtUtc).First())
-                    .OrderBy(m => m.CreatedAtUtc)
-                    .ToList();
-
-                await _chatCache.WriteAsync(_chatCacheKey, merged, maxItems: 300, CancellationToken.None);
+                await _chatCache.UpsertAppendAsync(_chatCacheKey, older, maxItems: 200, CancellationToken.None);
             }
             catch
             {
@@ -253,13 +247,178 @@ namespace Biliardo.App.Pagine_Messaggi
             }
         }
 
-        private async Task PollLoopAsync(CancellationToken ct)
+        private void StartRealtimeUpdatesAfterFirstRender()
         {
+            if (_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = true;
+            BusEventiRealtime.Instance.NewChatMessageNotification += OnRealtimeChatMessage;
+        }
+
+        private void StopRealtimeUpdates()
+        {
+            if (!_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = false;
+            BusEventiRealtime.Instance.NewChatMessageNotification -= OnRealtimeChatMessage;
+        }
+
+        private void OnRealtimeChatMessage(object? sender, RealtimeEventPayload e)
+        {
+            var data = e.Data;
+            if (data == null || data.Count == 0)
+                return;
+
+            if (!IsRealtimePayloadForThisChat(data))
+                return;
+
+            if (TryBuildMessageFromPayload(data, out var message))
+            {
+                _ = AppendRealtimeMessageAsync(message);
+                return;
+            }
+
+            _ = LoadOnceFromServerAsync(CancellationToken.None);
+        }
+
+        private bool IsRealtimePayloadForThisChat(IReadOnlyDictionary<string, string> data)
+        {
+            if (_chatIdCached != null && data.TryGetValue("chatId", out var chatId))
+                return string.Equals(chatId, _chatIdCached, StringComparison.Ordinal);
+
+            if (!string.IsNullOrWhiteSpace(_peerUserId))
+            {
+                if (data.TryGetValue("peerUid", out var peerUid)
+                    && string.Equals(peerUid, _peerUserId, StringComparison.Ordinal))
+                    return true;
+
+                if (data.TryGetValue("fromUid", out var fromUid)
+                    && string.Equals(fromUid, _peerUserId, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryBuildMessageFromPayload(IReadOnlyDictionary<string, string> data, out FirestoreChatService.MessageItem message)
+        {
+            message = default!;
+
+            if (!data.TryGetValue("messageId", out var messageId) || string.IsNullOrWhiteSpace(messageId))
+                return false;
+
+            if (!data.TryGetValue("senderId", out var senderId) || string.IsNullOrWhiteSpace(senderId))
+                return false;
+
+            var text = data.TryGetValue("text", out var txt) ? txt ?? "" : "";
+            var type = data.TryGetValue("type", out var t) ? t ?? "text" : "text";
+
+            if (!TryParseTimestamp(data, out var createdAt))
+                return false;
+
+            message = new FirestoreChatService.MessageItem(
+                MessageId: messageId,
+                SenderId: senderId,
+                Type: type,
+                Text: text,
+                CreatedAtUtc: createdAt,
+                DeliveredTo: Array.Empty<string>(),
+                ReadBy: Array.Empty<string>(),
+                DeletedForAll: false,
+                DeletedFor: Array.Empty<string>(),
+                DeletedAtUtc: null,
+                StoragePath: null,
+                DurationMs: 0,
+                FileName: null,
+                ContentType: null,
+                SizeBytes: 0,
+                ThumbStoragePath: null,
+                LqipBase64: null,
+                ThumbWidth: null,
+                ThumbHeight: null,
+                PreviewType: null,
+                Waveform: null,
+                Latitude: null,
+                Longitude: null,
+                ContactName: null,
+                ContactPhone: null);
+
+            return true;
+        }
+
+        private static bool TryParseTimestamp(IReadOnlyDictionary<string, string> data, out DateTimeOffset timestamp)
+        {
+            timestamp = DateTimeOffset.UtcNow;
+
+            if (data.TryGetValue("createdAtUtc", out var createdAtUtc)
+                && DateTimeOffset.TryParse(createdAtUtc, out var dto))
+            {
+                timestamp = dto;
+                return true;
+            }
+
+            if (data.TryGetValue("createdAt", out var createdAt)
+                && DateTimeOffset.TryParse(createdAt, out var dto2))
+            {
+                timestamp = dto2;
+                return true;
+            }
+
+            if (data.TryGetValue("createdAtMs", out var msString)
+                && long.TryParse(msString, out var ms))
+            {
+                timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ms);
+                return true;
+            }
+
+            return false;
+        }
+
+        private async Task AppendRealtimeMessageAsync(FirestoreChatService.MessageItem message)
+        {
+            var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (Messaggi.Any(x => !x.IsDateSeparator && string.Equals(x.Id, message.MessageId, StringComparison.Ordinal)))
+                    return;
+
+                var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
+                var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
+                var day = message.CreatedAtUtc.ToLocalTime().Date;
+                if (lastDay == null || day != lastDay.Value)
+                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(day));
+
+                Messaggi.Add(ChatMessageVm.FromFirestore(message, myUid, peerId));
+                ScrollBottomImmediately(force: false);
+            });
+
+            _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
+            await _chatCache.UpsertAppendAsync(_chatCacheKey, new[] { message }, maxItems: 200, CancellationToken.None);
+        }
+
+        private async Task PollLoopAsync(TimeSpan initialDelay, TimeSpan interval, CancellationToken ct)
+        {
+            try
+            {
+                if (initialDelay > TimeSpan.Zero)
+                    await Task.Delay(initialDelay, ct);
+            }
+            catch
+            {
+                return;
+            }
+
             while (!ct.IsCancellationRequested)
             {
-                try { await LoadOnceAsync(ct); } catch { }
+                try { await LoadOnceFromServerAsync(ct); } catch { }
 
-                try { await Task.Delay(_pollInterval, ct); }
+                try { await Task.Delay(interval, ct); }
                 catch { break; }
             }
         }
@@ -302,7 +461,7 @@ namespace Biliardo.App.Pagine_Messaggi
             return hc.ToHashCode().ToString("X");
         }
 
-        private async Task LoadOnceAsync(CancellationToken ct)
+        private async Task LoadOnceFromServerAsync(CancellationToken ct)
         {
             // 4.1) Validazione peer
             var peerId = (_peerUserId ?? "").Trim();
@@ -381,18 +540,29 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _lastUiSignature = signature;
 
-            // 5.2) receipts best-effort in background (non blocca UI)
+            // 5.2) receipts best-effort in background (batch, no loop patch)
             _ = Task.Run(async () =>
             {
-                foreach (var m in ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)))
+                try
                 {
-                    try
-                    {
-                        await _fsChat.TryMarkDeliveredAsync(idToken, chatId, m.MessageId, m.DeliveredTo, myUid, ct);
-                        await _fsChat.TryMarkReadAsync(idToken, chatId, m.MessageId, m.ReadBy, myUid, ct);
-                    }
-                    catch { }
+                    var inbound = ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)).ToList();
+                    var toDeliver = inbound
+                        .Where(x => x.DeliveredTo == null || !x.DeliveredTo.Contains(myUid, StringComparer.Ordinal))
+                        .Select(x => x.MessageId)
+                        .ToList();
+
+                    var toRead = inbound
+                        .Where(x => x.ReadBy == null || !x.ReadBy.Contains(myUid, StringComparer.Ordinal))
+                        .Select(x => x.MessageId)
+                        .ToList();
+
+                    if (toDeliver.Count > 0)
+                        await _fsChat.MarkDeliveredBatchAsync(chatId, toDeliver, myUid, ct);
+
+                    if (toRead.Count > 0)
+                        await _fsChat.MarkReadBatchAsync(chatId, toRead, myUid, ct);
                 }
+                catch { }
             }, ct);
 
             // 5.3) apply in UI thread
@@ -535,14 +705,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 }
 
                 // 5.3.4) auto-scroll solo se l’utente è near-bottom
-                if (appended && _userNearBottom)
-                    ScrollToEnd();
+                if (appended)
+                    ScrollBottomImmediately(force: false);
             });
 
             try
             {
                 _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
-                await _chatCache.WriteAsync(_chatCacheKey, ordered, maxItems: 300, ct);
+                await _chatCache.UpsertAppendAsync(_chatCacheKey, ordered, maxItems: 200, ct);
             }
             catch
             {
@@ -572,16 +742,31 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 7) SCROLL HELPERS
         // ============================================================
-        private void ScrollToEnd()
+        private void ScrollBottomImmediately(bool force)
         {
             try
             {
                 if (Messaggi.Count == 0)
                     return;
 
+                if (!force && !_userNearBottom)
+                    return;
+
                 CvMessaggi.ScrollTo(Messaggi.Count - 1, position: ScrollToPosition.End, animate: false);
             }
             catch { }
+        }
+
+        private void OnLayoutSizeChanged(object? sender, EventArgs e)
+        {
+            if (!_userNearBottom)
+                return;
+
+            _ = _layoutScrollDebounce.RunAsync(_ =>
+            {
+                MainThread.BeginInvokeOnMainThread(() => ScrollBottomImmediately(force: true));
+                return Task.CompletedTask;
+            }, TimeSpan.FromMilliseconds(80));
         }
 
         private void ScrollToMessage(ChatMessageVm vm)
@@ -614,14 +799,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (!string.IsNullOrWhiteSpace(_lastChatId) && !string.IsNullOrWhiteSpace(_lastMyUid))
                     await _fsChat.DeleteMessageForMeAsync(_lastChatId, m.Id, _lastMyUid);
 
-                await LoadOnceAsync(CancellationToken.None);
+                await LoadOnceFromServerAsync(CancellationToken.None);
             }
             else if (choice == "Elimina per tutti")
             {
                 if (!string.IsNullOrWhiteSpace(_lastChatId))
                     await _fsChat.DeleteMessageForAllAsync(_lastChatId, m.Id);
 
-                await LoadOnceAsync(CancellationToken.None);
+                await LoadOnceFromServerAsync(CancellationToken.None);
             }
         }
 
