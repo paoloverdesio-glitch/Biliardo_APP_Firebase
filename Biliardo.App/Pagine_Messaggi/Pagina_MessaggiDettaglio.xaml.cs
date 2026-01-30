@@ -143,6 +143,45 @@ namespace Biliardo.App.Pagine_Messaggi
                 var h = height * 0.20;
                 VoiceLockPanelHeight = Math.Max(160, h);
             }
+
+            HandleViewportResize(width, height);
+        }
+
+        private void HandleViewportResize(double width, double height)
+        {
+            if (width <= 0 || height <= 0)
+                return;
+
+            if (_lastViewportHeight <= 0 || _lastViewportWidth <= 0)
+            {
+                _lastViewportHeight = height;
+                _lastViewportWidth = width;
+                return;
+            }
+
+            var widthDelta = Math.Abs(_lastViewportWidth - width);
+            var heightDelta = _lastViewportHeight - height;
+
+            _lastViewportWidth = width;
+            _lastViewportHeight = height;
+
+            if (widthDelta > 40)
+                return;
+
+            const double keyboardThreshold = 80;
+
+            if (heightDelta > keyboardThreshold)
+            {
+                _keyboardVisible = true;
+                ScrollBottomImmediately(force: true);
+                return;
+            }
+
+            if (heightDelta < -keyboardThreshold && _keyboardVisible)
+            {
+                _keyboardVisible = false;
+                ScrollBottomImmediately(force: true);
+            }
         }
 
         // ============================================================

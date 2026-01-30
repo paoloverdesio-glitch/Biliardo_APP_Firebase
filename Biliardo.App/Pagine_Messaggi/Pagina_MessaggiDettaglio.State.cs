@@ -251,6 +251,13 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly object _pendingLock = new();
 
         // ============================================================
+        // 13.1) VIEWPORT TRACKING (tastiera / resize)
+        // ============================================================
+        private double _lastViewportWidth;
+        private double _lastViewportHeight;
+        private bool _keyboardVisible;
+
+        // ============================================================
         // 14) PREFETCH MEDIA (foto+video visibili + anticipo)
         // ============================================================
         private readonly HashSet<string> _prefetchMediaMessageIds = new(StringComparer.Ordinal);
