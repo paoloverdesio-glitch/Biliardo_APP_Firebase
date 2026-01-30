@@ -135,7 +135,8 @@
             <CollectionView x:Name="FeedCollection"
                             ItemsSource="{Binding Posts}"
                             SelectionMode="None"
-                            Margin="0,6,0,6">
+                            Margin="0,6,0,6"
+                            Scrolled="OnHomeFeedScrolled">
                 <CollectionView.ItemTemplate>
                     <DataTemplate>
                         <Border Stroke="#1F1F1F"

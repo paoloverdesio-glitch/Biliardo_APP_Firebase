@@ -586,6 +586,9 @@ namespace Biliardo.App.Servizi_Firebase
         private static string? BuildCursor(DateTimeOffset createdAtUtc)
             => createdAtUtc.UtcTicks.ToString(CultureInfo.InvariantCulture);
 
+        public static string BuildCursorFrom(DateTimeOffset createdAtUtc)
+            => BuildCursor(createdAtUtc) ?? "";
+
         private static DateTimeOffset ParseCursorTimestamp(string cursor)
         {
             var first = (cursor ?? "").Split('|')[0];

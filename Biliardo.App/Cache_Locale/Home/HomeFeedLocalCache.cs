@@ -26,6 +26,15 @@ namespace Biliardo.App.Cache_Locale.Home
             return list;
         }
 
+        public async Task<IReadOnlyList<CachedHomePost>> LoadBeforeAsync(DateTimeOffset beforeUtc, int limit, CancellationToken ct = default)
+        {
+            var rows = await _store.ListPostsBeforeAsync(beforeUtc, limit, ct);
+            var list = new List<CachedHomePost>(rows.Count);
+            foreach (var row in rows)
+                list.Add(new CachedHomePost(row.PostId, row.AuthorName, row.Text, row.ThumbKey, row.CreatedAtUtc));
+            return list;
+        }
+
         public async Task SaveAsync(IReadOnlyList<CachedHomePost> posts, CancellationToken ct = default)
         {
             if (posts == null || posts.Count == 0)

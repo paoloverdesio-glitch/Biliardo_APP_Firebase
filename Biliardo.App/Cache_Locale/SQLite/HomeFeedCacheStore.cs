@@ -56,5 +56,31 @@ LIMIT $limit;";
             }
             return list;
         }
+
+        public async Task<IReadOnlyList<HomePostRow>> ListPostsBeforeAsync(DateTimeOffset beforeUtc, int limit, CancellationToken ct)
+        {
+            var list = new List<HomePostRow>();
+            await using var conn = SQLiteDatabase.OpenConnection();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT PostId, AuthorName, Text, ThumbKey, CreatedAtUtc
+FROM HomeFeed
+WHERE CreatedAtUtc < $before
+ORDER BY CreatedAtUtc DESC
+LIMIT $limit;";
+            cmd.Parameters.AddWithValue("$before", beforeUtc.UtcDateTime.ToString("O"));
+            cmd.Parameters.AddWithValue("$limit", limit);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                list.Add(new HomePostRow(
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    DateTimeOffset.Parse(reader.GetString(4))));
+            }
+            return list;
+        }
     }
 }

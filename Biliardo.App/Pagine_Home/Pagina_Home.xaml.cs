@@ -73,6 +73,9 @@ namespace Biliardo.App.Pagine_Home
         private readonly ScrollWorkCoordinator _feedCoordinator = new();
         private CollectionViewNativeScrollStateTracker? _feedTracker;
         private bool _realtimeSubscribed;
+        private bool _isLoadingMore;
+        private bool _noMoreHomePosts;
+        private string? _homeFeedCursor;
         private FirstRenderGate? _firstRenderGate;
         private CancellationTokenSource? _appearanceCts;
         private readonly SemaphoreSlim _syncHomeLock = new(1, 1);
@@ -239,11 +242,115 @@ namespace Biliardo.App.Pagine_Home
                     vm.SyncCommand = SyncHomePostCommand;
                     Posts.Add(vm);
                 }
+
+                _noMoreHomePosts = false;
+                _homeFeedCursor = null;
             }
             catch
             {
                 // cache best-effort
             }
+        }
+
+        private async void OnHomeFeedScrolled(object sender, ItemsViewScrolledEventArgs e)
+        {
+            if (Posts.Count == 0 || _noMoreHomePosts)
+                return;
+
+            if (e.LastVisibleItemIndex < Posts.Count - 4)
+                return;
+
+            await LoadMoreHomePostsAsync();
+        }
+
+        private async Task LoadMoreHomePostsAsync()
+        {
+            if (_isLoadingMore || _noMoreHomePosts)
+                return;
+
+            _isLoadingMore = true;
+            try
+            {
+                var oldest = Posts.LastOrDefault();
+                if (oldest == null)
+                    return;
+
+                var cacheBatch = await _homeFeedCache.LoadBeforeAsync(oldest.CreatedAtUtc, limit: 20, CancellationToken.None);
+                if (cacheBatch.Count > 0)
+                {
+                    var cachedVms = new List<HomePostVm>();
+                    foreach (var cached in cacheBatch)
+                    {
+                        var vm = HomePostVm.FromCached(cached);
+                        vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                        vm.RetryCommand = RetryHomePostCommand;
+                        vm.SyncCommand = SyncHomePostCommand;
+                        cachedVms.Add(vm);
+                    }
+
+                    await AppendOlderPostsAsync(cachedVms);
+                    return;
+                }
+
+                await FetchOlderFromServerAsync(oldest.CreatedAtUtc);
+            }
+            finally
+            {
+                _isLoadingMore = false;
+            }
+        }
+
+        private async Task FetchOlderFromServerAsync(DateTimeOffset oldestCreatedAtUtc)
+        {
+            var cursor = _homeFeedCursor;
+            if (string.IsNullOrWhiteSpace(cursor))
+                cursor = FirestoreHomeFeedService.BuildCursorFrom(oldestCreatedAtUtc);
+
+            var res = await _homeFeed.ListPostsAsync(20, cursor, CancellationToken.None);
+            _homeFeedCursor = res.NextCursor;
+
+            if (res.Items.Count == 0)
+            {
+                _noMoreHomePosts = true;
+                return;
+            }
+
+            var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
+            var newPosts = new List<HomePostVm>();
+
+            foreach (var post in res.Items)
+            {
+                var vm = HomePostVm.FromService(post);
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = SyncHomePostCommand;
+                newPosts.Add(vm);
+                cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
+            }
+
+            await AppendOlderPostsAsync(newPosts);
+            await _homeFeedCache.MergeNewTop(cachedToMerge, CancellationToken.None);
+
+            if (string.IsNullOrWhiteSpace(_homeFeedCursor))
+                _noMoreHomePosts = true;
+        }
+
+        private async Task AppendOlderPostsAsync(IReadOnlyList<HomePostVm> newPosts)
+        {
+            if (newPosts == null || newPosts.Count == 0)
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                foreach (var vm in newPosts.OrderByDescending(x => x.CreatedAtUtc))
+                {
+                    var existing = Posts.FirstOrDefault(x => x.PostId == vm.PostId);
+                    if (existing != null)
+                        continue;
+
+                    Posts.Add(vm);
+                }
+            });
         }
 
         private async Task SyncHomePostAsync(HomePostVm? post)
@@ -377,6 +484,8 @@ namespace Biliardo.App.Pagine_Home
                 var res = await _homeFeed.ListPostsAsync(20, null, CancellationToken.None);
                 if (res.Items.Count == 0)
                     return;
+
+                _homeFeedCursor = res.NextCursor;
 
                 var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
                 var newPosts = new List<HomePostVm>();
