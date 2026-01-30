@@ -46,14 +46,14 @@ namespace Biliardo.App.Pagine_Debug
         {
             try
             {
-                var totalBytes = await _mediaCache.GetTotalBytesAsync();
+                var totalBytes = await _mediaCache.GetTotalBytesAsync(CancellationToken.None);
                 var percent = AppMediaOptions.CacheMaxBytes > 0 ? (double)totalBytes / AppMediaOptions.CacheMaxBytes * 100 : 0;
 
                 TotalLabel = $"{FormatBytes(totalBytes)} usati";
                 PercentLabel = $"{percent:0.##}% della cache";
 
                 MediaEntries.Clear();
-                var entries = await _mediaCache.ListEntriesAsync();
+                var entries = await _mediaCache.ListEntriesAsync(CancellationToken.None);
                 foreach (var entry in entries)
                     MediaEntries.Add(new MediaEntryVm(entry, OpenCacheEntryAsync));
 
@@ -141,10 +141,10 @@ namespace Biliardo.App.Pagine_Debug
         {
             public MediaEntryVm(MediaCacheService.MediaCacheEntry entry, Func<MediaEntryVm, Task> openAction)
             {
-                FileName = entry.FileName;
+                FileName = Path.GetFileName(entry.LocalPath);
                 LocalPath = entry.LocalPath;
-                StoragePath = entry.StoragePath;
-                SizeLabel = FormatBytes(entry.Bytes);
+                StoragePath = entry.CacheKey;
+                SizeLabel = FormatBytes(entry.SizeBytes);
                 OpenCommand = new Command<MediaEntryVm>(async vm => await openAction(vm));
             }
 

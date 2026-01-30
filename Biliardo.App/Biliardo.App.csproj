@@ -74,6 +74,8 @@
 
 		<!-- Logging debug: ALLINEATO a .NET 8 (non 9.x) -->
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.1" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.1" />
+		<PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.6" />
 
 		<!-- Firebase cross-platform core -->
 		<PackageReference Include="Plugin.Firebase.Core" Version="3.1.1" />

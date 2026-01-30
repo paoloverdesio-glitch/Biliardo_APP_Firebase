@@ -494,7 +494,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 TryInvokeRefreshTask("LoadOnceFromCacheAsync", ct) ??
                 TryInvokeRefreshTask("LoadCachedMessagesAsync", ct) ??
                 TryInvokeRefreshTask("LoadFromCacheAndRenderImmediatelyAsync", ct) ??
-                TryInvokeRefreshTask("LoadOnceFromServerAsync", ct);
+                TryInvokeRefreshTask("SyncChatFromServerAsync", ct);
 
             if (task != null)
                 await task.ConfigureAwait(false);

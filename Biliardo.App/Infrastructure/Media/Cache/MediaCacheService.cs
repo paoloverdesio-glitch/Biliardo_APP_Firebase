@@ -1,45 +1,38 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Microsoft.Maui.Storage;
-
+using Biliardo.App.Cache_Locale.SQLite;
 using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Servizi_Firebase;
+using Microsoft.Maui.Storage;
 
 namespace Biliardo.App.Infrastructure.Media.Cache
 {
     public sealed class MediaCacheService
     {
+        public sealed record MediaRegistration(string CacheKey, string LocalPath);
+
         public sealed record MediaCacheEntry(
-            string FileName,
+            string CacheKey,
             string LocalPath,
-            long Bytes,
-            DateTimeOffset AddedAtUtc,
-            DateTimeOffset LastAccessUtc,
-            bool IsThumb,
-            string StoragePath);
+            long SizeBytes,
+            string Kind,
+            DateTimeOffset LastAccessUtc);
 
         private readonly string _root;
-        private readonly string _indexPath;
         private readonly SemaphoreSlim _downloadSemaphore;
         private readonly Dictionary<string, Task<string?>> _inflight = new(StringComparer.Ordinal);
         private readonly object _lock = new();
-        private CacheIndex _index = new();
+        private readonly MediaCacheStore _store = new();
 
         public MediaCacheService()
         {
-            _root = Path.Combine(FileSystem.CacheDirectory, "media_cache");
-            _indexPath = Path.Combine(_root, "media_cache_index.json");
-            _downloadSemaphore = new SemaphoreSlim(AppMediaOptions.DownloadConcurrency, AppMediaOptions.DownloadConcurrency);
+            _root = Path.Combine(FileSystem.AppDataDirectory, "media_cache");
             Directory.CreateDirectory(_root);
-            LoadIndex();
+            _downloadSemaphore = new SemaphoreSlim(AppMediaOptions.DownloadConcurrency, AppMediaOptions.DownloadConcurrency);
         }
 
         public async Task<string?> GetOrDownloadAsync(string idToken, string storagePath, string fileName, bool isThumb, CancellationToken ct)
@@ -47,18 +40,22 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             if (string.IsNullOrWhiteSpace(storagePath))
                 return null;
 
-            var key = BuildEntryKey(storagePath, isThumb);
-
-            if (TryGetCachedPathInternal(key, out var cachedPath))
-                return cachedPath;
+            var cacheKey = BuildCacheKey(storagePath, isThumb);
+            var resolvedKey = await ResolveCacheKeyAsync(cacheKey, ct);
+            var cached = await _store.GetByCacheKeyAsync(resolvedKey, ct);
+            if (cached != null && File.Exists(cached.LocalPath))
+            {
+                await _store.TouchAsync(cached.CacheKey, DateTimeOffset.UtcNow, ct);
+                return cached.LocalPath;
+            }
 
             Task<string?> task;
             lock (_lock)
             {
-                if (!_inflight.TryGetValue(key, out task!))
+                if (!_inflight.TryGetValue(cacheKey, out task!))
                 {
-                    task = DownloadAndStoreAsync(key, idToken, storagePath, fileName, isThumb, ct);
-                    _inflight[key] = task;
+                    task = DownloadAndStoreAsync(cacheKey, idToken, storagePath, fileName, isThumb, ct);
+                    _inflight[cacheKey] = task;
                 }
             }
 
@@ -70,125 +67,116 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             {
                 lock (_lock)
                 {
-                    _inflight.Remove(key);
+                    _inflight.Remove(cacheKey);
                 }
             }
         }
 
-        public Task<string?> TryGetCachedPathAsync(string storagePath, bool isThumb)
+        public async Task<string?> TryGetCachedPathAsync(string storagePath, bool isThumb)
         {
-            var key = BuildEntryKey(storagePath, isThumb);
-            return Task.FromResult(TryGetCachedPathInternal(key, out var path) ? path : null);
+            var cacheKey = BuildCacheKey(storagePath, isThumb);
+            var resolvedKey = await ResolveCacheKeyAsync(cacheKey, CancellationToken.None);
+            var cached = await _store.GetByCacheKeyAsync(resolvedKey, CancellationToken.None);
+            if (cached == null || !File.Exists(cached.LocalPath))
+                return null;
+
+            await _store.TouchAsync(cached.CacheKey, DateTimeOffset.UtcNow, CancellationToken.None);
+            return cached.LocalPath;
         }
 
-        public Task TouchAsync(string storagePath, bool isThumb)
+        public async Task<MediaRegistration?> RegisterLocalFileAsync(string localPath, string kind, CancellationToken ct)
         {
-            var key = BuildEntryKey(storagePath, isThumb);
-            lock (_lock)
+            if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+                return null;
+
+            var sha = await ComputeSha256Async(localPath, ct);
+            var localKey = $"local:{Guid.NewGuid():N}";
+            var existing = await _store.GetByShaAsync(sha, ct);
+            if (existing != null && File.Exists(existing.LocalPath))
             {
-                if (_index.Entries.TryGetValue(key, out var entry))
-                {
-                    entry.LastAccessUtc = DateTimeOffset.UtcNow;
-                    SaveIndex();
-                }
+                await _store.TouchAsync(existing.CacheKey, DateTimeOffset.UtcNow, ct);
+                await _store.UpsertAliasAsync(localKey, existing.CacheKey, ct);
+                return new MediaRegistration(localKey, existing.LocalPath);
             }
 
-            return Task.CompletedTask;
+            var ext = Path.GetExtension(localPath);
+            var fileName = $"{sha}{ext}";
+            var destPath = Path.Combine(_root, fileName);
+            if (!string.Equals(localPath, destPath, StringComparison.Ordinal))
+                File.Copy(localPath, destPath, overwrite: true);
+
+            var size = new FileInfo(destPath).Length;
+
+            await _store.UpsertMediaAsync(new MediaCacheStore.MediaRow(
+                localKey,
+                sha,
+                kind,
+                destPath,
+                size,
+                DateTimeOffset.UtcNow), ct);
+
+            await PruneIfNeededAsync(ct);
+            return new MediaRegistration(localKey, destPath);
         }
 
-        public Task<IReadOnlyList<MediaCacheEntry>> ListEntriesAsync()
+        public Task RegisterAliasAsync(string aliasKey, string cacheKey, CancellationToken ct)
         {
-            lock (_lock)
-            {
-                var list = _index.Entries.Values
-                    .Select(e => new MediaCacheEntry(
-                        FileName: Path.GetFileName(e.LocalPath),
-                        LocalPath: e.LocalPath,
-                        Bytes: e.SizeBytes,
-                        AddedAtUtc: e.AddedAtUtc,
-                        LastAccessUtc: e.LastAccessUtc,
-                        IsThumb: e.IsThumb,
-                        StoragePath: e.StoragePath))
-                    .OrderByDescending(e => e.AddedAtUtc)
-                    .ToList();
+            if (string.IsNullOrWhiteSpace(aliasKey) || string.IsNullOrWhiteSpace(cacheKey))
+                return Task.CompletedTask;
 
-                return Task.FromResult<IReadOnlyList<MediaCacheEntry>>(list);
-            }
+            return _store.UpsertAliasAsync(aliasKey, cacheKey, ct);
         }
 
-        public Task<long> GetTotalBytesAsync()
+        public async Task<IReadOnlyList<MediaCacheEntry>> ListEntriesAsync(CancellationToken ct)
         {
-            lock (_lock)
-            {
-                var total = _index.Entries.Values.Sum(x => x.SizeBytes);
-                return Task.FromResult(total);
-            }
+            var rows = await _store.ListOldestAsync(1000, ct);
+            var list = new List<MediaCacheEntry>(rows.Count);
+            foreach (var row in rows)
+                list.Add(new MediaCacheEntry(row.CacheKey, row.LocalPath, row.SizeBytes, row.Kind, row.LastAccessUtc));
+            return list;
         }
 
-        public Task PruneIfNeededAsync(CancellationToken ct)
-        {
-            lock (_lock)
-            {
-                var total = _index.Entries.Values.Sum(x => x.SizeBytes);
-                if (total <= AppMediaOptions.CacheMaxBytes)
-                    return Task.CompletedTask;
+        public Task<long> GetTotalBytesAsync(CancellationToken ct)
+            => _store.GetTotalBytesAsync(ct);
 
-                foreach (var entry in _index.Entries.Values.OrderBy(x => x.AddedAtUtc).ToList())
-                {
-                    if (ct.IsCancellationRequested)
-                        break;
-
-                    TryDelete(entry);
-                    total -= entry.SizeBytes;
-                    _index.Entries.Remove(entry.Key);
-
-                    if (total <= AppMediaOptions.CacheMaxBytes)
-                        break;
-                }
-
-                SaveIndex();
-            }
-
-            return Task.CompletedTask;
-        }
-
-        private bool TryGetCachedPathInternal(string key, out string? path)
-        {
-            lock (_lock)
-            {
-                if (_index.Entries.TryGetValue(key, out var entry) && File.Exists(entry.LocalPath))
-                {
-                    entry.LastAccessUtc = DateTimeOffset.UtcNow;
-                    SaveIndex();
-                    path = entry.LocalPath;
-                    return true;
-                }
-            }
-
-            path = null;
-            return false;
-        }
-
-        private async Task<string?> DownloadAndStoreAsync(string key, string idToken, string storagePath, string fileName, bool isThumb, CancellationToken ct)
+        private async Task<string?> DownloadAndStoreAsync(string cacheKey, string idToken, string storagePath, string fileName, bool isThumb, CancellationToken ct)
         {
             await _downloadSemaphore.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 var ext = isThumb ? ".jpg" : NormalizeExtension(fileName);
-                var localPath = Path.Combine(_root, $"{key}{ext}");
+                var tempPath = Path.Combine(_root, $"{Guid.NewGuid():N}{ext}");
+                await FirebaseStorageRestClient.DownloadToFileAsync(idToken, storagePath, tempPath, ct).ConfigureAwait(false);
 
-                if (File.Exists(localPath))
+                var sha = await ComputeSha256Async(tempPath, ct).ConfigureAwait(false);
+                var existing = await _store.GetByShaAsync(sha, ct).ConfigureAwait(false);
+                if (existing != null && File.Exists(existing.LocalPath))
                 {
-                    UpdateIndexEntry(key, storagePath, localPath, isThumb);
-                    return localPath;
+                    TryDelete(tempPath);
+                    await _store.UpsertAliasAsync(cacheKey, existing.CacheKey, ct).ConfigureAwait(false);
+                    await _store.TouchAsync(existing.CacheKey, DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
+                    return existing.LocalPath;
                 }
 
-                await FirebaseStorageRestClient.DownloadToFileAsync(idToken, storagePath, localPath, ct).ConfigureAwait(false);
+                var finalPath = Path.Combine(_root, $"{sha}{ext}");
+                if (!string.Equals(tempPath, finalPath, StringComparison.Ordinal))
+                {
+                    if (File.Exists(finalPath))
+                        File.Delete(finalPath);
+                    File.Move(tempPath, finalPath);
+                }
 
-                UpdateIndexEntry(key, storagePath, localPath, isThumb);
+                var size = new FileInfo(finalPath).Length;
+                await _store.UpsertMediaAsync(new MediaCacheStore.MediaRow(
+                    cacheKey,
+                    sha,
+                    isThumb ? "thumb" : "file",
+                    finalPath,
+                    size,
+                    DateTimeOffset.UtcNow), ct).ConfigureAwait(false);
+
                 await PruneIfNeededAsync(ct).ConfigureAwait(false);
-
-                return localPath;
+                return finalPath;
             }
             catch
             {
@@ -200,121 +188,60 @@ namespace Biliardo.App.Infrastructure.Media.Cache
             }
         }
 
-        private void UpdateIndexEntry(string key, string storagePath, string localPath, bool isThumb)
+        private async Task<string> ResolveCacheKeyAsync(string cacheKey, CancellationToken ct)
         {
-            var size = File.Exists(localPath) ? new FileInfo(localPath).Length : 0;
-            lock (_lock)
+            var alias = await _store.ResolveAliasAsync(cacheKey, ct);
+            return string.IsNullOrWhiteSpace(alias) ? cacheKey : alias;
+        }
+
+        private async Task PruneIfNeededAsync(CancellationToken ct)
+        {
+            var total = await _store.GetTotalBytesAsync(ct);
+            if (total <= AppMediaOptions.CacheMaxBytes)
+                return;
+
+            var oldest = await _store.ListOldestAsync(100, ct);
+            foreach (var row in oldest)
             {
-                if (_index.Entries.TryGetValue(key, out var existing))
+                if (total <= AppMediaOptions.CacheMaxBytes)
+                    break;
+
+                if (File.Exists(row.LocalPath))
                 {
-                    existing.StoragePath = storagePath;
-                    existing.LocalPath = localPath;
-                    existing.SizeBytes = size;
-                    existing.IsThumb = isThumb;
-                    existing.LastAccessUtc = DateTimeOffset.UtcNow;
+                    TryDelete(row.LocalPath);
+                    await _store.DeleteAsync(row.CacheKey, ct);
+                    total -= row.SizeBytes;
                 }
-                else
-                {
-                    _index.Entries[key] = new CacheEntry
-                    {
-                        Key = key,
-                        StoragePath = storagePath,
-                        LocalPath = localPath,
-                        SizeBytes = size,
-                        IsThumb = isThumb,
-                        AddedAtUtc = DateTimeOffset.UtcNow,
-                        LastAccessUtc = DateTimeOffset.UtcNow
-                    };
-                }
-
-                SaveIndex();
             }
         }
 
-        private void LoadIndex()
+        private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
         {
-            try
-            {
-                if (!File.Exists(_indexPath))
-                {
-                    _index = new CacheIndex();
-                    return;
-                }
-
-                var json = File.ReadAllText(_indexPath);
-                _index = JsonSerializer.Deserialize<CacheIndex>(json) ?? new CacheIndex();
-            }
-            catch
-            {
-                _index = new CacheIndex();
-            }
+            await using var stream = File.OpenRead(path);
+            using var sha = SHA256.Create();
+            var hash = await sha.ComputeHashAsync(stream, ct);
+            return Convert.ToHexString(hash).ToLowerInvariant();
         }
 
-        private void SaveIndex()
-        {
-            try
-            {
-                var json = JsonSerializer.Serialize(_index, new JsonSerializerOptions { WriteIndented = false });
-                File.WriteAllText(_indexPath, json);
-            }
-            catch
-            {
-                // ignore
-            }
-        }
-
-        private static string BuildEntryKey(string storagePath, bool isThumb)
-        {
-            var hash = ComputeSha1(storagePath ?? string.Empty);
-            return isThumb ? $"{hash}_thumb" : $"{hash}_orig";
-        }
-
-        private static string ComputeSha1(string input)
-        {
-            using var sha = SHA1.Create();
-            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
-            var sb = new StringBuilder(bytes.Length * 2);
-            foreach (var b in bytes)
-                sb.Append(b.ToString("x2"));
-            return sb.ToString();
-        }
+        private static string BuildCacheKey(string storagePath, bool isThumb)
+            => isThumb ? $"thumb:{storagePath}" : storagePath;
 
         private static string NormalizeExtension(string? fileName)
         {
             var ext = Path.GetExtension(fileName ?? "");
-            if (string.IsNullOrWhiteSpace(ext))
-                return ".bin";
-
-            return ext.ToLowerInvariant();
+            return string.IsNullOrWhiteSpace(ext) ? ".bin" : ext.ToLowerInvariant();
         }
 
-        private static void TryDelete(CacheEntry entry)
+        private static void TryDelete(string path)
         {
             try
             {
-                if (File.Exists(entry.LocalPath))
-                    File.Delete(entry.LocalPath);
+                if (File.Exists(path))
+                    File.Delete(path);
             }
             catch
             {
-                // ignore
             }
-        }
-
-        private sealed class CacheIndex
-        {
-            public Dictionary<string, CacheEntry> Entries { get; set; } = new(StringComparer.Ordinal);
-        }
-
-        private sealed class CacheEntry
-        {
-            public string Key { get; set; } = "";
-            public string StoragePath { get; set; } = "";
-            public string LocalPath { get; set; } = "";
-            public long SizeBytes { get; set; }
-            public bool IsThumb { get; set; }
-            public DateTimeOffset AddedAtUtc { get; set; } = DateTimeOffset.UtcNow;
-            public DateTimeOffset LastAccessUtc { get; set; }
         }
     }
 }

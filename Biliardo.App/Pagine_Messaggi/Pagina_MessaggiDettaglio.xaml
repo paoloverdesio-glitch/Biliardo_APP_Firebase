@@ -20,7 +20,7 @@
                                     Margin="0,0,0,4" />
 
         <!-- HEADER -->
-        <Grid Grid.Row="1" ColumnDefinitions="Auto,*" ColumnSpacing="10"
+        <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="10"
               BackgroundColor="{Binding Source={x:Reference ThisPage}, Path=TopBarBgColor}"
               Padding="6">
 
@@ -31,7 +31,14 @@
                     TextColor="White"
                     Clicked="OnBackClicked" />
 
-            <VerticalStackLayout Grid.Column="1" Spacing="2" VerticalOptions="Center">
+            <ui:UserAvatarView Grid.Column="1"
+                               AvatarUrl="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarUrl}"
+                               AvatarPath="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarPath}"
+                               DisplayName="{Binding Source={x:Reference ThisPage}, Path=TitoloChat}"
+                               Size="42"
+                               VerticalOptions="Center" />
+
+            <VerticalStackLayout Grid.Column="2" Spacing="2" VerticalOptions="Center">
                 <Label Text="{Binding Source={x:Reference ThisPage}, Path=TitoloChat}"
                        TextColor="White"
                        FontAttributes="Bold"

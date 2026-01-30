@@ -9,6 +9,8 @@ using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Networking;
 using Microsoft.Maui.Storage;
 using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Cache_Locale.Profili;
+using Biliardo.App.Infrastructure.Media.Cache;
 
 namespace Biliardo.App.Pagine_Autenticazione;
 
@@ -268,6 +270,21 @@ public partial class Pagina_Registrazione : ContentPage
                         new[] { "avatarPath", "avatarUrl", "avatarUpdatedAt" },
                         idToken,
                         CancellationToken.None);
+
+                    var mediaCache = new MediaCacheService();
+                    var registration = await mediaCache.RegisterLocalFileAsync(_avatarLocalPath, "avatar", CancellationToken.None);
+                    var localPath = registration?.LocalPath ?? _avatarLocalPath;
+
+                    var localCache = new UserPublicLocalCache();
+                    await localCache.UpsertAsync(uid, new FirestoreDirectoryService.UserPublicItem
+                    {
+                        Uid = uid,
+                        Nickname = nickname,
+                        FirstName = nome ?? "",
+                        LastName = cognome ?? "",
+                        PhotoUrl = upload.DownloadUrl ?? "",
+                        PhotoLocalPath = localPath ?? ""
+                    }, CancellationToken.None);
                 }
                 catch
                 {

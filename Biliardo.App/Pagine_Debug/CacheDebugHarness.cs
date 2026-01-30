@@ -62,37 +62,25 @@ namespace Biliardo.App.Pagine_Debug
             var homeCache = new HomeFeedLocalCache();
             var now = DateTimeOffset.UtcNow;
 
-            var post1 = new HomeFeedLocalCache.CachedHomePost
-            {
-                PostId = "p1",
-                ClientNonce = "nonce1",
-                CreatedAtUtc = now,
-                AuthorUid = "u1",
-                AuthorNickname = "test",
-                Text = "t1",
-                LikeCount = 0,
-                CommentCount = 0,
-                ShareCount = 0
-            };
+            var post1 = new HomeFeedLocalCache.CachedHomePost(
+                "p1",
+                "test",
+                "t1",
+                null,
+                now);
 
-            var post2 = new HomeFeedLocalCache.CachedHomePost
-            {
-                PostId = "p2",
-                ClientNonce = "nonce1",
-                CreatedAtUtc = now.AddSeconds(1),
-                AuthorUid = "u1",
-                AuthorNickname = "test",
-                Text = "t2",
-                LikeCount = 1,
-                CommentCount = 0,
-                ShareCount = 0
-            };
+            var post2 = new HomeFeedLocalCache.CachedHomePost(
+                "p2",
+                "test",
+                "t2",
+                null,
+                now.AddSeconds(1));
 
             await homeCache.SaveAsync(new[] { post1 }, CancellationToken.None);
             await homeCache.MergeNewTop(new[] { post2 }, CancellationToken.None);
 
             var loaded = await homeCache.LoadAsync(CancellationToken.None);
-            Debug.Assert(loaded.Any(x => x.PostId == "p2"), "Home cache merge by ClientNonce failed");
+            Debug.Assert(loaded.Any(x => x.PostId == "p2"), "Home cache merge failed");
         }
     }
 }

@@ -1,36 +1,25 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Maui.Storage;
+using Microsoft.Data.Sqlite;
+using Biliardo.App.Cache_Locale.SQLite;
 using Biliardo.App.Servizi_Firebase;
 
 namespace Biliardo.App.Infrastructure
 {
     public sealed class ChatLocalCache
     {
-        private const int SchemaVersion = 1;
-
         public sealed record ChatCacheSummary(string ChatId, int MessageCount, long Bytes);
 
-        // ============================================================
-        // REGISTRAZIONE "SICURA" (CACHE) = NO CORRUZIONE / NO RACE
-        // - lock I/O per evitare Read/Write concorrenti nello stesso processo
-        // - write su file .tmp + commit con replace/move (pattern anti-corruzione)
-        // - fallback robusti per piattaforme diverse (Android/Windows)
-        // ============================================================
-        private readonly SemaphoreSlim _ioLock = new(1, 1);
+        private readonly ChatCacheStore _store = new();
 
         public string GetCacheKey(string? chatId, string peerId)
         {
             if (!string.IsNullOrWhiteSpace(chatId))
-                return $"chat_{chatId}".Trim();
+                return chatId.Trim();
 
-            return $"peer_{peerId}".Trim();
+            return $"peer:{peerId}".Trim();
         }
 
         public async Task<IReadOnlyList<FirestoreChatService.MessageItem>> TryReadAsync(string cacheKey, CancellationToken ct)
@@ -38,346 +27,99 @@ namespace Biliardo.App.Infrastructure
             if (string.IsNullOrWhiteSpace(cacheKey))
                 return Array.Empty<FirestoreChatService.MessageItem>();
 
-            var path = GetCachePath(cacheKey);
-            if (!File.Exists(path))
-                return Array.Empty<FirestoreChatService.MessageItem>();
+            var rows = await _store.ListRecentMessagesAsync(cacheKey, limit: 30, ct);
+            var list = new List<FirestoreChatService.MessageItem>(rows.Count);
+            foreach (var row in rows)
+                list.Add(MapFromRow(row));
 
-            await _ioLock.WaitAsync(ct);
-            try
-            {
-                var payload = await TryReadPayloadNoLockAsync(cacheKey, ct);
-                if (payload?.Messages == null || payload.Messages.Count == 0)
-                    return Array.Empty<FirestoreChatService.MessageItem>();
-
-                return payload.Messages.Select(MapFromCache).ToList();
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ChatLocalCache] Read failed: {ex.Message}");
-                return Array.Empty<FirestoreChatService.MessageItem>();
-            }
-            finally
-            {
-                _ioLock.Release();
-            }
+            return list;
         }
 
         public async Task WriteAsync(string cacheKey, IReadOnlyList<FirestoreChatService.MessageItem> messages, int maxItems, CancellationToken ct)
         {
-            if (string.IsNullOrWhiteSpace(cacheKey))
+            if (string.IsNullOrWhiteSpace(cacheKey) || messages == null || messages.Count == 0)
                 return;
 
-            if (messages == null || messages.Count == 0)
-                return;
+            var rows = new List<ChatCacheStore.MessageRow>();
+            foreach (var m in messages)
+                rows.Add(MapToRow(cacheKey, m));
 
-            await _ioLock.WaitAsync(ct);
-            try
-            {
-                var payload = BuildPayload(messages, maxItems);
-                await WritePayloadNoLockAsync(cacheKey, payload, ct);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ChatLocalCache] Write failed: {ex.Message}");
-            }
-            finally
-            {
-                _ioLock.Release();
-            }
+            await _store.UpsertMessagesAsync(rows, ct);
         }
 
         public async Task UpsertAppendAsync(string cacheKey, IEnumerable<FirestoreChatService.MessageItem> incoming, int maxItems, CancellationToken ct)
         {
-            if (string.IsNullOrWhiteSpace(cacheKey))
+            if (string.IsNullOrWhiteSpace(cacheKey) || incoming == null)
                 return;
 
-            if (incoming == null)
-                return;
+            var rows = new List<ChatCacheStore.MessageRow>();
+            foreach (var m in incoming)
+                rows.Add(MapToRow(cacheKey, m));
 
-            await _ioLock.WaitAsync(ct);
-            try
-            {
-                IReadOnlyList<FirestoreChatService.MessageItem> existing = Array.Empty<FirestoreChatService.MessageItem>();
-                try
-                {
-                    var payload = await TryReadPayloadNoLockAsync(cacheKey, ct);
-                    if (payload?.Messages != null && payload.Messages.Count > 0)
-                        existing = payload.Messages.Select(MapFromCache).ToList();
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[ChatLocalCache] Upsert read failed: {ex.Message}");
-                }
-
-                var merged = existing
-                    .Concat(incoming ?? Array.Empty<FirestoreChatService.MessageItem>())
-                    .Where(m => !string.IsNullOrWhiteSpace(m.MessageId))
-                    .GroupBy(m => m.MessageId)
-                    .Select(g => g.OrderBy(x => x.CreatedAtUtc).Last())
-                    .OrderByDescending(m => m.CreatedAtUtc)
-                    .Take(Math.Max(1, maxItems))
-                    .OrderBy(m => m.CreatedAtUtc)
-                    .ToList();
-
-                var payloadToWrite = BuildPayload(merged, maxItems);
-                await WritePayloadNoLockAsync(cacheKey, payloadToWrite, ct);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ChatLocalCache] Upsert failed: {ex.Message}");
-            }
-            finally
-            {
-                _ioLock.Release();
-            }
-        }
-
-        private async Task<CachePayload?> TryReadPayloadNoLockAsync(string cacheKey, CancellationToken ct)
-        {
-            var path = GetCachePath(cacheKey);
-            if (!File.Exists(path))
-                return null;
-
-            // FileShare.ReadWrite: consente lettura anche se qualche altro thread sta aprendo il file.
-            // Con commit atomico (tmp -> replace/move) si minimizzano i casi sporchi.
-            await using var stream = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite);
-
-            var payload = await JsonSerializer.DeserializeAsync<CachePayload>(stream, cancellationToken: ct);
-
-            if (payload == null)
-                return null;
-
-            // Se cambia schema in futuro: ignora cache vecchia.
-            if (payload.Version != SchemaVersion)
-                return null;
-
-            return payload;
-        }
-
-        private static CachePayload BuildPayload(IEnumerable<FirestoreChatService.MessageItem> messages, int maxItems)
-        {
-            var trimmed = messages
-                .OrderByDescending(m => m.CreatedAtUtc)
-                .Take(Math.Max(1, maxItems))
-                .OrderBy(m => m.CreatedAtUtc)
-                .Select(MapToCache)
-                .ToList();
-
-            return new CachePayload
-            {
-                Version = SchemaVersion,
-                SavedAtUtc = DateTimeOffset.UtcNow,
-                Messages = trimmed
-            };
-        }
-
-        private static async Task WritePayloadNoLockAsync(string cacheKey, CachePayload payload, CancellationToken ct)
-        {
-            var path = GetCachePath(cacheKey);
-            var dir = Path.GetDirectoryName(path);
-            if (string.IsNullOrWhiteSpace(dir))
-                return;
-
-            Directory.CreateDirectory(dir);
-
-            // Write su file temporaneo nello stesso folder (commit più affidabile)
-            var tmpPath = path + ".tmp";
-            var bakPath = path + ".bak";
-
-            try
-            {
-                await using (var stream = new FileStream(
-                    tmpPath,
-                    FileMode.Create,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 64 * 1024,
-                    options: FileOptions.None))
-                {
-                    await JsonSerializer.SerializeAsync(stream, payload, cancellationToken: ct);
-                    await stream.FlushAsync(ct);
-
-                    // Su alcune piattaforme Flush(true) può non essere supportato -> fallback silenzioso.
-                    try { stream.Flush(flushToDisk: true); } catch { }
-                }
-
-                CommitReplace(tmpPath, path, bakPath);
-            }
-            finally
-            {
-                // Se per qualche motivo il tmp non è stato spostato, lo elimino.
-                TryDeleteFile(tmpPath);
-            }
-        }
-
-        private static void CommitReplace(string tmpPath, string finalPath, string backupPath)
-        {
-            // 1) Provo File.Replace (quando supportato). È la scelta migliore dove disponibile.
-            // 2) Fallback a File.Move(overwrite:true).
-            try
-            {
-                if (File.Exists(finalPath))
-                {
-                    try
-                    {
-                        File.Replace(tmpPath, finalPath, backupPath, ignoreMetadataErrors: true);
-                        return;
-                    }
-                    catch
-                    {
-                        // PlatformNotSupportedException o altre: fallback sotto
-                    }
-                }
-
-                File.Move(tmpPath, finalPath, overwrite: true);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ChatLocalCache] Commit failed: {ex.Message}");
-
-                // Ultimo tentativo: se esiste il final, provo a cancellare e spostare.
-                try
-                {
-                    if (File.Exists(finalPath))
-                        File.Delete(finalPath);
-
-                    File.Move(tmpPath, finalPath);
-                }
-                catch (Exception ex2)
-                {
-                    Debug.WriteLine($"[ChatLocalCache] Commit fallback failed: {ex2.Message}");
-                }
-            }
-        }
-
-        private static void TryDeleteFile(string path)
-        {
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-                    File.Delete(path);
-            }
-            catch { }
-        }
-
-        private static string GetCachePath(string cacheKey)
-        {
-            var safeKey = string.Join("_", cacheKey.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
-            return Path.Combine(FileSystem.AppDataDirectory, "chat_cache", $"{safeKey}.json");
-        }
-
-        private static CacheMessage MapToCache(FirestoreChatService.MessageItem m)
-        {
-            return new CacheMessage
-            {
-                MessageId = m.MessageId,
-                SenderId = m.SenderId,
-                Type = m.Type,
-                Text = m.Text,
-                CreatedAtUtc = m.CreatedAtUtc,
-                DeliveredTo = m.DeliveredTo?.ToArray() ?? Array.Empty<string>(),
-                ReadBy = m.ReadBy?.ToArray() ?? Array.Empty<string>(),
-                DeletedForAll = m.DeletedForAll,
-                DeletedFor = m.DeletedFor?.ToArray() ?? Array.Empty<string>(),
-                DeletedAtUtc = m.DeletedAtUtc,
-                StoragePath = m.StoragePath,
-                DurationMs = m.DurationMs,
-                FileName = m.FileName,
-                ContentType = m.ContentType,
-                SizeBytes = m.SizeBytes,
-                Latitude = m.Latitude,
-                Longitude = m.Longitude,
-                ContactName = m.ContactName,
-                ContactPhone = m.ContactPhone
-            };
+            await _store.UpsertMessagesAsync(rows, ct);
         }
 
         public async Task<IReadOnlyList<ChatCacheSummary>> ListSummariesAsync(CancellationToken ct)
         {
             var list = new List<ChatCacheSummary>();
-            var dir = Path.Combine(FileSystem.AppDataDirectory, "chat_cache");
-            if (!Directory.Exists(dir))
-                return list;
-
-            foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+            await using var conn = SQLiteDatabase.OpenConnection();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT ChatId, COUNT(*), COALESCE(SUM(LENGTH(Text)), 0)
+FROM Messages
+GROUP BY ChatId
+ORDER BY ChatId;";
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
             {
-                ct.ThrowIfCancellationRequested();
-
-                try
-                {
-                    var bytes = new FileInfo(file).Length;
-                    await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    var payload = await JsonSerializer.DeserializeAsync<CachePayload>(stream, cancellationToken: ct);
-                    var count = payload?.Messages?.Count ?? 0;
-                    var chatId = Path.GetFileNameWithoutExtension(file) ?? file;
-                    list.Add(new ChatCacheSummary(chatId, count, bytes));
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[ChatLocalCache] Summary read failed: {ex.Message}");
-                }
+                list.Add(new ChatCacheSummary(
+                    reader.GetString(0),
+                    reader.GetInt32(1),
+                    reader.GetInt64(2)));
             }
-
             return list;
         }
 
-        private static FirestoreChatService.MessageItem MapFromCache(CacheMessage m)
+        private static ChatCacheStore.MessageRow MapToRow(string chatId, FirestoreChatService.MessageItem m)
         {
+            return new ChatCacheStore.MessageRow(
+                chatId,
+                m.MessageId ?? Guid.NewGuid().ToString("N"),
+                m.SenderId ?? "",
+                m.Text,
+                m.StoragePath,
+                m.CreatedAtUtc);
+        }
+
+        private static FirestoreChatService.MessageItem MapFromRow(ChatCacheStore.MessageRow row)
+        {
+            var type = string.IsNullOrWhiteSpace(row.Text) ? "file" : "text";
             return new FirestoreChatService.MessageItem(
-                MessageId: m.MessageId ?? "",
-                SenderId: m.SenderId ?? "",
-                Type: m.Type ?? "text",
-                Text: m.Text ?? "",
-                CreatedAtUtc: m.CreatedAtUtc,
-                DeliveredTo: m.DeliveredTo ?? Array.Empty<string>(),
-                ReadBy: m.ReadBy ?? Array.Empty<string>(),
-                DeletedForAll: m.DeletedForAll,
-                DeletedFor: m.DeletedFor ?? Array.Empty<string>(),
-                DeletedAtUtc: m.DeletedAtUtc,
-                StoragePath: m.StoragePath,
-                DurationMs: m.DurationMs,
-                FileName: m.FileName,
-                ContentType: m.ContentType,
-                SizeBytes: m.SizeBytes,
-                Latitude: m.Latitude,
-                Longitude: m.Longitude,
-                ContactName: m.ContactName,
-                ContactPhone: m.ContactPhone
-            );
-        }
-
-        private sealed class CachePayload
-        {
-            public int Version { get; set; }
-            public DateTimeOffset SavedAtUtc { get; set; }
-            public List<CacheMessage>? Messages { get; set; }
-        }
-
-        private sealed class CacheMessage
-        {
-            public string? MessageId { get; set; }
-            public string? SenderId { get; set; }
-            public string? Type { get; set; }
-            public string? Text { get; set; }
-            public DateTimeOffset CreatedAtUtc { get; set; }
-            public string[]? DeliveredTo { get; set; }
-            public string[]? ReadBy { get; set; }
-            public bool DeletedForAll { get; set; }
-            public string[]? DeletedFor { get; set; }
-            public DateTimeOffset? DeletedAtUtc { get; set; }
-            public string? StoragePath { get; set; }
-            public long DurationMs { get; set; }
-            public string? FileName { get; set; }
-            public string? ContentType { get; set; }
-            public long SizeBytes { get; set; }
-            public double? Latitude { get; set; }
-            public double? Longitude { get; set; }
-            public string? ContactName { get; set; }
-            public string? ContactPhone { get; set; }
+                MessageId: row.MessageId,
+                SenderId: row.SenderId,
+                Type: type,
+                Text: row.Text ?? "",
+                CreatedAtUtc: row.CreatedAtUtc,
+                DeliveredTo: Array.Empty<string>(),
+                ReadBy: Array.Empty<string>(),
+                DeletedForAll: false,
+                DeletedFor: Array.Empty<string>(),
+                DeletedAtUtc: null,
+                StoragePath: row.MediaKey,
+                DurationMs: 0,
+                FileName: null,
+                ContentType: null,
+                SizeBytes: 0,
+                ThumbStoragePath: null,
+                LqipBase64: null,
+                ThumbWidth: null,
+                ThumbHeight: null,
+                PreviewType: null,
+                Waveform: null,
+                Latitude: null,
+                Longitude: null,
+                ContactName: null,
+                ContactPhone: null);
         }
     }
 }

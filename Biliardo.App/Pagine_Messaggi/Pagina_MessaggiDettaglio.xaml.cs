@@ -61,7 +61,6 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task OnAppearingAsync()
         {
-            StopPolling();
             CancelPendingApply();
             _appearanceCts?.Cancel();
             _appearanceCts = new CancellationTokenSource();
@@ -75,9 +74,15 @@ namespace Biliardo.App.Pagine_Messaggi
             if (ct.IsCancellationRequested)
                 return;
 
+            _lastMyUid = FirebaseSessionePersistente.GetLocalId();
+            _lastPeerId = (_peerUserId ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(_lastPeerId))
+            {
+                _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, _lastPeerId);
+                await _chatStore.ResetUnreadAsync(_chatCacheKey, CancellationToken.None);
+            }
+
             StartRealtimeUpdatesAfterFirstRender();
-            StartPollingAfterFirstRender(TimeSpan.FromSeconds(5), _pollInterval);
-            _ = EnsurePeerProfileAfterFirstRenderAsync();
         }
 
         protected override void OnDisappearing()
@@ -85,19 +90,19 @@ namespace Biliardo.App.Pagine_Messaggi
             base.OnDisappearing();
 
             // 2.1) Caso “modal aperto” (foto fullscreen / bottom sheet allegati, ecc.)
-            if (_suppressStopPollingOnce)
+            if (_suppressStopRealtimeOnce)
             {
-                _suppressStopPollingOnce = false;
+                _suppressStopRealtimeOnce = false;
                 return;
             }
 
             // 2.2) Stop sottosistemi
-            StopPolling();
             StopRealtimeUpdates();
             StopVoiceUiLoop();
             StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
+            CancelReceipts();
             _appearanceCts?.Cancel();
 
             // 2.3) Sicurezza: se esco mentre registro, cancello in background
@@ -137,6 +142,45 @@ namespace Biliardo.App.Pagine_Messaggi
                 var h = height * 0.20;
                 VoiceLockPanelHeight = Math.Max(160, h);
             }
+
+            HandleViewportResize(width, height);
+        }
+
+        private void HandleViewportResize(double width, double height)
+        {
+            if (width <= 0 || height <= 0)
+                return;
+
+            if (_lastViewportHeight <= 0 || _lastViewportWidth <= 0)
+            {
+                _lastViewportHeight = height;
+                _lastViewportWidth = width;
+                return;
+            }
+
+            var widthDelta = Math.Abs(_lastViewportWidth - width);
+            var heightDelta = _lastViewportHeight - height;
+
+            _lastViewportWidth = width;
+            _lastViewportHeight = height;
+
+            if (widthDelta > 40)
+                return;
+
+            const double keyboardThreshold = 80;
+
+            if (heightDelta > keyboardThreshold)
+            {
+                _keyboardVisible = true;
+                ScrollBottomImmediately(force: true);
+                return;
+            }
+
+            if (heightDelta < -keyboardThreshold && _keyboardVisible)
+            {
+                _keyboardVisible = false;
+                ScrollBottomImmediately(force: true);
+            }
         }
 
         // ============================================================
@@ -164,39 +208,12 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
+            PeerAvatarUrl = cached.PhotoUrl ?? "";
+            PeerAvatarPath = cached.PhotoLocalPath ?? "";
             _peerProfileLoaded = true;
         }
 
-        private async Task EnsurePeerProfileAfterFirstRenderAsync()
-        {
-            if (_peerProfileLoaded)
-                return;
-
-            var peerId = (_peerUserId ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(peerId))
-                return;
-
-            var cached = await _userPublicCache.TryGetAsync(peerId, CancellationToken.None);
-            if (cached != null)
-            {
-                DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
-                _peerProfileLoaded = true;
-                return;
-            }
-
-            try
-            {
-                var profile = await FirestoreDirectoryService.GetUserPublicAsync(peerId);
-                if (profile == null)
-                    return;
-
-                var display = BuildDisplayNomeCompleto(profile.FirstName, profile.LastName);
-                DisplayNomeCompleto = display;
-                _peerProfileLoaded = true;
-                await _userPublicCache.UpsertAsync(peerId, profile, CancellationToken.None);
-            }
-            catch { }
-        }
+        // Nessun fetch automatico profilo: si usa solo la cache locale.
 
         private static string BuildDisplayNomeCompleto(string? firstName, string? lastName)
         {

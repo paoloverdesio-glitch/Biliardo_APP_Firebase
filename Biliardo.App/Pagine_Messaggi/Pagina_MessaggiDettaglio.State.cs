@@ -2,6 +2,7 @@
 using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Processing;
+using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Cache_Locale.Profili;
@@ -102,6 +103,7 @@ namespace Biliardo.App.Pagine_Messaggi
         public ObservableCollection<string> EmojiItems { get; } = new();
         public Command<ChatMessageVm> OpenPdfCommand { get; set; } = null!;
         public Command<ChatMessageVm> RetrySendCommand { get; set; } = null!;
+        public Command<ChatMessageVm> SyncMessageCommand { get; set; } = null!;
 
         // ============================================================
         // 6) HEADER / TITOLI (BINDING XAML)
@@ -126,6 +128,20 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         public bool HasDisplayNomeCompleto => !string.IsNullOrWhiteSpace(DisplayNomeCompleto);
+
+        private string _peerAvatarUrl = "";
+        public string PeerAvatarUrl
+        {
+            get => _peerAvatarUrl;
+            set { _peerAvatarUrl = value ?? ""; OnPropertyChanged(); }
+        }
+
+        private string _peerAvatarPath = "";
+        public string PeerAvatarPath
+        {
+            get => _peerAvatarPath;
+            set { _peerAvatarPath = value ?? ""; OnPropertyChanged(); }
+        }
 
         // ============================================================
         // 7) COMPOSER: TESTO / ALLEGATI / INVIO (BINDING XAML o VIEW)
@@ -207,7 +223,6 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private bool _peerProfileLoaded;
 
-        private string? _lastIdToken;
         private string? _lastMyUid;
         private string? _lastPeerId;
         private string? _lastChatId;
@@ -221,18 +236,20 @@ namespace Biliardo.App.Pagine_Messaggi
         private CancellationTokenSource? _appearanceCts;
         private bool _realtimeSubscribed;
 
-        // Modali: evita stop polling quando apro un modal (foto fullscreen, bottom sheet, ecc.)
-        private bool _suppressStopPollingOnce;
+        // Modali: evita stop aggiornamenti realtime quando apro un modal (foto fullscreen, bottom sheet, ecc.)
+        private bool _suppressStopRealtimeOnce;
 
         // ============================================================
         // 12) SERVIZI FIREBASE (chat)
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private readonly MediaCacheService _mediaCache = new();
+        private readonly Cache_Locale.SQLite.ChatCacheStore _chatStore = new();
 
         // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
         private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
         private readonly UserPublicLocalCache _userPublicCache = new();
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
 
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 
@@ -240,16 +257,21 @@ namespace Biliardo.App.Pagine_Messaggi
         private long _lastWaveformSampleTicks;
 
         // ============================================================
-        // 13) POLLING / DIFF / PENDING APPLY (anti-jank)
+        // 13) REALTIME / DIFF / PENDING APPLY (anti-jank)
         // ============================================================
-        private CancellationTokenSource? _pollCts;
-        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(2500);
         private string _lastUiSignature = "";
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
         private string? _pendingSignature;
         private CancellationTokenSource? _pendingApplyCts;
         private readonly object _pendingLock = new();
+
+        // ============================================================
+        // 13.1) VIEWPORT TRACKING (tastiera / resize)
+        // ============================================================
+        private double _lastViewportWidth;
+        private double _lastViewportHeight;
+        private bool _keyboardVisible;
 
         // ============================================================
         // 14) PREFETCH MEDIA (foto+video visibili + anticipo)

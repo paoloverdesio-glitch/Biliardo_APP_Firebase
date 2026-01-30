@@ -1,7 +1,10 @@
 ﻿using Biliardo.App.Componenti_UI;
 using Biliardo.App.Pagine_Autenticazione;
+using Biliardo.App.Cache_Locale.Profili;
+using Biliardo.App.Cache_Locale.SQLite;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
+using Biliardo.App.Realtime;
 using Microsoft.Maui.ApplicationModel;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -18,11 +21,9 @@ namespace Biliardo.App.Pagine_Messaggi
         // =========================================================
         private readonly ListaViewModel _vm = new();
 
-        private CancellationTokenSource? _pollCts;
-        private const int ThreadsPollingIntervalMs = 3000;
-
         // Guardia anti doppia navigazione (doppio tap / eventi ripetuti)
         private bool _isNavigatingToChat;
+        private bool _realtimeSubscribed;
 
 #if DEBUG
         private readonly IPushNotificationService _push = new PushNotificationService();
@@ -137,9 +138,6 @@ namespace Biliardo.App.Pagine_Messaggi
                     return;
                 }
 
-                // stop polling PRIMA del push (evita refresh durante transizione)
-                StopPolling();
-
                 // IMPORTANTISSIMO: push senza animazione (riduce “trasparenze/glitch”)
                 await Navigation.PushAsync(new Pagina_MessaggiDettaglio(withUserId, nickname), animated: false);
             }
@@ -148,7 +146,6 @@ namespace Biliardo.App.Pagine_Messaggi
                 // Se la navigazione fallisce, ripristina stato pagina lista
                 _isNavigatingToChat = false;
                 _vm.SetSuspended(false);
-                StartPolling();
                 throw;
             }
             finally
@@ -164,16 +161,16 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             base.OnAppearing();
 
-            // rientro dalla chat: riabilita navigazione e polling
+            // rientro dalla chat: riabilita navigazione e aggiornamenti realtime
             _isNavigatingToChat = false;
             _vm.SetSuspended(false);
 
             try
             {
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                var hasSession = await FirebaseSessionePersistente.HaSessioneAsync();
                 var myUid = FirebaseSessionePersistente.GetLocalId();
 
-                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
+                if (!hasSession || string.IsNullOrWhiteSpace(myUid))
                 {
                     await DisplayAlert("Sessione", "Sessione Firebase assente/scaduta. Rifai login.", "OK");
                     Application.Current.MainPage = new NavigationPage(new Pagina_Login(showInserisciCredenziali: true));
@@ -195,7 +192,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 try { ListaChat.SelectedItem = null; } catch { }
 
                 await _vm.CaricaAsync();
-                StartPolling();
+                StartRealtimeUpdates();
             }
             catch (Exception ex)
             {
@@ -207,9 +204,9 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             base.OnDisappearing();
 
-            // Quando esco dalla pagina lista (es. apro una chat), sospendo aggiornamenti e fermo polling
+            // Quando esco dalla pagina lista (es. apro una chat), sospendo aggiornamenti e fermo realtime
             _vm.SetSuspended(true);
-            StopPolling();
+            StopRealtimeUpdates();
         }
 
 #if DEBUG
@@ -251,70 +248,32 @@ namespace Biliardo.App.Pagine_Messaggi
 #endif
 
         // =========================================================
-        // 5) POLLING LISTA CHAT
+        // 5) REALTIME (PUSH)
         // =========================================================
-        private void StartPolling()
+        private void StartRealtimeUpdates()
         {
-            if (_pollCts != null)
+            if (_realtimeSubscribed)
                 return;
 
-            _pollCts = new CancellationTokenSource();
-            var token = _pollCts.Token;
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    while (!token.IsCancellationRequested)
-                    {
-                        try
-                        {
-                            await Task.Delay(ThreadsPollingIntervalMs, token);
-                            if (token.IsCancellationRequested)
-                                break;
-
-                            // Se sto navigando o la pagina è sospesa, non aggiornare
-                            if (_isNavigatingToChat || _vm.IsSuspended)
-                                continue;
-
-                            // Evita invocazioni UI non necessarie se cancellato nel frattempo
-                            if (token.IsCancellationRequested)
-                                break;
-
-                            await MainThread.InvokeOnMainThreadAsync(async () =>
-                            {
-                                try
-                                {
-                                    if (token.IsCancellationRequested || _isNavigatingToChat || _vm.IsSuspended)
-                                        return;
-
-                                    await _vm.CaricaAsync();
-                                }
-                                catch
-                                {
-                                    // best-effort
-                                }
-                            });
-                        }
-                        catch (TaskCanceledException) { break; }
-                        catch (Exception ex)
-                        {
-                            Debug.WriteLine($"[MessagesPolling] {ex.GetType().Name}: {ex.Message}");
-                        }
-                    }
-                }
-                finally
-                {
-                    Debug.WriteLine("[MessagesPolling] stopped");
-                }
-            }, token);
+            _realtimeSubscribed = true;
+            BusEventiRealtime.Instance.NewChatMessageNotification += OnRealtimeChatMessage;
         }
 
-        private void StopPolling()
+        private void StopRealtimeUpdates()
         {
-            try { _pollCts?.Cancel(); } catch { }
-            try { _pollCts?.Dispose(); } catch { }
-            _pollCts = null;
+            if (!_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = false;
+            BusEventiRealtime.Instance.NewChatMessageNotification -= OnRealtimeChatMessage;
+        }
+
+        private void OnRealtimeChatMessage(object? sender, RealtimeEventPayload e)
+        {
+            if (_isNavigatingToChat || _vm.IsSuspended)
+                return;
+
+            _ = _vm.CaricaAsync();
         }
     }
 
@@ -332,14 +291,9 @@ namespace Biliardo.App.Pagine_Messaggi
         public void SetSuspended(bool suspended)
             => Volatile.Write(ref _suspendedFlag, suspended ? 1 : 0);
 
-        private readonly FirestoreChatService _fsChat = new("biliardoapp");
-
-        // cache profili (riduce chiamate)
+        private readonly ChatCacheStore _chatStore = new();
+        private readonly UserPublicLocalCache _profileCache = new();
         private readonly Dictionary<string, FirestoreDirectoryService.UserPublicItem> _userCache = new(StringComparer.Ordinal);
-
-        // Sweep delivered: evita burst e sovrapposizioni
-        private readonly SemaphoreSlim _deliveredSweepLock = new(1, 1);
-        private DateTimeOffset _lastDeliveredSweepUtc = DateTimeOffset.MinValue;
 
         public async Task CaricaAsync()
         {
@@ -347,62 +301,53 @@ namespace Biliardo.App.Pagine_Messaggi
             if (IsSuspended)
                 return;
 
-            // Anti-reentrancy robusto (polling + OnAppearing ecc.)
+            // Anti-reentrancy robusto (realtime + OnAppearing ecc.)
             if (Interlocked.Exchange(ref _isLoadingFlag, 1) == 1)
                 return;
 
             try
             {
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
                 var myUid = FirebaseSessionePersistente.GetLocalId();
-
-                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
+                if (string.IsNullOrWhiteSpace(myUid))
                     throw new InvalidOperationException("Sessione Firebase assente/scaduta. Rifai login Firebase.");
 
-                // Fetch rete (fuori UI thread)
-                var chats = await _fsChat.ListChatsAsync(idToken, myUid, limit: 200);
+                var chats = await _chatStore.ListChatsAsync(CancellationToken.None);
 
                 // Ordina lato client per updatedAt/lastAt desc (stile WhatsApp)
                 var ordered = chats
                     .Where(c => !string.IsNullOrWhiteSpace(c.PeerUid))
-                    .OrderByDescending(c => c.UpdatedAtUtc ?? c.LastAtUtc ?? DateTimeOffset.MinValue)
+                    .OrderByDescending(c => c.UpdatedAtUtc)
                     .ToList();
-
-                // Pre-carica profili peer (best-effort)
-                await PrefetchProfilesAsync(ordered.Select(x => x.PeerUid).Distinct());
 
                 // Prepara nuova lista in memoria (no UI)
                 var newItems = new List<ChatPreview>(ordered.Count);
 
                 foreach (var c in ordered)
                 {
-                    var whenUtc = c.UpdatedAtUtc ?? c.LastAtUtc ?? DateTimeOffset.MinValue;
+                    var whenUtc = c.UpdatedAtUtc;
                     var whenLocal = whenUtc.ToLocalTime().DateTime;
 
                     var peerUid = c.PeerUid;
 
-                    var p = TryGetProfile(peerUid);
+                    var p = await TryGetProfileAsync(peerUid);
                     var nickname =
                         (!string.IsNullOrWhiteSpace(p?.Nickname) ? p!.Nickname :
-                        !string.IsNullOrWhiteSpace(c.PeerNickname) ? c.PeerNickname :
                         peerUid);
 
-                    var fullName = p?.FullNameOrPlaceholder ?? "xxxxx xxxxx";
-                    var photo = p?.PhotoUrl ?? "";
+                    var fullName = p?.FullNameOrPlaceholder ?? "";
+                    var photoUrl = p?.PhotoUrl ?? "";
+                    var photoLocal = p?.PhotoLocalPath ?? "";
 
-                    var preview = c.LastText ?? "";
-                    var type = string.IsNullOrWhiteSpace(c.LastType) ? "text" : c.LastType;
+                    var lastMessage = await _chatStore.GetLatestMessageAsync(c.ChatId, CancellationToken.None);
+                    var preview = lastMessage?.Text ?? "";
+                    var type = string.IsNullOrWhiteSpace(preview) && !string.IsNullOrWhiteSpace(lastMessage?.MediaKey) ? "file" : "text";
 
                     if (string.IsNullOrWhiteSpace(preview) || preview.Trim().Length == 0)
                     {
                         preview = type switch
                         {
-                            "audio" => "🎤 Messaggio vocale",
-                            "video" => "🎬 Video",
-                            "file" => "📎 Documento",
-                            "gif" => "GIF",
-                            "sticker" => "Sticker",
-                            _ => ""
+                            "file" => "📎 Contenuto disponibile",
+                            _ => "Contenuto disponibile"
                         };
                     }
 
@@ -410,11 +355,11 @@ namespace Biliardo.App.Pagine_Messaggi
                         withUserId: peerUid,
                         nickname: nickname,
                         fullName: fullName,
-                        avatarUrl: photo,
-                        avatarPath: photo,
+                        avatarUrl: photoUrl,
+                        avatarPath: photoLocal,
                         ultimoMessaggio: preview,
                         dataOra: whenLocal,
-                        nonLetti: 0));
+                        nonLetti: c.UnreadCount));
                 }
 
                 // Applica su UI thread, e solo se non sospeso
@@ -428,8 +373,6 @@ namespace Biliardo.App.Pagine_Messaggi
                         ChatPreviews.Add(it);
                 });
 
-                // Sweep delivered best-effort (come tuo codice)
-                _ = SweepDeliveredFromListBestEffortAsync(myUid, ordered);
             }
             finally
             {
@@ -437,158 +380,23 @@ namespace Biliardo.App.Pagine_Messaggi
             }
         }
 
-        private FirestoreDirectoryService.UserPublicItem? TryGetProfile(string uid)
+        private async Task<FirestoreDirectoryService.UserPublicItem?> TryGetProfileAsync(string uid)
         {
             if (string.IsNullOrWhiteSpace(uid)) return null;
             lock (_userCache)
             {
-                return _userCache.TryGetValue(uid, out var p) ? p : null;
+                if (_userCache.TryGetValue(uid, out var p))
+                    return p;
             }
-        }
 
-        private async Task PrefetchProfilesAsync(IEnumerable<string> uids)
-        {
-            var list = uids.Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
-            if (list.Count == 0) return;
-
-            // evita chiamate duplicate
-            var toFetch = new List<string>();
-            lock (_userCache)
+            var cached = await _profileCache.TryGetAsync(uid, CancellationToken.None);
+            if (cached != null)
             {
-                foreach (var u in list)
-                {
-                    if (!_userCache.ContainsKey(u))
-                        toFetch.Add(u);
-                }
+                lock (_userCache)
+                    _userCache[uid] = cached;
             }
-            if (toFetch.Count == 0) return;
 
-            // concorrenza max 6
-            using var sem = new SemaphoreSlim(6, 6);
-
-            var tasks = toFetch.Select(async uid =>
-            {
-                await sem.WaitAsync();
-                try
-                {
-                    var p = await FirestoreDirectoryService.GetUserPublicAsync(uid);
-                    if (p != null)
-                    {
-                        lock (_userCache)
-                            _userCache[uid] = p;
-                    }
-                }
-                catch
-                {
-                    // best-effort
-                }
-                finally
-                {
-                    sem.Release();
-                }
-            }).ToList();
-
-            await Task.WhenAll(tasks);
-        }
-
-        private async Task SweepDeliveredFromListBestEffortAsync(
-            string myUid,
-            IReadOnlyList<FirestoreChatService.ChatItem> orderedChats)
-        {
-            // Se sospeso, non fare sweep
-            if (IsSuspended)
-                return;
-
-            // throttle: max 1 sweep ogni 4 secondi
-            var now = DateTimeOffset.UtcNow;
-            if ((now - _lastDeliveredSweepUtc) < TimeSpan.FromSeconds(4))
-                return;
-
-            if (!await _deliveredSweepLock.WaitAsync(0))
-                return;
-
-            try
-            {
-                if (IsSuspended)
-                    return;
-
-                now = DateTimeOffset.UtcNow;
-                if ((now - _lastDeliveredSweepUtc) < TimeSpan.FromSeconds(4))
-                    return;
-
-                _lastDeliveredSweepUtc = now;
-
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
-                    return;
-
-                // lavora solo su chat più recenti
-                var targets = orderedChats
-                    .Where(c => !string.IsNullOrWhiteSpace(c.ChatId))
-                    .Take(15)
-                    .ToList();
-
-                if (targets.Count == 0)
-                    return;
-
-                // concorrenza max 3
-                using var sem = new SemaphoreSlim(3, 3);
-
-                var tasks = targets.Select(async chat =>
-                {
-                    await sem.WaitAsync();
-                    try
-                    {
-                        if (IsSuspended) return;
-
-                        var msgs = await _fsChat.GetLastMessagesAsync(idToken, chat.ChatId, limit: 25);
-
-                        var inbound = msgs
-                            .Where(m => !string.Equals(m.SenderId, myUid, StringComparison.Ordinal))
-                            .Where(m => m.DeliveredTo == null || !m.DeliveredTo.Contains(myUid, StringComparer.Ordinal))
-                            .OrderByDescending(m => m.CreatedAtUtc)
-                            .Take(20)
-                            .ToList();
-
-                        foreach (var m in inbound)
-                        {
-                            try
-                            {
-                                if (IsSuspended) break;
-
-                                await _fsChat.TryMarkDeliveredAsync(
-                                    idToken: idToken,
-                                    chatId: chat.ChatId,
-                                    messageId: m.MessageId,
-                                    currentDeliveredTo: m.DeliveredTo,
-                                    myUid: myUid);
-                            }
-                            catch
-                            {
-                                // best-effort
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // best-effort
-                    }
-                    finally
-                    {
-                        sem.Release();
-                    }
-                }).ToList();
-
-                await Task.WhenAll(tasks);
-            }
-            catch
-            {
-                // best-effort
-            }
-            finally
-            {
-                _deliveredSweepLock.Release();
-            }
+            return cached;
         }
     }
 
@@ -601,7 +409,7 @@ namespace Biliardo.App.Pagine_Messaggi
         public string AvatarUrl { get; }
         public string AvatarPath { get; }
 
-        public string DisplayTitle => $"{Nickname} ({FullName})";
+        public string DisplayTitle => string.IsNullOrWhiteSpace(FullName) ? Nickname : $"{Nickname} ({FullName})";
 
         public string UltimoMessaggio { get; }
         public string OraBreve { get; }
@@ -621,7 +429,7 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             WithUserId = withUserId;
             Nickname = nickname;
-            FullName = string.IsNullOrWhiteSpace(fullName) ? "xxxxx xxxxx" : fullName;
+            FullName = fullName ?? "";
             AvatarUrl = avatarUrl ?? "";
             AvatarPath = avatarPath ?? "";
             UltimoMessaggio = ultimoMessaggio ?? "";

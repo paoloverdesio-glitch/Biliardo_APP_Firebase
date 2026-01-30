@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 
 using Biliardo.App.Componenti_UI.Composer;
 using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Servizi_Firebase;
 
@@ -14,6 +15,7 @@ namespace Biliardo.App.Infrastructure.Media.Home
     public sealed class HomeMediaPipeline
     {
         private readonly IMediaPreviewGenerator _previewGenerator;
+        private readonly MediaCacheService _mediaCache = new();
 
         public HomeMediaPipeline(IMediaPreviewGenerator previewGenerator)
         {
@@ -63,6 +65,22 @@ namespace Biliardo.App.Infrastructure.Media.Home
             var kind = GetMediaKind(contentType, fileName);
             ValidateAttachmentLimits(kind, sizeBytes, item.DurationMs);
 
+            if (string.IsNullOrWhiteSpace(item.MediaCacheKey))
+            {
+                var originalPath = item.LocalFilePath;
+                var registration = await _mediaCache.RegisterLocalFileAsync(item.LocalFilePath, kind.ToString().ToLowerInvariant(), ct);
+                if (registration != null)
+                {
+                    item.MediaCacheKey = registration.CacheKey;
+                    item.LocalFilePath = registration.LocalPath;
+
+                    if (!string.Equals(originalPath, item.LocalFilePath, StringComparison.Ordinal))
+                    {
+                        try { if (File.Exists(originalPath)) File.Delete(originalPath); } catch { }
+                    }
+                }
+            }
+
             MediaPreviewResult? preview = null;
             if (kind is MediaKind.Image or MediaKind.Video or MediaKind.Pdf)
             {
@@ -81,6 +99,9 @@ namespace Biliardo.App.Infrastructure.Media.Home
                 contentType: contentType,
                 ct: ct);
 
+            if (!string.IsNullOrWhiteSpace(item.MediaCacheKey))
+                await _mediaCache.RegisterAliasAsync(upload.StoragePath, item.MediaCacheKey, ct);
+
             string? thumbStoragePath = null;
             if (preview != null && AppMediaOptions.StoreThumbInStorage && File.Exists(preview.ThumbLocalPath))
             {
@@ -98,11 +119,6 @@ namespace Biliardo.App.Infrastructure.Media.Home
             if (preview != null && !string.IsNullOrWhiteSpace(preview.ThumbLocalPath))
             {
                 try { if (File.Exists(preview.ThumbLocalPath)) File.Delete(preview.ThumbLocalPath); } catch { }
-            }
-
-            if (item.Kind == PendingKind.AudioDraft)
-            {
-                try { File.Delete(item.LocalFilePath); } catch { }
             }
 
             var type = item.Kind switch
@@ -130,7 +146,7 @@ namespace Biliardo.App.Infrastructure.Media.Home
                 preview?.Height);
         }
 
-        private static MediaKind GetMediaKind(string contentType, string fileName)
+        public static MediaKind GetMediaKind(string contentType, string fileName)
         {
             if (!string.IsNullOrWhiteSpace(contentType))
             {
