@@ -2,8 +2,12 @@
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
+using Microsoft.Maui.ApplicationModel;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Biliardo.App.Pagine_Messaggi
 {
@@ -64,17 +68,41 @@ namespace Biliardo.App.Pagine_Messaggi
             }
         }
 
+        private static bool TryGetSelectedChat(SelectionChangedEventArgs e, out ChatPreview? chat)
+        {
+            chat = null;
+
+            try
+            {
+                // Evita indicizzazione [0] (race possibile se la lista si aggiorna durante l'evento).
+                chat = e.CurrentSelection?.OfType<ChatPreview>().FirstOrDefault();
+                return chat != null;
+            }
+            catch
+            {
+                chat = null;
+                return false;
+            }
+        }
+
         private async void OnSelezioneChat(object sender, SelectionChangedEventArgs e)
         {
             try
             {
-                if (e.CurrentSelection?.Count > 0 && e.CurrentSelection[0] is ChatPreview chat)
+                // Se stiamo già navigando, ignora eventi duplicati
+                if (_isNavigatingToChat)
                 {
-                    // evita che resti selezionata
-                    ListaChat.SelectedItem = null;
-
-                    await NavigateToChatAsync(chat.WithUserId, chat.Nickname);
+                    try { ListaChat.SelectedItem = null; } catch { }
+                    return;
                 }
+
+                if (!TryGetSelectedChat(e, out var chat) || chat == null)
+                    return;
+
+                // evita che resti selezionata e riduce rimbalzi SelectionChanged
+                try { ListaChat.SelectedItem = null; } catch { }
+
+                await NavigateToChatAsync(chat.WithUserId, chat.Nickname);
             }
             catch (Exception ex)
             {
@@ -83,7 +111,7 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // =========================================================
-        // 3) NAVIGAZIONE (NO ANIMAZIONE + STOP POLLING IMMEDIATO)
+        // 3) NAVIGAZIONE (STOP POLLING + SUSPEND LIST UPDATES)
         // =========================================================
         private async Task NavigateToChatAsync(string withUserId, string nickname)
         {
@@ -91,6 +119,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             _isNavigatingToChat = true;
+
+            // BLOCCA subito: evita refresh lista durante la selezione / transizione
+            _vm.SetSuspended(true);
 
             try
             {
@@ -101,6 +132,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     string.Equals(withUserId, myUid, StringComparison.Ordinal))
                 {
                     await DisplayAlert("Messaggi", "Non puoi scrivere a te stesso.", "OK");
+                    _isNavigatingToChat = false;
+                    _vm.SetSuspended(false);
                     return;
                 }
 
@@ -109,6 +142,14 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 // IMPORTANTISSIMO: push senza animazione (riduce “trasparenze/glitch”)
                 await Navigation.PushAsync(new Pagina_MessaggiDettaglio(withUserId, nickname), animated: false);
+            }
+            catch
+            {
+                // Se la navigazione fallisce, ripristina stato pagina lista
+                _isNavigatingToChat = false;
+                _vm.SetSuspended(false);
+                StartPolling();
+                throw;
             }
             finally
             {
@@ -125,6 +166,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             // rientro dalla chat: riabilita navigazione e polling
             _isNavigatingToChat = false;
+            _vm.SetSuspended(false);
 
             try
             {
@@ -149,6 +191,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 await MostraTokenFcmDebugAsync();
 #endif
 
+                // Difensivo: nessuna selezione residua
+                try { ListaChat.SelectedItem = null; } catch { }
+
                 await _vm.CaricaAsync();
                 StartPolling();
             }
@@ -161,6 +206,9 @@ namespace Biliardo.App.Pagine_Messaggi
         protected override void OnDisappearing()
         {
             base.OnDisappearing();
+
+            // Quando esco dalla pagina lista (es. apro una chat), sospendo aggiornamenti e fermo polling
+            _vm.SetSuspended(true);
             StopPolling();
         }
 
@@ -225,10 +273,27 @@ namespace Biliardo.App.Pagine_Messaggi
                             if (token.IsCancellationRequested)
                                 break;
 
+                            // Se sto navigando o la pagina è sospesa, non aggiornare
+                            if (_isNavigatingToChat || _vm.IsSuspended)
+                                continue;
+
+                            // Evita invocazioni UI non necessarie se cancellato nel frattempo
+                            if (token.IsCancellationRequested)
+                                break;
+
                             await MainThread.InvokeOnMainThreadAsync(async () =>
                             {
-                                try { await _vm.CaricaAsync(); }
-                                catch { }
+                                try
+                                {
+                                    if (token.IsCancellationRequested || _isNavigatingToChat || _vm.IsSuspended)
+                                        return;
+
+                                    await _vm.CaricaAsync();
+                                }
+                                catch
+                                {
+                                    // best-effort
+                                }
                             });
                         }
                         catch (TaskCanceledException) { break; }
@@ -259,7 +324,13 @@ namespace Biliardo.App.Pagine_Messaggi
     {
         public ObservableCollection<ChatPreview> ChatPreviews { get; } = new();
 
-        private bool _isLoading;
+        private int _isLoadingFlag; // 0/1 (thread-safe)
+        private int _suspendedFlag; // 0/1 (thread-safe)
+
+        public bool IsSuspended => Volatile.Read(ref _suspendedFlag) == 1;
+
+        public void SetSuspended(bool suspended)
+            => Volatile.Write(ref _suspendedFlag, suspended ? 1 : 0);
 
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
 
@@ -272,10 +343,14 @@ namespace Biliardo.App.Pagine_Messaggi
 
         public async Task CaricaAsync()
         {
-            if (_isLoading)
+            // Se sospeso (es. sto navigando), non toccare la collection
+            if (IsSuspended)
                 return;
 
-            _isLoading = true;
+            // Anti-reentrancy robusto (polling + OnAppearing ecc.)
+            if (Interlocked.Exchange(ref _isLoadingFlag, 1) == 1)
+                return;
+
             try
             {
                 var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
@@ -284,6 +359,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
                     throw new InvalidOperationException("Sessione Firebase assente/scaduta. Rifai login Firebase.");
 
+                // Fetch rete (fuori UI thread)
                 var chats = await _fsChat.ListChatsAsync(idToken, myUid, limit: 200);
 
                 // Ordina lato client per updatedAt/lastAt desc (stile WhatsApp)
@@ -295,7 +371,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 // Pre-carica profili peer (best-effort)
                 await PrefetchProfilesAsync(ordered.Select(x => x.PeerUid).Distinct());
 
-                ChatPreviews.Clear();
+                // Prepara nuova lista in memoria (no UI)
+                var newItems = new List<ChatPreview>(ordered.Count);
 
                 foreach (var c in ordered)
                 {
@@ -329,7 +406,7 @@ namespace Biliardo.App.Pagine_Messaggi
                         };
                     }
 
-                    ChatPreviews.Add(new ChatPreview(
+                    newItems.Add(new ChatPreview(
                         withUserId: peerUid,
                         nickname: nickname,
                         fullName: fullName,
@@ -340,12 +417,23 @@ namespace Biliardo.App.Pagine_Messaggi
                         nonLetti: 0));
                 }
 
+                // Applica su UI thread, e solo se non sospeso
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    if (IsSuspended)
+                        return;
+
+                    ChatPreviews.Clear();
+                    foreach (var it in newItems)
+                        ChatPreviews.Add(it);
+                });
+
                 // Sweep delivered best-effort (come tuo codice)
                 _ = SweepDeliveredFromListBestEffortAsync(myUid, ordered);
             }
             finally
             {
-                _isLoading = false;
+                Interlocked.Exchange(ref _isLoadingFlag, 0);
             }
         }
 
@@ -407,6 +495,10 @@ namespace Biliardo.App.Pagine_Messaggi
             string myUid,
             IReadOnlyList<FirestoreChatService.ChatItem> orderedChats)
         {
+            // Se sospeso, non fare sweep
+            if (IsSuspended)
+                return;
+
             // throttle: max 1 sweep ogni 4 secondi
             var now = DateTimeOffset.UtcNow;
             if ((now - _lastDeliveredSweepUtc) < TimeSpan.FromSeconds(4))
@@ -417,6 +509,9 @@ namespace Biliardo.App.Pagine_Messaggi
 
             try
             {
+                if (IsSuspended)
+                    return;
+
                 now = DateTimeOffset.UtcNow;
                 if ((now - _lastDeliveredSweepUtc) < TimeSpan.FromSeconds(4))
                     return;
@@ -444,6 +539,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     await sem.WaitAsync();
                     try
                     {
+                        if (IsSuspended) return;
+
                         var msgs = await _fsChat.GetLastMessagesAsync(idToken, chat.ChatId, limit: 25);
 
                         var inbound = msgs
@@ -457,6 +554,8 @@ namespace Biliardo.App.Pagine_Messaggi
                         {
                             try
                             {
+                                if (IsSuspended) break;
+
                                 await _fsChat.TryMarkDeliveredAsync(
                                     idToken: idToken,
                                     chatId: chat.ChatId,

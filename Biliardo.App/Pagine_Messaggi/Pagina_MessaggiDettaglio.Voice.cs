@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -480,6 +481,52 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 return _recordingWaveform.ToArray();
             }
+        }
+
+        // ============================================================
+        // 5.1) COMPAT: REFRESH CHAT DOPO INVIO (fix CS0103)
+        // ============================================================
+        private async Task LoadOnceAsync(CancellationToken ct)
+        {
+            // Dopo i refactor, i metodi di refresh possono essere stati rinominati.
+            // Questo wrapper mantiene la funzionalità "refresh dopo invio" senza imporre un nome specifico.
+            var task =
+                TryInvokeRefreshTask("LoadOnceFromCacheAsync", ct) ??
+                TryInvokeRefreshTask("LoadCachedMessagesAsync", ct) ??
+                TryInvokeRefreshTask("LoadFromCacheAndRenderImmediatelyAsync", ct) ??
+                TryInvokeRefreshTask("LoadOnceFromServerAsync", ct);
+
+            if (task != null)
+                await task.ConfigureAwait(false);
+        }
+
+        private Task? TryInvokeRefreshTask(string methodName, CancellationToken ct)
+        {
+            // evita ricorsione accidentale
+            if (string.Equals(methodName, nameof(LoadOnceAsync), StringComparison.Ordinal))
+                return null;
+
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            // prova firma (CancellationToken)
+            var mi = GetType().GetMethod(methodName, flags, binder: null, types: new[] { typeof(CancellationToken) }, modifiers: null);
+            if (mi != null)
+            {
+                if (mi.Invoke(this, new object[] { ct }) is Task t1)
+                    return t1;
+                return null;
+            }
+
+            // prova firma ()
+            mi = GetType().GetMethod(methodName, flags, binder: null, types: Type.EmptyTypes, modifiers: null);
+            if (mi != null)
+            {
+                if (mi.Invoke(this, null) is Task t2)
+                    return t2;
+                return null;
+            }
+
+            return null;
         }
 
         // ============================================================

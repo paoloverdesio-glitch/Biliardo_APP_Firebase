@@ -182,7 +182,10 @@ namespace Biliardo.App
                 if (n?.Data != null && n.Data.Count > 0)
                 {
                     DiagLog.Note("Push.Data", string.Join(";", n.Data.Select(kv => $"{kv.Key}={kv.Value}")));
-                    PublishRealtimeFromPush(n.Data);
+
+                    // FIX CS1503: IDictionary<string,string> -> IReadOnlyDictionary<string,string>
+                    var ro = n.Data.ToDictionary(kv => kv.Key, kv => kv.Value);
+                    PublishRealtimeFromPush(ro);
                 }
             }
             catch (Exception ex)
