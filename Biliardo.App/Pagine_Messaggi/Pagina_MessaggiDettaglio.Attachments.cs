@@ -19,6 +19,8 @@ using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Servizi_Sicurezza;
+using Biliardo.App.Infrastructure.Media.Cache;
+
 
 // Alias
 using Path = System.IO.Path;

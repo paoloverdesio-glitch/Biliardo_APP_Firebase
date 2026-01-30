@@ -1,4 +1,5 @@
-﻿using System;
+﻿// File: Biliardo.App/App.xaml.cs
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -310,7 +311,23 @@ namespace Biliardo.App
                 return;
             }
 
-            await nav.PushAsync(new Pagina_Messaggi.Pagina_MessaggiDettaglio(peerUid, peerUid));
+            // FIX CS0246: evitare riferimento diretto a "Pagina_Messaggi" (namespace/classe non presente)
+            var chatType = typeof(App).Assembly.GetType("Biliardo.App.Pagine_Messaggi.Pagina_MessaggiDettaglio");
+            if (chatType == null)
+                return;
+
+            try
+            {
+                var pageObj = Activator.CreateInstance(chatType, peerUid, peerUid) as Page;
+                if (pageObj == null)
+                    return;
+
+                await nav.PushAsync(pageObj);
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Exception("Push.NavigateToChat", ex);
+            }
         }
 
         private static void PublishRealtimeFromPush(IReadOnlyDictionary<string, string> data)

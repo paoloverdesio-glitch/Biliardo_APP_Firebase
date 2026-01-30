@@ -1,3 +1,4 @@
+// File: Biliardo.App/Pagine_Debug/CacheDebugHarness.cs
 using System;
 using System.Diagnostics;
 using System.Linq;
@@ -62,19 +63,22 @@ namespace Biliardo.App.Pagine_Debug
             var homeCache = new HomeFeedLocalCache();
             var now = DateTimeOffset.UtcNow;
 
+            // CachedHomePost(PostId, AuthorName, AuthorFullName, Text, ThumbKey, CreatedAtUtc)
             var post1 = new HomeFeedLocalCache.CachedHomePost(
-                "p1",
-                "test",
-                "t1",
-                null,
-                now);
+                PostId: "p1",
+                AuthorName: "test",
+                AuthorFullName: "test",
+                Text: "t1",
+                ThumbKey: null,
+                CreatedAtUtc: now);
 
             var post2 = new HomeFeedLocalCache.CachedHomePost(
-                "p2",
-                "test",
-                "t2",
-                null,
-                now.AddSeconds(1));
+                PostId: "p2",
+                AuthorName: "test",
+                AuthorFullName: "test",
+                Text: "t2",
+                ThumbKey: null,
+                CreatedAtUtc: now.AddSeconds(1));
 
             await homeCache.SaveAsync(new[] { post1 }, CancellationToken.None);
             await homeCache.MergeNewTop(new[] { post2 }, CancellationToken.None);

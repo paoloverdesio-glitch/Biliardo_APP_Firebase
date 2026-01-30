@@ -1,4 +1,5 @@
-﻿// ========================= 1) NOME FILE E SCOPO =========================
+﻿// File: Biliardo.App/Pagine_Home/Pagina_Home.xaml.cs
+// ========================= 1) NOME FILE E SCOPO =========================
 // Pagine_Home/Pagina_Home.xaml.cs
 // Code-behind della Home. Implementa:
 //  - Barra icone (menu laterale, mercatino, sfida, chat, menu account).
@@ -1342,9 +1343,16 @@ namespace Biliardo.App.Pagine_Home
 
             var dest = Path.Combine(FileSystem.CacheDirectory, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{ext}");
 
-            await using var src = await fr.OpenReadAsync();
-            await using var dst = File.Create(dest);
-            await src.CopyToAsync(dst);
+            // FIX: gli "await using var" tenevano il file aperto (lock) fino a fine metodo.
+            // Qui chiudiamo davvero src/dst prima di registrare il file nella cache persistente.
+            await using (var src = await fr.OpenReadAsync())
+            {
+                await using (var dst = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.Read))
+                {
+                    await src.CopyToAsync(dst);
+                    await dst.FlushAsync();
+                }
+            }
 
             var contentType = FirebaseStorageRestClient.GuessContentTypeFromPath(fr.FileName);
             var kind = HomeMediaPipeline.GetMediaKind(contentType, fr.FileName).ToString().ToLowerInvariant();

@@ -1,3 +1,4 @@
+// File: Biliardo.App/Infrastructure/Sync/FetchMissingContentUseCase.cs
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -9,7 +10,12 @@ namespace Biliardo.App.Infrastructure.Sync
     {
         private readonly MissingContentQueueStore _store = new();
 
-        public Task EnqueueAsync(string contentId, string kind, IReadOnlyDictionary<string, string> payload, int priority, CancellationToken ct)
+        public Task EnqueueAsync(
+            string contentId,
+            string kind,
+            IReadOnlyDictionary<string, string> payload,
+            int priority,
+            CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(contentId) || string.IsNullOrWhiteSpace(kind) || payload == null)
                 return Task.CompletedTask;
@@ -20,8 +26,8 @@ namespace Biliardo.App.Infrastructure.Sync
                 MissingContentQueueStore.SerializePayload(payload),
                 priority,
                 DateTimeOffset.UtcNow,
-                retryCount: 0,
-                lastAttemptUtc: null);
+                RetryCount: 0,
+                LastAttemptUtc: null);
 
             return _store.EnqueueAsync(item, ct);
         }

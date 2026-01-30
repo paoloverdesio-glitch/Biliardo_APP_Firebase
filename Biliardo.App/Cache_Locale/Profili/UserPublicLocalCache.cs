@@ -1,3 +1,4 @@
+// File: Biliardo.App/Cache_Locale/Profili/UserPublicLocalCache.cs
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,13 +20,17 @@ namespace Biliardo.App.Cache_Locale.Profili
             if (row == null)
                 return null;
 
-            return new FirestoreDirectoryService.UserPublicItem(
-                Uid: row.Uid,
-                Nickname: row.Nickname ?? "",
-                FirstName: row.FirstName ?? "",
-                LastName: row.LastName ?? "",
-                PhotoUrl: row.PhotoUrl ?? "",
-                PhotoLocalPath: row.PhotoLocalPath ?? "");
+            var nickname = row.Nickname ?? "";
+            return new FirestoreDirectoryService.UserPublicItem
+            {
+                Uid = row.Uid,
+                Nickname = nickname,
+                NicknameLower = string.IsNullOrWhiteSpace(nickname) ? "" : nickname.ToLowerInvariant(),
+                FirstName = row.FirstName ?? "",
+                LastName = row.LastName ?? "",
+                PhotoUrl = row.PhotoUrl ?? "",
+                PhotoLocalPath = row.PhotoLocalPath ?? ""
+            };
         }
 
         public Task UpsertAsync(string uid, FirestoreDirectoryService.UserPublicItem profile, CancellationToken ct)

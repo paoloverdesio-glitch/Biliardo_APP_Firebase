@@ -165,13 +165,15 @@ namespace Biliardo.App.Servizi_Firebase
             if (!string.IsNullOrWhiteSpace(cursor))
             {
                 var ts = ParseCursorTimestamp(cursor);
-                structuredQuery["startAfter"] = new Dictionary<string, object>
+                structuredQuery["startAt"] = new Dictionary<string, object>
                 {
                     ["values"] = new object[]
                     {
-                        FirestoreRestClient.VTimestamp(ts)
-                    }
+        FirestoreRestClient.VTimestamp(ts)
+                    },
+                    ["before"] = false
                 };
+
             }
 
             using var json = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
@@ -414,13 +416,15 @@ namespace Biliardo.App.Servizi_Firebase
             if (!string.IsNullOrWhiteSpace(cursor))
             {
                 var ts = DateTimeOffset.FromUnixTimeMilliseconds(long.Parse(cursor, CultureInfo.InvariantCulture));
-                structuredQuery["startAfter"] = new Dictionary<string, object>
+                structuredQuery["startAt"] = new Dictionary<string, object>
                 {
                     ["values"] = new object[]
                     {
-                        FirestoreRestClient.VTimestamp(ts)
-                    }
+        FirestoreRestClient.VTimestamp(ts)
+                    },
+                    ["before"] = false
                 };
+
             }
 
             using var json = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, $"home_posts/{postId}", ct);
