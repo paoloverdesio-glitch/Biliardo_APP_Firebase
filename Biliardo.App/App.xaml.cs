@@ -15,6 +15,7 @@ using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Realtime;
+using Biliardo.App.Infrastructure.Sync;
 using Plugin.Firebase.CloudMessaging.EventArgs;
 
 namespace Biliardo.App
@@ -28,6 +29,7 @@ namespace Biliardo.App
 
         private readonly IPushNotificationService? _push;
         private Dictionary<string, string>? _pendingPushData;
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
 
         public App(IServiceProvider services)
         {
@@ -163,6 +165,7 @@ namespace Biliardo.App
                     // FIX CS1503: IDictionary<string,string> -> IReadOnlyDictionary<string,string>
                     var ro = n.Data.ToDictionary(kv => kv.Key, kv => kv.Value);
                     _ = Task.Run(() => PushCacheUpdater.UpdateAsync(ro, CancellationToken.None));
+                    _ = Task.Run(() => EnqueueMissingIfNeededAsync(ro));
                     PublishRealtimeFromPush(ro);
                 }
             }
@@ -188,6 +191,7 @@ namespace Biliardo.App
                 {
                     DiagLog.Note("Push.Data", string.Join(";", _pendingPushData.Select(kv => $"{kv.Key}={kv.Value}")));
                     _ = Task.Run(() => PushCacheUpdater.UpdateAsync(_pendingPushData, CancellationToken.None));
+                    _ = Task.Run(() => EnqueueMissingIfNeededAsync(_pendingPushData));
                 }
             }
             catch (Exception ex)
@@ -224,13 +228,76 @@ namespace Biliardo.App
             try
             {
                 var kind = data.TryGetValue("kind", out var k) ? k : "";
-                if (!string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kind, "challenge", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kind, "broadcast", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(kind, "home_post", StringComparison.OrdinalIgnoreCase))
                 {
+                    await NavigateToHomePostAsync(nav, data);
                     return;
                 }
 
+                if (string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase))
+                {
+                    await NavigateToChatAsync(nav, data);
+                    return;
+                }
+
+                if (string.Equals(kind, "document", StringComparison.OrdinalIgnoreCase))
+                {
+                    await NavigateToHomeAsync(nav);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Exception("Push.Navigation", ex);
+            }
+        }
+
+        private async Task EnqueueMissingIfNeededAsync(IReadOnlyDictionary<string, string> data)
+        {
+            if (!PushPayloadValidator.IsPayloadComplete(data, out var kind, out var contentId))
+            {
+                if (!PushPayloadValidator.TryGetContentId(data, out contentId))
+                    return;
+
+                await _fetchMissing.EnqueueAsync(contentId, string.IsNullOrWhiteSpace(kind) ? "unknown" : kind, data, priority: 10, CancellationToken.None);
+            }
+        }
+
+        private static async Task NavigateToHomeAsync(NavigationPage nav)
+        {
+            var pageType = typeof(App).Assembly.GetType("Biliardo.App.Pagine_Home.Pagina_Home");
+            if (pageType == null)
+                return;
+
+            if (nav.CurrentPage?.GetType() == pageType)
+                return;
+
+            var pageObj = Activator.CreateInstance(pageType) as Page;
+            if (pageObj == null)
+                return;
+
+            await nav.PushAsync(pageObj);
+        }
+
+        private static async Task NavigateToHomePostAsync(NavigationPage nav, IReadOnlyDictionary<string, string> data)
+        {
+            await NavigateToHomeAsync(nav);
+
+            if (!PushPayloadValidator.TryGetContentId(data, out var contentId))
+                return;
+
+            if (nav.CurrentPage is Pagina_Home home)
+                await home.ScrollToPostIdAsync(contentId);
+        }
+
+        private static async Task NavigateToChatAsync(NavigationPage nav, IReadOnlyDictionary<string, string> data)
+        {
+            var peerUid = data.TryGetValue("peerUid", out var peer) ? peer : null;
+            if (string.IsNullOrWhiteSpace(peerUid) && data.TryGetValue("fromUid", out var fromUid))
+                peerUid = fromUid;
+
+            if (string.IsNullOrWhiteSpace(peerUid))
+            {
                 var pageType = typeof(App).Assembly.GetType("Biliardo.App.Pagine_Messaggi.Pagina_MessaggiLista");
                 if (pageType == null)
                     return;
@@ -240,12 +307,10 @@ namespace Biliardo.App
                     return;
 
                 await nav.PushAsync(pageObj);
-                DiagLog.Step("Navigation", "FromPushToMessagesList");
+                return;
             }
-            catch (Exception ex)
-            {
-                DiagLog.Exception("Push.Navigation", ex);
-            }
+
+            await nav.PushAsync(new Pagina_Messaggi.Pagina_MessaggiDettaglio(peerUid, peerUid));
         }
 
         private static void PublishRealtimeFromPush(IReadOnlyDictionary<string, string> data)

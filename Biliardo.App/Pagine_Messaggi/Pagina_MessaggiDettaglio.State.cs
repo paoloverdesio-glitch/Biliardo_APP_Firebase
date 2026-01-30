@@ -2,6 +2,7 @@
 using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Processing;
+using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Cache_Locale.Profili;
@@ -234,6 +235,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
         private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
         private readonly UserPublicLocalCache _userPublicCache = new();
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
 
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 

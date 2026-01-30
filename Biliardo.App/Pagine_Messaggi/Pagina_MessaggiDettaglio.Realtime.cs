@@ -268,6 +268,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
             if (TryBuildMessageFromPayload(data, out var message, out var requiresSync))
             {
+                if (requiresSync)
+                    _ = _fetchMissing.EnqueueAsync(message.MessageId ?? "", "private_message", data, priority: 5, CancellationToken.None);
                 _ = AppendRealtimeMessageAsync(message, requiresSync);
                 return;
             }
@@ -396,7 +398,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 {
                     vm.Text = "Contenuto disponibile";
                     vm.RequiresSync = true;
-                    vm.SyncCommand = SyncMessageCommand;
+                    vm.SyncCommand = null;
                 }
 
                 Messaggi.Add(vm);

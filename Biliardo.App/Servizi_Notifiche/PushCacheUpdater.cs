@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Biliardo.App.Cache_Locale.SQLite;
+using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Servizi_Firebase;
 
 namespace Biliardo.App.Servizi_Notifiche
@@ -13,6 +14,15 @@ namespace Biliardo.App.Servizi_Notifiche
         {
             if (data == null || data.Count == 0)
                 return;
+
+            if (!PushPayloadValidator.IsPayloadComplete(data, out var payloadKind, out var contentId))
+            {
+                if (PushPayloadValidator.TryGetContentId(data, out contentId))
+                {
+                    var fetchMissing = new FetchMissingContentUseCase();
+                    await fetchMissing.EnqueueAsync(contentId, string.IsNullOrWhiteSpace(payloadKind) ? "unknown" : payloadKind, data, priority: 10, ct);
+                }
+            }
 
             var kind = data.TryGetValue("kind", out var k) ? k : "";
 

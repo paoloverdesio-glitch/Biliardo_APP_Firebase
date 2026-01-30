@@ -21,6 +21,7 @@ using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
+using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Cache_Locale.Home;
 using Biliardo.App.Realtime;
 using Biliardo.App.Utilita;
@@ -54,13 +55,13 @@ namespace Biliardo.App.Pagine_Home
         private readonly FirestoreHomeFeedService _homeFeed = new();
         private readonly HomeFeedLocalCache _homeFeedCache = new();
         private readonly HomeLikesLocalCache _homeLikesCache = new();
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
         private readonly IAudioPlayback _audioPlayback;
         private readonly MediaCacheService _mediaCache = new();
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
         private readonly HomeMediaPipeline _homeMediaPipeline;
         public Command<HomeAttachmentVm> OpenPdfCommand { get; }
         public Command<HomePostVm> RetryHomePostCommand { get; }
-        public Command<HomePostVm> SyncHomePostCommand { get; }
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
         private HashSet<string> _likedPostIds = new(StringComparer.Ordinal);
@@ -93,7 +94,6 @@ namespace Biliardo.App.Pagine_Home
             _homeMediaPipeline = new HomeMediaPipeline(_previewGenerator);
             OpenPdfCommand = new Command<HomeAttachmentVm>(async att => await OnOpenPdfFromHome(att));
             RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
-            SyncHomePostCommand = new Command<HomePostVm>(async post => await SyncHomePostAsync(post));
 
             ApplyHomeFeedScrollTuning();
             _firstRenderGate = new FirstRenderGate(this, FeedCollection);
@@ -239,7 +239,7 @@ namespace Biliardo.App.Pagine_Home
                     var vm = HomePostVm.FromCached(post);
                     vm.IsLiked = _likedPostIds.Contains(vm.PostId);
                     vm.RetryCommand = RetryHomePostCommand;
-                    vm.SyncCommand = SyncHomePostCommand;
+                    vm.SyncCommand = null;
                     Posts.Add(vm);
                 }
 
@@ -250,6 +250,21 @@ namespace Biliardo.App.Pagine_Home
             {
                 // cache best-effort
             }
+        }
+
+        public async Task ScrollToPostIdAsync(string postId)
+        {
+            if (string.IsNullOrWhiteSpace(postId))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var target = Posts.FirstOrDefault(x => x.PostId == postId);
+                if (target == null)
+                    return;
+
+                FeedCollection.ScrollTo(target, position: ScrollToPosition.Start, animate: false);
+            });
         }
 
         private async void OnHomeFeedScrolled(object sender, ItemsViewScrolledEventArgs e)
@@ -284,7 +299,7 @@ namespace Biliardo.App.Pagine_Home
                         var vm = HomePostVm.FromCached(cached);
                         vm.IsLiked = _likedPostIds.Contains(vm.PostId);
                         vm.RetryCommand = RetryHomePostCommand;
-                        vm.SyncCommand = SyncHomePostCommand;
+                        vm.SyncCommand = null;
                         cachedVms.Add(vm);
                     }
 
@@ -323,7 +338,7 @@ namespace Biliardo.App.Pagine_Home
                 var vm = HomePostVm.FromService(post);
                 vm.IsLiked = _likedPostIds.Contains(vm.PostId);
                 vm.RetryCommand = RetryHomePostCommand;
-                vm.SyncCommand = SyncHomePostCommand;
+                vm.SyncCommand = null;
                 newPosts.Add(vm);
                 cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
             }
@@ -351,11 +366,6 @@ namespace Biliardo.App.Pagine_Home
                     Posts.Add(vm);
                 }
             });
-        }
-
-        private async Task SyncHomePostAsync(HomePostVm? post)
-        {
-            await SyncHomeFromServerAsync(post?.PostId);
         }
 
         private void StartRealtimeUpdatesAfterFirstRender()
@@ -389,6 +399,8 @@ namespace Biliardo.App.Pagine_Home
                 return;
 
             await _homeFeedCache.UpsertTop(cached);
+            if (requiresSync)
+                await _fetchMissing.EnqueueAsync(cached.PostId, "home_post", data, priority: 5, CancellationToken.None);
 
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
@@ -396,7 +408,7 @@ namespace Biliardo.App.Pagine_Home
                 var vm = HomePostVm.FromCached(cached);
                 vm.IsLiked = _likedPostIds.Contains(vm.PostId);
                 vm.RetryCommand = RetryHomePostCommand;
-                vm.SyncCommand = SyncHomePostCommand;
+                vm.SyncCommand = null;
                 vm.RequiresSync = requiresSync;
 
                 if (existing != null)
@@ -495,7 +507,7 @@ namespace Biliardo.App.Pagine_Home
                     var vm = HomePostVm.FromService(post);
                     vm.IsLiked = _likedPostIds.Contains(vm.PostId);
                     vm.RetryCommand = RetryHomePostCommand;
-                    vm.SyncCommand = SyncHomePostCommand;
+                    vm.SyncCommand = null;
                     newPosts.Add(vm);
                     cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
                 }

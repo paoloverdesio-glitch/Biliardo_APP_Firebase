@@ -24,7 +24,6 @@ namespace Biliardo.App.Pagine_Messaggi
             InitScrollTuning();          // Tuning scroll CollectionView
             OpenPdfCommand = new Command<ChatMessageVm>(async vm => await OnOpenPdfAsync(vm));
             RetrySendCommand = new Command<ChatMessageVm>(async vm => await RetrySendAsync(vm));
-            SyncMessageCommand = new Command<ChatMessageVm>(async _ => await SyncChatFromServerAsync());
 
             // 1.2) Stato iniziale UI
             TitoloChat = "Chat";

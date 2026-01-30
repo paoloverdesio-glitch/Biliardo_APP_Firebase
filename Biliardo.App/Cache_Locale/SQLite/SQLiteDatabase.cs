@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS Chats (
     PeerUid TEXT NOT NULL,
     LastMessageId TEXT,
     UnreadCount INTEGER NOT NULL,
-    UpdatedAtUtc TEXT NOT NULL
+    UpdatedAtUtc TEXT NOT NULL,
+    ServerTimestamp TEXT
 );
 CREATE INDEX IF NOT EXISTS IX_Chats_UpdatedAtUtc ON Chats(UpdatedAtUtc DESC);
 
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS Messages (
     Text TEXT,
     MediaKey TEXT,
     CreatedAtUtc TEXT NOT NULL,
+    ServerTimestamp TEXT,
     PRIMARY KEY(ChatId, MessageId)
 );
 CREATE INDEX IF NOT EXISTS IX_Messages_Chat_CreatedAtUtc ON Messages(ChatId, CreatedAtUtc DESC);
@@ -54,9 +56,17 @@ CREATE TABLE IF NOT EXISTS HomeFeed (
     AuthorName TEXT,
     Text TEXT,
     ThumbKey TEXT,
-    CreatedAtUtc TEXT NOT NULL
+    CreatedAtUtc TEXT NOT NULL,
+    ServerTimestamp TEXT
 );
 CREATE INDEX IF NOT EXISTS IX_HomeFeed_CreatedAtUtc ON HomeFeed(CreatedAtUtc DESC);
+
+CREATE TABLE IF NOT EXISTS HomeIndex (
+    PostId TEXT PRIMARY KEY,
+    CreatedAtUtc TEXT NOT NULL,
+    ServerTimestamp TEXT
+);
+CREATE INDEX IF NOT EXISTS IX_HomeIndex_CreatedAtUtc ON HomeIndex(CreatedAtUtc DESC);
 
 CREATE TABLE IF NOT EXISTS Profiles (
     Uid TEXT PRIMARY KEY,
@@ -64,7 +74,8 @@ CREATE TABLE IF NOT EXISTS Profiles (
     FirstName TEXT,
     LastName TEXT,
     PhotoUrl TEXT,
-    UpdatedAtUtc TEXT NOT NULL
+    UpdatedAtUtc TEXT NOT NULL,
+    ServerTimestamp TEXT
 );
 
 CREATE TABLE IF NOT EXISTS MediaCache (
@@ -73,7 +84,8 @@ CREATE TABLE IF NOT EXISTS MediaCache (
     Kind TEXT NOT NULL,
     LocalPath TEXT NOT NULL,
     SizeBytes INTEGER NOT NULL,
-    LastAccessUtc TEXT NOT NULL
+    LastAccessUtc TEXT NOT NULL,
+    ServerTimestamp TEXT
 );
 CREATE INDEX IF NOT EXISTS IX_MediaCache_LastAccessUtc ON MediaCache(LastAccessUtc ASC);
 
@@ -81,6 +93,18 @@ CREATE TABLE IF NOT EXISTS MediaAliases (
     AliasKey TEXT PRIMARY KEY,
     CacheKey TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS MissingContentQueue (
+    ContentId TEXT NOT NULL,
+    Kind TEXT NOT NULL,
+    PayloadJson TEXT NOT NULL,
+    Priority INTEGER NOT NULL,
+    CreatedAtUtc TEXT NOT NULL,
+    RetryCount INTEGER NOT NULL,
+    LastAttemptUtc TEXT,
+    PRIMARY KEY(ContentId, Kind)
+);
+CREATE INDEX IF NOT EXISTS IX_MissingContentQueue_CreatedAtUtc ON MissingContentQueue(CreatedAtUtc DESC);
 ";
                 cmd.ExecuteNonQuery();
                 _initialized = true;

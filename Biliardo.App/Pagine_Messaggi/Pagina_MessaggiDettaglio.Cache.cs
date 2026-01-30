@@ -45,7 +45,7 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 vm.Text = "Contenuto disponibile";
                 vm.RequiresSync = true;
-                vm.SyncCommand = SyncMessageCommand;
+                vm.SyncCommand = null;
             }
 
             return vm;
