@@ -26,6 +26,7 @@ namespace Biliardo.App.Servizi_Firebase
             public string FirstName { get; set; } = "";
             public string LastName { get; set; } = "";
             public string PhotoUrl { get; set; } = "";
+            public string PhotoLocalPath { get; set; } = "";
 
             public string FullNameOrPlaceholder
             {
@@ -35,7 +36,7 @@ namespace Biliardo.App.Servizi_Firebase
                     var ln = (LastName ?? "").Trim();
                     if (!string.IsNullOrWhiteSpace(fn) || !string.IsNullOrWhiteSpace(ln))
                         return $"{fn} {ln}".Trim();
-                    return "xxxxx xxxxx";
+                    return "";
                 }
             }
         }

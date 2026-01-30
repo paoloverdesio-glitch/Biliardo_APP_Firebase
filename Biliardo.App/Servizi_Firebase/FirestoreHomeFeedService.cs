@@ -30,6 +30,8 @@ namespace Biliardo.App.Servizi_Firebase
             string PostId,
             string AuthorUid,
             string AuthorNickname,
+            string AuthorFirstName,
+            string AuthorLastName,
             string? AuthorAvatarPath,
             string? AuthorAvatarUrl,
             DateTimeOffset CreatedAtUtc,
@@ -70,10 +72,12 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
-            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "";
+            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "Utente";
 
             string? avatarPath = null;
             string? avatarUrl = null;
+            string? firstName = null;
+            string? lastName = null;
 
             // Best-effort: se DirectoryService � protetto da rules, non deve bloccare la creazione post
             try
@@ -83,6 +87,8 @@ namespace Biliardo.App.Servizi_Firebase
                 {
                     avatarPath = profile.PhotoUrl;
                     avatarUrl = profile.PhotoUrl;
+                    firstName = profile.FirstName;
+                    lastName = profile.LastName;
                 }
             }
             catch
@@ -96,6 +102,8 @@ namespace Biliardo.App.Servizi_Firebase
             {
                 ["authorUid"] = FirestoreRestClient.VString(myUid),
                 ["authorNickname"] = FirestoreRestClient.VString(nickname),
+                ["authorFirstName"] = string.IsNullOrWhiteSpace(firstName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(firstName),
+                ["authorLastName"] = string.IsNullOrWhiteSpace(lastName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(lastName),
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
                 ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarUrl) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarUrl),
                 ["createdAt"] = FirestoreRestClient.VTimestamp(now),
@@ -504,6 +512,8 @@ namespace Biliardo.App.Servizi_Firebase
                     PostId: postId,
                     AuthorUid: ReadStringField(fields, "authorUid") ?? "",
                     AuthorNickname: ReadStringField(fields, "authorNickname") ?? "",
+                    AuthorFirstName: ReadStringField(fields, "authorFirstName") ?? "",
+                    AuthorLastName: ReadStringField(fields, "authorLastName") ?? "",
                     AuthorAvatarPath: ReadStringField(fields, "authorAvatarPath"),
                     AuthorAvatarUrl: ReadStringField(fields, "authorAvatarUrl"),
                     CreatedAtUtc: ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.UtcNow,

@@ -11,6 +11,7 @@ namespace Biliardo.App.Cache_Locale.Home
         public sealed record CachedHomePost(
             string PostId,
             string? AuthorName,
+            string? AuthorFullName,
             string? Text,
             string? ThumbKey,
             DateTimeOffset CreatedAtUtc);
@@ -22,7 +23,7 @@ namespace Biliardo.App.Cache_Locale.Home
             var rows = await _store.ListPostsAsync(limit: 30, ct);
             var list = new List<CachedHomePost>(rows.Count);
             foreach (var row in rows)
-                list.Add(new CachedHomePost(row.PostId, row.AuthorName, row.Text, row.ThumbKey, row.CreatedAtUtc));
+                list.Add(new CachedHomePost(row.PostId, row.AuthorName, row.AuthorFullName, row.Text, row.ThumbKey, row.CreatedAtUtc));
             return list;
         }
 
@@ -31,7 +32,7 @@ namespace Biliardo.App.Cache_Locale.Home
             var rows = await _store.ListPostsBeforeAsync(beforeUtc, limit, ct);
             var list = new List<CachedHomePost>(rows.Count);
             foreach (var row in rows)
-                list.Add(new CachedHomePost(row.PostId, row.AuthorName, row.Text, row.ThumbKey, row.CreatedAtUtc));
+                list.Add(new CachedHomePost(row.PostId, row.AuthorName, row.AuthorFullName, row.Text, row.ThumbKey, row.CreatedAtUtc));
             return list;
         }
 
@@ -44,7 +45,7 @@ namespace Biliardo.App.Cache_Locale.Home
             {
                 if (post == null) continue;
                 await _store.UpsertPostAsync(
-                    new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.Text, post.ThumbKey, post.CreatedAtUtc),
+                    new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.AuthorFullName, post.Text, post.ThumbKey, post.CreatedAtUtc),
                     ct);
             }
         }
@@ -55,7 +56,7 @@ namespace Biliardo.App.Cache_Locale.Home
                 return Task.CompletedTask;
 
             return _store.UpsertPostAsync(
-                new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.Text, post.ThumbKey, post.CreatedAtUtc),
+                new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.AuthorFullName, post.Text, post.ThumbKey, post.CreatedAtUtc),
                 ct);
         }
 
@@ -69,7 +70,7 @@ namespace Biliardo.App.Cache_Locale.Home
             {
                 if (post == null) continue;
                 tasks.Add(_store.UpsertPostAsync(
-                    new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.Text, post.ThumbKey, post.CreatedAtUtc),
+                    new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.AuthorFullName, post.Text, post.ThumbKey, post.CreatedAtUtc),
                     ct));
             }
 

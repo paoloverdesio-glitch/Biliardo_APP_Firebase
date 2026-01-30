@@ -54,6 +54,7 @@ CREATE INDEX IF NOT EXISTS IX_Messages_Chat_CreatedAtUtc ON Messages(ChatId, Cre
 CREATE TABLE IF NOT EXISTS HomeFeed (
     PostId TEXT PRIMARY KEY,
     AuthorName TEXT,
+    AuthorFullName TEXT,
     Text TEXT,
     ThumbKey TEXT,
     CreatedAtUtc TEXT NOT NULL,
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS Profiles (
     FirstName TEXT,
     LastName TEXT,
     PhotoUrl TEXT,
+    PhotoLocalPath TEXT,
     UpdatedAtUtc TEXT NOT NULL,
     ServerTimestamp TEXT
 );

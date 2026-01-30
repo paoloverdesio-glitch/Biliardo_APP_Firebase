@@ -109,13 +109,17 @@ namespace Biliardo.App.Servizi_Notifiche
             if (string.IsNullOrWhiteSpace(authorName) && data.TryGetValue("authorNickname", out var authorNick))
                 authorName = authorNick;
 
+            var authorFirst = data.TryGetValue("authorFirstName", out var first) ? first : null;
+            var authorLast = data.TryGetValue("authorLastName", out var last) ? last : null;
+            var authorFullName = $"{authorFirst} {authorLast}".Trim();
+
             var text = data.TryGetValue("text", out var t) ? t : null;
             var thumbKey = data.TryGetValue("thumbKey", out var thumb) ? thumb : null;
             if (string.IsNullOrWhiteSpace(thumbKey) && data.TryGetValue("thumbStoragePath", out var thumbPath))
                 thumbKey = thumbPath;
 
             var homeStore = new HomeFeedCacheStore();
-            await homeStore.UpsertPostAsync(new HomeFeedCacheStore.HomePostRow(postId, authorName, text, thumbKey, createdAt), ct);
+            await homeStore.UpsertPostAsync(new HomeFeedCacheStore.HomePostRow(postId, authorName, string.IsNullOrWhiteSpace(authorFullName) ? null : authorFullName, text, thumbKey, createdAt), ct);
         }
 
         private static async Task TrySendDeliveredAsync(string chatId, string messageId, string senderId, string myUid, CancellationToken ct)

@@ -49,7 +49,7 @@
                                                AvatarUrl="{Binding AvatarUrl}"
                                                AvatarPath="{Binding AvatarPath}"
                                                DisplayName="{Binding DisplayTitle}"
-                                               Size="40"
+                                               Size="42"
                                                VerticalOptions="Center" />
 
                             <VerticalStackLayout Grid.Column="1" Spacing="2" Padding="10,0">

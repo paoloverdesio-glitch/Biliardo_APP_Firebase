@@ -129,6 +129,20 @@ namespace Biliardo.App.Pagine_Messaggi
 
         public bool HasDisplayNomeCompleto => !string.IsNullOrWhiteSpace(DisplayNomeCompleto);
 
+        private string _peerAvatarUrl = "";
+        public string PeerAvatarUrl
+        {
+            get => _peerAvatarUrl;
+            set { _peerAvatarUrl = value ?? ""; OnPropertyChanged(); }
+        }
+
+        private string _peerAvatarPath = "";
+        public string PeerAvatarPath
+        {
+            get => _peerAvatarPath;
+            set { _peerAvatarPath = value ?? ""; OnPropertyChanged(); }
+        }
+
         // ============================================================
         // 7) COMPOSER: TESTO / ALLEGATI / INVIO (BINDING XAML o VIEW)
         // ============================================================

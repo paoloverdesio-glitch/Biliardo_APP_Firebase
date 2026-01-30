@@ -439,6 +439,10 @@ namespace Biliardo.App.Pagine_Home
             if (string.IsNullOrWhiteSpace(authorName) && data.TryGetValue("authorNickname", out var authorNick))
                 authorName = authorNick;
 
+            var authorFirst = data.TryGetValue("authorFirstName", out var first) ? first : null;
+            var authorLast = data.TryGetValue("authorLastName", out var last) ? last : null;
+            var authorFullName = $"{authorFirst} {authorLast}".Trim();
+
             var text = data.TryGetValue("text", out var t) ? t : null;
             var thumbKey = data.TryGetValue("thumbKey", out var thumb) ? thumb : null;
             if (string.IsNullOrWhiteSpace(thumbKey) && data.TryGetValue("thumbStoragePath", out var thumbPath))
@@ -451,6 +455,7 @@ namespace Biliardo.App.Pagine_Home
             cached = new HomeFeedLocalCache.CachedHomePost(
                 postId,
                 authorName,
+                string.IsNullOrWhiteSpace(authorFullName) ? null : authorFullName,
                 text,
                 thumbKey,
                 createdAt);
@@ -665,7 +670,7 @@ namespace Biliardo.App.Pagine_Home
         private HomePostVm CreateOptimisticPost(ComposerSendPayload payload)
         {
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
-            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? FirebaseSessionePersistente.GetEmail() ?? "Io";
+            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "Utente";
             var clientNonce = Guid.NewGuid().ToString("N");
 
             var vm = new HomePostVm
@@ -674,6 +679,7 @@ namespace Biliardo.App.Pagine_Home
                 ClientNonce = clientNonce,
                 AuthorUid = myUid,
                 AuthorNickname = nickname,
+                AuthorFullName = "",
                 CreatedAtUtc = DateTimeOffset.UtcNow,
                 Text = payload.Text ?? "",
                 IsPendingUpload = true,
@@ -1112,6 +1118,36 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
+        private async void OnOpenImageTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not HomeAttachmentVm att)
+                    return;
+
+                await OpenImageFromHomeAsync(att);
+            }
+            catch (Exception ex)
+            {
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore immagine");
+            }
+        }
+
+        private async void OnOpenFileTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not HomeAttachmentVm att)
+                    return;
+
+                await OpenFileFromHomeAsync(att);
+            }
+            catch (Exception ex)
+            {
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore file");
+            }
+        }
+
         private async Task OpenVideoFromHomeAsync(HomeAttachmentVm att)
         {
             if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
@@ -1147,6 +1183,109 @@ namespace Biliardo.App.Pagine_Home
                         att.LocalPath = local;
                 }
                 catch { }
+            });
+        }
+
+        private async Task OpenImageFromHomeAsync(HomeAttachmentVm att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+            if (string.IsNullOrWhiteSpace(idToken))
+                return;
+
+            var fileName = att.FileName ?? "image.jpg";
+            var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, fileName, isThumb: false, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+                return;
+
+            var img = new Image
+            {
+                Source = local,
+                Aspect = Aspect.AspectFit,
+                Opacity = 0,
+                Scale = 0.95
+            };
+
+            var close = new Button
+            {
+                Text = "✕",
+                BackgroundColor = Colors.Transparent,
+                TextColor = Colors.White,
+                WidthRequest = 44,
+                HeightRequest = 44,
+                FontSize = 18,
+                HorizontalOptions = LayoutOptions.Start,
+                VerticalOptions = LayoutOptions.Start,
+                Margin = new Thickness(10)
+            };
+
+            var container = new Grid
+            {
+                BackgroundColor = Colors.Black,
+                Children = { img, close }
+            };
+
+            var page = new ContentPage { BackgroundColor = Colors.Black, Content = container };
+            close.Clicked += async (_, __) => await Navigation.PopModalAsync();
+
+            var tapToClose = new TapGestureRecognizer();
+            tapToClose.Tapped += async (_, __) => await Navigation.PopModalAsync();
+            container.GestureRecognizers.Add(tapToClose);
+
+            await Navigation.PushModalAsync(page);
+            try
+            {
+                await Task.WhenAll(
+                    img.FadeTo(1, 160, Easing.CubicOut),
+                    img.ScaleTo(1, 160, Easing.CubicOut));
+            }
+            catch { }
+        }
+
+        private async Task OpenFileFromHomeAsync(HomeAttachmentVm att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (att.IsPdf)
+            {
+                await OnOpenPdfFromHome(att);
+                return;
+            }
+
+            if (att.IsVideo)
+            {
+                await OpenVideoFromHomeAsync(att);
+                return;
+            }
+
+            if (att.IsImage)
+            {
+                await OpenImageFromHomeAsync(att);
+                return;
+            }
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+            if (string.IsNullOrWhiteSpace(idToken))
+                return;
+
+            var fileName = att.FileName ?? "file.bin";
+            var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, fileName, isThumb: false, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+                return;
+
+            att.LocalPath = local;
+            await Launcher.Default.OpenAsync(new OpenFileRequest
+            {
+                File = new ReadOnlyFile(local)
             });
         }
 
@@ -1499,6 +1638,7 @@ namespace Biliardo.App.Pagine_Home
             public string? ClientNonce { get; set; }
             public string AuthorUid { get; set; } = "";
             public string AuthorNickname { get; set; } = "";
+            public string AuthorFullName { get; set; } = "";
             public string? AuthorAvatarPath { get; set; }
             public string? AuthorAvatarUrl { get; set; }
             public DateTimeOffset CreatedAtUtc { get; set; }
@@ -1563,6 +1703,10 @@ namespace Biliardo.App.Pagine_Home
             public List<PendingItemVm> PendingItems { get; } = new();
 
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
+            public bool HasAuthorFullName => !string.IsNullOrWhiteSpace(AuthorFullName);
+            public string AuthorFullNameDisplay => HasAuthorFullName ? $"({AuthorFullName})" : "";
+
+            public Color AuthorNicknameColor => GetNicknameColor(PostId);
             public bool HasAttachments => Attachments != null && Attachments.Count > 0;
             public bool HasSyncAction => RequiresSync && SyncCommand != null;
 
@@ -1611,6 +1755,7 @@ namespace Biliardo.App.Pagine_Home
                     ClientNonce = post.ClientNonce,
                     AuthorUid = post.AuthorUid,
                     AuthorNickname = post.AuthorNickname,
+                    AuthorFullName = $"{post.AuthorFirstName} {post.AuthorLastName}".Trim(),
                     AuthorAvatarPath = post.AuthorAvatarPath,
                     AuthorAvatarUrl = post.AuthorAvatarUrl,
                     CreatedAtUtc = post.CreatedAtUtc,
@@ -1638,6 +1783,7 @@ namespace Biliardo.App.Pagine_Home
                 {
                     PostId = post.PostId,
                     AuthorNickname = post.AuthorName ?? "Utente",
+                    AuthorFullName = post.AuthorFullName ?? "",
                     CreatedAtUtc = post.CreatedAtUtc,
                     Text = text,
                     LikeCount = 0,
@@ -1652,6 +1798,28 @@ namespace Biliardo.App.Pagine_Home
 
                 return vm;
             }
+
+            private static readonly Color[] NicknamePalette = new[]
+            {
+                Color.FromArgb("#FFD54F"),
+                Color.FromArgb("#4FC3F7"),
+                Color.FromArgb("#FF8A65"),
+                Color.FromArgb("#81C784"),
+                Color.FromArgb("#BA68C8"),
+                Color.FromArgb("#F06292"),
+                Color.FromArgb("#A1887F"),
+                Color.FromArgb("#90A4AE")
+            };
+
+            private static Color GetNicknameColor(string seed)
+            {
+                if (NicknamePalette.Length == 0)
+                    return Colors.White;
+
+                var hash = seed?.GetHashCode() ?? 0;
+                var idx = Math.Abs(hash) % NicknamePalette.Length;
+                return NicknamePalette[idx];
+            }
         }
 
         private static class HomeFeedLocalCacheMapper
@@ -1664,6 +1832,7 @@ namespace Biliardo.App.Pagine_Home
                 return new HomeFeedLocalCache.CachedHomePost(
                     vm.PostId,
                     vm.AuthorNickname,
+                    vm.AuthorFullName,
                     vm.Text ?? "",
                     thumbKey,
                     vm.CreatedAtUtc);
@@ -1677,6 +1846,7 @@ namespace Biliardo.App.Pagine_Home
                 return new HomeFeedLocalCache.CachedHomePost(
                     post.PostId,
                     post.AuthorNickname,
+                    $"{post.AuthorFirstName} {post.AuthorLastName}".Trim(),
                     post.Text ?? "",
                     thumbKey,
                     post.CreatedAtUtc);

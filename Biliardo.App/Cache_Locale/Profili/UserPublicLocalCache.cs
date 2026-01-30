@@ -24,7 +24,8 @@ namespace Biliardo.App.Cache_Locale.Profili
                 Nickname: row.Nickname ?? "",
                 FirstName: row.FirstName ?? "",
                 LastName: row.LastName ?? "",
-                PhotoUrl: row.PhotoUrl ?? "");
+                PhotoUrl: row.PhotoUrl ?? "",
+                PhotoLocalPath: row.PhotoLocalPath ?? "");
         }
 
         public Task UpsertAsync(string uid, FirestoreDirectoryService.UserPublicItem profile, CancellationToken ct)
@@ -38,6 +39,7 @@ namespace Biliardo.App.Cache_Locale.Profili
                 profile.FirstName,
                 profile.LastName,
                 profile.PhotoUrl,
+                profile.PhotoLocalPath,
                 DateTimeOffset.UtcNow);
 
             return _store.UpsertProfileAsync(row, ct);

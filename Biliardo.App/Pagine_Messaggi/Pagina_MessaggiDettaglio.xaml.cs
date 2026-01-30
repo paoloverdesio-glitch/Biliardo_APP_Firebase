@@ -208,6 +208,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
+            PeerAvatarUrl = cached.PhotoUrl ?? "";
+            PeerAvatarPath = cached.PhotoLocalPath ?? "";
             _peerProfileLoaded = true;
         }
 

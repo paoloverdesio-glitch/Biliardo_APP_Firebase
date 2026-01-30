@@ -334,8 +334,9 @@ namespace Biliardo.App.Pagine_Messaggi
                         (!string.IsNullOrWhiteSpace(p?.Nickname) ? p!.Nickname :
                         peerUid);
 
-                    var fullName = p?.FullNameOrPlaceholder ?? "xxxxx xxxxx";
-                    var photo = p?.PhotoUrl ?? "";
+                    var fullName = p?.FullNameOrPlaceholder ?? "";
+                    var photoUrl = p?.PhotoUrl ?? "";
+                    var photoLocal = p?.PhotoLocalPath ?? "";
 
                     var lastMessage = await _chatStore.GetLatestMessageAsync(c.ChatId, CancellationToken.None);
                     var preview = lastMessage?.Text ?? "";
@@ -354,8 +355,8 @@ namespace Biliardo.App.Pagine_Messaggi
                         withUserId: peerUid,
                         nickname: nickname,
                         fullName: fullName,
-                        avatarUrl: photo,
-                        avatarPath: photo,
+                        avatarUrl: photoUrl,
+                        avatarPath: photoLocal,
                         ultimoMessaggio: preview,
                         dataOra: whenLocal,
                         nonLetti: c.UnreadCount));
@@ -408,7 +409,7 @@ namespace Biliardo.App.Pagine_Messaggi
         public string AvatarUrl { get; }
         public string AvatarPath { get; }
 
-        public string DisplayTitle => $"{Nickname} ({FullName})";
+        public string DisplayTitle => string.IsNullOrWhiteSpace(FullName) ? Nickname : $"{Nickname} ({FullName})";
 
         public string UltimoMessaggio { get; }
         public string OraBreve { get; }
@@ -428,7 +429,7 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             WithUserId = withUserId;
             Nickname = nickname;
-            FullName = string.IsNullOrWhiteSpace(fullName) ? "xxxxx xxxxx" : fullName;
+            FullName = fullName ?? "";
             AvatarUrl = avatarUrl ?? "";
             AvatarPath = avatarPath ?? "";
             UltimoMessaggio = ultimoMessaggio ?? "";
