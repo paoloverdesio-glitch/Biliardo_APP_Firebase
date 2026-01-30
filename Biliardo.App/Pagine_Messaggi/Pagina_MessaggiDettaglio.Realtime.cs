@@ -126,7 +126,7 @@ namespace Biliardo.App.Pagine_Messaggi
         }
 
         // ============================================================
-        // 3) POLLING LOOP
+        // 3) CACHE + REALTIME FLOW
         // ============================================================
         private async Task LoadFromCacheAndRenderImmediatelyAsync()
         {

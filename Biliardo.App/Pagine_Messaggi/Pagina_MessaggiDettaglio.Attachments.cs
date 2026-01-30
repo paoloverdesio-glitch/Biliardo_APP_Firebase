@@ -35,8 +35,8 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             try
             {
-                // 1.1) Apro un modal -> non fermare polling quando la pagina “sparisce”
-                _suppressStopPollingOnce = true;
+                // 1.1) Apro un modal -> non fermare gli aggiornamenti realtime quando la pagina “sparisce”
+                _suppressStopRealtimeOnce = true;
 
                 var sheet = new BottomSheetAllegatiPage();
                 sheet.AzioneSelezionata += async (_, az) =>

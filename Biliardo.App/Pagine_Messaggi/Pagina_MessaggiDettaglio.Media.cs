@@ -102,8 +102,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 tapToClose.Tapped += async (_, __) => await Navigation.PopModalAsync();
                 container.GestureRecognizers.Add(tapToClose);
 
-                // Modal: non fermare polling in OnDisappearing
-                _suppressStopPollingOnce = true;
+                // Modal: non fermare aggiornamenti realtime in OnDisappearing
+                _suppressStopRealtimeOnce = true;
                 await Navigation.PushModalAsync(page);
 
                 try

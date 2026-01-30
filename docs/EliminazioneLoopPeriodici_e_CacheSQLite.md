@@ -1,9 +1,9 @@
-# Eliminazione polling e cache SQLite
+# Eliminazione loop periodici e cache SQLite
 
-## Polling/loop eliminati
-- **Pagina_MessaggiLista**: rimosso il polling periodico della lista chat (`Task.Delay` loop). Aggiornamento solo via push + SQLite e refresh esplicito utente.
-- **Pagina_Home**: rimosso il polling periodico del feed (`PollHomeOnceAsync` e loop con `Task.Delay`).
-- **Pagina_MessaggiDettaglio**: rimosso polling chat e `LoadOnceFromServerAsync` automatico; nessun fetch su `OnAppearing`.
+## Loop periodici eliminati
+- **Pagina_MessaggiLista**: rimosso il loop periodico della lista chat (`Task.Delay` loop). Aggiornamento solo via push + SQLite e refresh esplicito utente.
+- **Pagina_Home**: rimosso il loop periodico del feed (`PollHomeOnceAsync` e loop con `Task.Delay`).
+- **Pagina_MessaggiDettaglio**: rimosso il loop chat e `LoadOnceFromServerAsync` automatico; nessun fetch su `OnAppearing`.
 - **ForegroundDeliveredReceiptsService**: servizio eliminato (loop in foreground con `Task.Delay`).
 
 ## Nuovi flussi push-only

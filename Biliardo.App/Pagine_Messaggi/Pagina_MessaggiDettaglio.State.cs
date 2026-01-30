@@ -221,8 +221,8 @@ namespace Biliardo.App.Pagine_Messaggi
         private CancellationTokenSource? _appearanceCts;
         private bool _realtimeSubscribed;
 
-        // Modali: evita stop polling quando apro un modal (foto fullscreen, bottom sheet, ecc.)
-        private bool _suppressStopPollingOnce;
+        // Modali: evita stop aggiornamenti realtime quando apro un modal (foto fullscreen, bottom sheet, ecc.)
+        private bool _suppressStopRealtimeOnce;
 
         // ============================================================
         // 12) SERVIZI FIREBASE (chat)
@@ -241,7 +241,7 @@ namespace Biliardo.App.Pagine_Messaggi
         private long _lastWaveformSampleTicks;
 
         // ============================================================
-        // 13) POLLING / DIFF / PENDING APPLY (anti-jank)
+        // 13) REALTIME / DIFF / PENDING APPLY (anti-jank)
         // ============================================================
         private string _lastUiSignature = "";
 

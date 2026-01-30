@@ -161,7 +161,7 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             base.OnAppearing();
 
-            // rientro dalla chat: riabilita navigazione e polling
+            // rientro dalla chat: riabilita navigazione e aggiornamenti realtime
             _isNavigatingToChat = false;
             _vm.SetSuspended(false);
 
@@ -204,7 +204,7 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             base.OnDisappearing();
 
-            // Quando esco dalla pagina lista (es. apro una chat), sospendo aggiornamenti e fermo polling
+            // Quando esco dalla pagina lista (es. apro una chat), sospendo aggiornamenti e fermo realtime
             _vm.SetSuspended(true);
             StopRealtimeUpdates();
         }
@@ -301,7 +301,7 @@ namespace Biliardo.App.Pagine_Messaggi
             if (IsSuspended)
                 return;
 
-            // Anti-reentrancy robusto (polling + OnAppearing ecc.)
+            // Anti-reentrancy robusto (realtime + OnAppearing ecc.)
             if (Interlocked.Exchange(ref _isLoadingFlag, 1) == 1)
                 return;
 

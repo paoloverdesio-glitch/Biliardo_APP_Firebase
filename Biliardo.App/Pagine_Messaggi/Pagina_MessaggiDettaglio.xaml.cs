@@ -91,9 +91,9 @@ namespace Biliardo.App.Pagine_Messaggi
             base.OnDisappearing();
 
             // 2.1) Caso “modal aperto” (foto fullscreen / bottom sheet allegati, ecc.)
-            if (_suppressStopPollingOnce)
+            if (_suppressStopRealtimeOnce)
             {
-                _suppressStopPollingOnce = false;
+                _suppressStopRealtimeOnce = false;
                 return;
             }
 
