@@ -24,6 +24,7 @@ namespace Biliardo.App.Pagine_Messaggi
             InitScrollTuning();          // Tuning scroll CollectionView
             OpenPdfCommand = new Command<ChatMessageVm>(async vm => await OnOpenPdfAsync(vm));
             RetrySendCommand = new Command<ChatMessageVm>(async vm => await RetrySendAsync(vm));
+            SyncMessageCommand = new Command<ChatMessageVm>(async _ => await SyncChatFromServerAsync());
 
             // 1.2) Stato iniziale UI
             TitoloChat = "Chat";
@@ -61,7 +62,6 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task OnAppearingAsync()
         {
-            StopPolling();
             CancelPendingApply();
             _appearanceCts?.Cancel();
             _appearanceCts = new CancellationTokenSource();
@@ -75,9 +75,15 @@ namespace Biliardo.App.Pagine_Messaggi
             if (ct.IsCancellationRequested)
                 return;
 
+            _lastMyUid = FirebaseSessionePersistente.GetLocalId();
+            _lastPeerId = (_peerUserId ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(_lastPeerId))
+            {
+                _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, _lastPeerId);
+                await _chatStore.ResetUnreadAsync(_chatCacheKey, CancellationToken.None);
+            }
+
             StartRealtimeUpdatesAfterFirstRender();
-            StartPollingAfterFirstRender(TimeSpan.FromSeconds(5), _pollInterval);
-            _ = EnsurePeerProfileAfterFirstRenderAsync();
         }
 
         protected override void OnDisappearing()
@@ -92,12 +98,12 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             // 2.2) Stop sottosistemi
-            StopPolling();
             StopRealtimeUpdates();
             StopVoiceUiLoop();
             StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
+            CancelReceipts();
             _appearanceCts?.Cancel();
 
             // 2.3) Sicurezza: se esco mentre registro, cancello in background
@@ -167,36 +173,7 @@ namespace Biliardo.App.Pagine_Messaggi
             _peerProfileLoaded = true;
         }
 
-        private async Task EnsurePeerProfileAfterFirstRenderAsync()
-        {
-            if (_peerProfileLoaded)
-                return;
-
-            var peerId = (_peerUserId ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(peerId))
-                return;
-
-            var cached = await _userPublicCache.TryGetAsync(peerId, CancellationToken.None);
-            if (cached != null)
-            {
-                DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
-                _peerProfileLoaded = true;
-                return;
-            }
-
-            try
-            {
-                var profile = await FirestoreDirectoryService.GetUserPublicAsync(peerId);
-                if (profile == null)
-                    return;
-
-                var display = BuildDisplayNomeCompleto(profile.FirstName, profile.LastName);
-                DisplayNomeCompleto = display;
-                _peerProfileLoaded = true;
-                await _userPublicCache.UpsertAsync(peerId, profile, CancellationToken.None);
-            }
-            catch { }
-        }
+        // Nessun fetch automatico profilo: si usa solo la cache locale.
 
         private static string BuildDisplayNomeCompleto(string? firstName, string? lastName)
         {

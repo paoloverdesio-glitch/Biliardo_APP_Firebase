@@ -60,6 +60,7 @@ namespace Biliardo.App.Pagine_Home
         private readonly HomeMediaPipeline _homeMediaPipeline;
         public Command<HomeAttachmentVm> OpenPdfCommand { get; }
         public Command<HomePostVm> RetryHomePostCommand { get; }
+        public Command<HomePostVm> SyncHomePostCommand { get; }
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
         private HashSet<string> _likedPostIds = new(StringComparer.Ordinal);
@@ -71,11 +72,10 @@ namespace Biliardo.App.Pagine_Home
         // Tuning scroll (Android: disabilita change animations, cache, fixed size)
         private readonly ScrollWorkCoordinator _feedCoordinator = new();
         private CollectionViewNativeScrollStateTracker? _feedTracker;
-        private readonly SemaphoreSlim _pollLock = new(1, 1);
-        private CancellationTokenSource? _pollCts;
         private bool _realtimeSubscribed;
         private FirstRenderGate? _firstRenderGate;
         private CancellationTokenSource? _appearanceCts;
+        private readonly SemaphoreSlim _syncHomeLock = new(1, 1);
 
         // ===================== 3) COSTRUTTORE ============================
         public Pagina_Home()
@@ -90,6 +90,7 @@ namespace Biliardo.App.Pagine_Home
             _homeMediaPipeline = new HomeMediaPipeline(_previewGenerator);
             OpenPdfCommand = new Command<HomeAttachmentVm>(async att => await OnOpenPdfFromHome(att));
             RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
+            SyncHomePostCommand = new Command<HomePostVm>(async post => await SyncHomePostAsync(post));
 
             ApplyHomeFeedScrollTuning();
             _firstRenderGate = new FirstRenderGate(this, FeedCollection);
@@ -104,7 +105,6 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task OnAppearingAsync()
         {
-            StopPolling();
             _appearanceCts?.Cancel();
             _appearanceCts = new CancellationTokenSource();
             var ct = _appearanceCts.Token;
@@ -120,7 +120,6 @@ namespace Biliardo.App.Pagine_Home
                 return;
 
             StartRealtimeUpdatesAfterFirstRender();
-            StartPollingAfterFirstRender(TimeSpan.FromSeconds(5));
         }
 
         protected override void OnDisappearing()
@@ -135,7 +134,6 @@ namespace Biliardo.App.Pagine_Home
             catch { }
 
             StopRealtimeUpdates();
-            StopPolling();
             _appearanceCts?.Cancel();
         }
 
@@ -238,10 +236,9 @@ namespace Biliardo.App.Pagine_Home
                     var vm = HomePostVm.FromCached(post);
                     vm.IsLiked = _likedPostIds.Contains(vm.PostId);
                     vm.RetryCommand = RetryHomePostCommand;
+                    vm.SyncCommand = SyncHomePostCommand;
                     Posts.Add(vm);
                 }
-
-                _ = Task.Run(PrefetchHomeThumbsAsync);
             }
             catch
             {
@@ -249,124 +246,9 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        private void StartPollingAfterFirstRender(TimeSpan initialDelay)
+        private async Task SyncHomePostAsync(HomePostVm? post)
         {
-            if (_pollCts != null)
-                return;
-
-            _pollCts = new CancellationTokenSource();
-            var ct = _pollCts.Token;
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    if (initialDelay > TimeSpan.Zero)
-                        await Task.Delay(initialDelay, ct);
-                }
-                catch
-                {
-                    return;
-                }
-
-                while (!ct.IsCancellationRequested)
-                {
-                    try
-                    {
-                        await PollHomeOnceAsync(ct);
-                    }
-                    catch
-                    {
-                        // best-effort: riprova al tick successivo
-                    }
-
-                    try
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(5), ct);
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-
-        private void StopPolling()
-        {
-            var cts = _pollCts;
-            _pollCts = null;
-
-            if (cts != null)
-            {
-                try { cts.Cancel(); } catch { }
-                try { cts.Dispose(); } catch { }
-            }
-        }
-
-        private async Task PollHomeOnceAsync(CancellationToken ct)
-        {
-            if (!await _pollLock.WaitAsync(0, ct))
-                return;
-
-            try
-            {
-                var res = await _homeFeed.ListPostsAsync(20, null, ct);
-                if (res.Items.Count == 0)
-                    return;
-
-                var existingIds = new HashSet<string>(Posts.Select(x => x.PostId), StringComparer.Ordinal);
-                var existingNonces = new HashSet<string>(
-                    Posts.Where(x => !string.IsNullOrWhiteSpace(x.ClientNonce)).Select(x => x.ClientNonce!),
-                    StringComparer.Ordinal);
-
-                var topCreatedAt = Posts.FirstOrDefault()?.CreatedAtUtc ?? DateTimeOffset.MinValue;
-                var newPosts = new List<HomePostVm>();
-                var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
-
-                foreach (var post in res.Items)
-                {
-                    if (post.CreatedAtUtc <= topCreatedAt)
-                        continue;
-
-                    if (!string.IsNullOrWhiteSpace(post.ClientNonce) && existingNonces.Contains(post.ClientNonce))
-                    {
-                        await MainThread.InvokeOnMainThreadAsync(() =>
-                        {
-                            var pending = Posts.FirstOrDefault(x => x.ClientNonce == post.ClientNonce);
-                            if (pending != null)
-                                ApplyServerPostToPending(pending, post);
-                        });
-
-                        cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post, pending: false, sendError: false));
-                        continue;
-                    }
-
-                    if (existingIds.Contains(post.PostId))
-                        continue;
-
-                    var vm = HomePostVm.FromService(post);
-                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
-                    vm.RetryCommand = RetryHomePostCommand;
-                    newPosts.Add(vm);
-                    cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post, pending: false, sendError: false));
-                }
-
-                if (newPosts.Count == 0)
-                    return;
-
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    foreach (var vm in newPosts.OrderByDescending(x => x.CreatedAtUtc))
-                        Posts.Insert(0, vm);
-                });
-
-                await _homeFeedCache.MergeNewTop(cachedToMerge, ct);
-            }
-            finally
-            {
-                _pollLock.Release();
-            }
+            await SyncHomeFromServerAsync(post?.PostId);
         }
 
         private void StartRealtimeUpdatesAfterFirstRender()
@@ -391,8 +273,148 @@ namespace Biliardo.App.Pagine_Home
         {
             if (e.Data == null || e.Data.Count == 0)
                 return;
+            _ = HandleHomePushAsync(e.Data);
+        }
 
-            _ = PollHomeOnceAsync(CancellationToken.None);
+        private async Task HandleHomePushAsync(IReadOnlyDictionary<string, string> data)
+        {
+            if (!TryBuildHomeFromPayload(data, out var cached, out var requiresSync))
+                return;
+
+            await _homeFeedCache.UpsertTop(cached);
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var existing = Posts.FirstOrDefault(x => x.PostId == cached.PostId);
+                var vm = HomePostVm.FromCached(cached);
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = SyncHomePostCommand;
+                vm.RequiresSync = requiresSync;
+
+                if (existing != null)
+                {
+                    var index = Posts.IndexOf(existing);
+                    if (index >= 0)
+                        Posts[index] = vm;
+                }
+                else
+                {
+                    Posts.Insert(0, vm);
+                }
+            });
+        }
+
+        private static bool TryBuildHomeFromPayload(
+            IReadOnlyDictionary<string, string> data,
+            out HomeFeedLocalCache.CachedHomePost cached,
+            out bool requiresSync)
+        {
+            cached = default!;
+            requiresSync = false;
+
+            if (!data.TryGetValue("postId", out var postId) || string.IsNullOrWhiteSpace(postId))
+                return false;
+
+            var authorName = data.TryGetValue("authorName", out var author) ? author : null;
+            if (string.IsNullOrWhiteSpace(authorName) && data.TryGetValue("authorNickname", out var authorNick))
+                authorName = authorNick;
+
+            var text = data.TryGetValue("text", out var t) ? t : null;
+            var thumbKey = data.TryGetValue("thumbKey", out var thumb) ? thumb : null;
+            if (string.IsNullOrWhiteSpace(thumbKey) && data.TryGetValue("thumbStoragePath", out var thumbPath))
+                thumbKey = thumbPath;
+
+            if (!TryParseTimestamp(data, out var createdAt))
+                createdAt = DateTimeOffset.UtcNow;
+
+            requiresSync = string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(thumbKey);
+            cached = new HomeFeedLocalCache.CachedHomePost(
+                postId,
+                authorName,
+                text,
+                thumbKey,
+                createdAt);
+
+            return true;
+        }
+
+        private static bool TryParseTimestamp(IReadOnlyDictionary<string, string> data, out DateTimeOffset timestamp)
+        {
+            timestamp = DateTimeOffset.UtcNow;
+
+            if (data.TryGetValue("createdAtUtc", out var createdAtUtc)
+                && DateTimeOffset.TryParse(createdAtUtc, out var dto))
+            {
+                timestamp = dto;
+                return true;
+            }
+
+            if (data.TryGetValue("createdAt", out var createdAt)
+                && DateTimeOffset.TryParse(createdAt, out var dto2))
+            {
+                timestamp = dto2;
+                return true;
+            }
+
+            if (data.TryGetValue("createdAtMs", out var msString)
+                && long.TryParse(msString, out var ms))
+            {
+                timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ms);
+                return true;
+            }
+
+            return false;
+        }
+
+        private async Task SyncHomeFromServerAsync(string? focusPostId)
+        {
+            if (!await _syncHomeLock.WaitAsync(0))
+                return;
+
+            try
+            {
+                var res = await _homeFeed.ListPostsAsync(20, null, CancellationToken.None);
+                if (res.Items.Count == 0)
+                    return;
+
+                var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
+                var newPosts = new List<HomePostVm>();
+
+                foreach (var post in res.Items)
+                {
+                    var vm = HomePostVm.FromService(post);
+                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                    vm.RetryCommand = RetryHomePostCommand;
+                    vm.SyncCommand = SyncHomePostCommand;
+                    newPosts.Add(vm);
+                    cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
+                }
+
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    foreach (var vm in newPosts.OrderByDescending(x => x.CreatedAtUtc))
+                    {
+                        var existing = Posts.FirstOrDefault(x => x.PostId == vm.PostId);
+                        if (existing != null)
+                        {
+                            var index = Posts.IndexOf(existing);
+                            if (index >= 0)
+                                Posts[index] = vm;
+                        }
+                        else
+                        {
+                            Posts.Insert(0, vm);
+                        }
+                    }
+                });
+
+                await _homeFeedCache.MergeNewTop(cachedToMerge, CancellationToken.None);
+            }
+            finally
+            {
+                _syncHomeLock.Release();
+            }
         }
 
         private void ApplyServerPostToPending(HomePostVm pending, FirestoreHomeFeedService.HomePostItem post)
@@ -400,53 +422,12 @@ namespace Biliardo.App.Pagine_Home
             pending.PostId = post.PostId;
             pending.IsPendingUpload = false;
             pending.HasSendError = false;
+            pending.RequiresSync = false;
             pending.CreatedAtUtc = post.CreatedAtUtc;
             pending.Text = post.Text ?? "";
             pending.Attachments.Clear();
             foreach (var att in post.Attachments)
                 pending.Attachments.Add(HomeAttachmentVm.FromService(att));
-        }
-
-        private async Task PrefetchHomeThumbsAsync()
-        {
-            if (!AppMediaOptions.PrefetchThumbsOnScroll)
-                return;
-
-            try
-            {
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-                if (string.IsNullOrWhiteSpace(idToken))
-                    return;
-
-                var attachments = new List<HomeAttachmentVm>();
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    foreach (var post in Posts)
-                    {
-                        foreach (var att in post.Attachments)
-                            attachments.Add(att);
-                    }
-                });
-
-                foreach (var att in attachments)
-                {
-                    if (string.IsNullOrWhiteSpace(att.ThumbStoragePath))
-                        continue;
-
-                    if (!string.IsNullOrWhiteSpace(att.ThumbLocalPath) && File.Exists(att.ThumbLocalPath))
-                        continue;
-
-                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.ThumbStoragePath!, att.FileName ?? "thumb.jpg", isThumb: true, CancellationToken.None);
-                    if (string.IsNullOrWhiteSpace(local))
-                        continue;
-
-                    MainThread.BeginInvokeOnMainThread(() => att.ThumbLocalPath = local);
-                }
-            }
-            catch
-            {
-                // best-effort
-            }
         }
 
         private async void OnHomeComposerAttachmentRequested(object sender, EventArgs e)
@@ -511,10 +492,7 @@ namespace Biliardo.App.Pagine_Home
 
         private void OnHomeComposerPendingItemRemoved(object sender, PendingItemVm item)
         {
-            if (!string.IsNullOrWhiteSpace(item.LocalFilePath))
-            {
-                try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
-            }
+            // Nessuna cancellazione: i file restano in cache persistente (LRU).
         }
 
         private async Task SendHomePostAsync(ComposerSendPayload payload, string? sentSingleLocalId)
@@ -712,12 +690,14 @@ namespace Biliardo.App.Pagine_Home
             {
                 var fr = await MediaPicker.Default.PickPhotoAsync();
                 if (fr == null) return;
-                var local = await CopyToCacheAsync(fr, "home_photo");
+                var registration = await CopyToCacheAsync(fr, "home_photo");
+                var local = registration.LocalPath;
                 HomeComposer.TryAddPendingItem(new PendingItemVm
                 {
                     Kind = PendingKind.Image,
                     DisplayName = Path.GetFileName(local),
                     LocalFilePath = local,
+                    MediaCacheKey = registration.CacheKey,
                     SizeBytes = new FileInfo(local).Length
                 }, 10);
             }
@@ -725,12 +705,14 @@ namespace Biliardo.App.Pagine_Home
             {
                 var fr = await MediaPicker.Default.PickVideoAsync();
                 if (fr == null) return;
-                var local = await CopyToCacheAsync(fr, "home_video");
+                var registration = await CopyToCacheAsync(fr, "home_video");
+                var local = registration.LocalPath;
                 HomeComposer.TryAddPendingItem(new PendingItemVm
                 {
                     Kind = PendingKind.Video,
                     DisplayName = Path.GetFileName(local),
                     LocalFilePath = local,
+                    MediaCacheKey = registration.CacheKey,
                     SizeBytes = new FileInfo(local).Length,
                     DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
                 }, 10);
@@ -748,12 +730,14 @@ namespace Biliardo.App.Pagine_Home
 
             var fr = await MediaPicker.Default.CapturePhotoAsync();
             if (fr == null) return;
-            var local = await CopyToCacheAsync(fr, "home_camera_photo");
+            var registration = await CopyToCacheAsync(fr, "home_camera_photo");
+            var local = registration.LocalPath;
             HomeComposer.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.Image,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length
             }, 10);
         }
@@ -769,12 +753,14 @@ namespace Biliardo.App.Pagine_Home
 
             var fr = await MediaPicker.Default.CaptureVideoAsync();
             if (fr == null) return;
-            var local = await CopyToCacheAsync(fr, "home_camera_video");
+            var registration = await CopyToCacheAsync(fr, "home_camera_video");
+            var local = registration.LocalPath;
             HomeComposer.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.Video,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length,
                 DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
             }, 10);
@@ -784,12 +770,14 @@ namespace Biliardo.App.Pagine_Home
         {
             var res = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Seleziona documento" });
             if (res == null) return;
-            var local = await CopyToCacheAsync(res, "home_doc");
+            var registration = await CopyToCacheAsync(res, "home_doc");
+            var local = registration.LocalPath;
             HomeComposer.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.File,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length
             }, 10);
         }
@@ -1087,7 +1075,7 @@ namespace Biliardo.App.Pagine_Home
             await Navigation.PushAsync(new PdfViewerPage(local, fileName));
         }
 
-        private static async Task<string> CopyToCacheAsync(FileResult fr, string prefix)
+        private async Task<MediaCacheService.MediaRegistration> CopyToCacheAsync(FileResult fr, string prefix)
         {
             var ext = Path.GetExtension(fr.FileName);
             if (string.IsNullOrWhiteSpace(ext)) ext = ".bin";
@@ -1098,7 +1086,14 @@ namespace Biliardo.App.Pagine_Home
             await using var dst = File.Create(dest);
             await src.CopyToAsync(dst);
 
-            return dest;
+            var contentType = FirebaseStorageRestClient.GuessContentTypeFromPath(fr.FileName);
+            var kind = HomeMediaPipeline.GetMediaKind(contentType, fr.FileName).ToString().ToLowerInvariant();
+            var registration = await _mediaCache.RegisterLocalFileAsync(dest, kind, CancellationToken.None);
+            if (registration == null)
+                throw new InvalidOperationException("Registrazione cache locale fallita.");
+
+            try { if (File.Exists(dest)) File.Delete(dest); } catch { }
+            return registration;
         }
 
         // ===================== 4) MENU LATERALE SINISTRO =================
@@ -1376,6 +1371,8 @@ namespace Biliardo.App.Pagine_Home
         {
             private bool _isPendingUpload;
             private bool _hasSendError;
+            private bool _requiresSync;
+            private Command<HomePostVm>? _syncCommand;
 
             public string PostId { get; set; } = "";
             public string? ClientNonce { get; set; }
@@ -1431,11 +1428,33 @@ namespace Biliardo.App.Pagine_Home
             public Color StatusColor => HasSendError ? Colors.OrangeRed : Colors.LightGray;
 
             public Command<HomePostVm>? RetryCommand { get; set; }
+            public Command<HomePostVm>? SyncCommand
+            {
+                get => _syncCommand;
+                set
+                {
+                    _syncCommand = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasSyncAction));
+                }
+            }
             public string PendingText { get; set; } = "";
             public List<PendingItemVm> PendingItems { get; } = new();
 
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
             public bool HasAttachments => Attachments != null && Attachments.Count > 0;
+            public bool HasSyncAction => RequiresSync && SyncCommand != null;
+
+            public bool RequiresSync
+            {
+                get => _requiresSync;
+                set
+                {
+                    _requiresSync = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasSyncAction));
+                }
+            }
 
             public string CreatedAtLabel => CreatedAtUtc.ToLocalTime().ToString("g");
 
@@ -1480,7 +1499,8 @@ namespace Biliardo.App.Pagine_Home
                     ShareCount = post.ShareCount,
                     IsLiked = post.IsLiked,
                     IsPendingUpload = false,
-                    HasSendError = false
+                    HasSendError = false,
+                    RequiresSync = false
                 };
 
                 foreach (var att in post.Attachments)
@@ -1491,27 +1511,23 @@ namespace Biliardo.App.Pagine_Home
 
             public static HomePostVm FromCached(HomeFeedLocalCache.CachedHomePost post)
             {
+                var text = string.IsNullOrWhiteSpace(post.Text) ? "Contenuto disponibile" : post.Text!;
+                var requiresSync = string.IsNullOrWhiteSpace(post.Text) && string.IsNullOrWhiteSpace(post.ThumbKey);
                 var vm = new HomePostVm
                 {
                     PostId = post.PostId,
-                    ClientNonce = post.ClientNonce,
-                    AuthorUid = post.AuthorUid,
-                    AuthorNickname = post.AuthorNickname,
-                    AuthorAvatarPath = post.AuthorAvatarPath,
-                    AuthorAvatarUrl = post.AuthorAvatarUrl,
+                    AuthorNickname = post.AuthorName ?? "Utente",
                     CreatedAtUtc = post.CreatedAtUtc,
-                    Text = post.Text ?? "",
-                    LikeCount = post.LikeCount,
-                    CommentCount = post.CommentCount,
-                    ShareCount = post.ShareCount,
+                    Text = text,
+                    LikeCount = 0,
+                    CommentCount = 0,
+                    ShareCount = 0,
                     IsLiked = false,
-                    IsPendingUpload = post.PendingUpload,
-                    HasSendError = post.SendError,
-                    PendingText = post.Text ?? ""
+                    IsPendingUpload = false,
+                    HasSendError = false,
+                    PendingText = text,
+                    RequiresSync = requiresSync
                 };
-
-                foreach (var att in post.Attachments ?? new List<HomeFeedLocalCache.CachedHomeAttachment>())
-                    vm.Attachments.Add(HomeAttachmentVm.FromService(HomeFeedLocalCache.ToAttachment(att)));
 
                 return vm;
             }
@@ -1521,68 +1537,28 @@ namespace Biliardo.App.Pagine_Home
         {
             public static HomeFeedLocalCache.CachedHomePost ToCached(HomePostVm vm)
             {
-                return new HomeFeedLocalCache.CachedHomePost
-                {
-                    PostId = vm.PostId,
-                    ClientNonce = vm.ClientNonce,
-                    CreatedAtUtc = vm.CreatedAtUtc,
-                    AuthorUid = vm.AuthorUid,
-                    AuthorNickname = vm.AuthorNickname,
-                    AuthorAvatarPath = vm.AuthorAvatarPath,
-                    AuthorAvatarUrl = vm.AuthorAvatarUrl,
-                    Text = vm.Text ?? "",
-                    Attachments = vm.Attachments.Select(ToCachedAttachment).ToList(),
-                    LikeCount = vm.LikeCount,
-                    CommentCount = vm.CommentCount,
-                    ShareCount = vm.ShareCount,
-                    PendingUpload = vm.IsPendingUpload,
-                    SendError = vm.HasSendError
-                };
+                var thumbKey = vm.Attachments.FirstOrDefault()?.ThumbStoragePath
+                    ?? vm.Attachments.FirstOrDefault()?.StoragePath;
+
+                return new HomeFeedLocalCache.CachedHomePost(
+                    vm.PostId,
+                    vm.AuthorNickname,
+                    vm.Text ?? "",
+                    thumbKey,
+                    vm.CreatedAtUtc);
             }
 
-            public static HomeFeedLocalCache.CachedHomePost ToCached(
-                FirestoreHomeFeedService.HomePostItem post,
-                bool pending,
-                bool sendError)
+            public static HomeFeedLocalCache.CachedHomePost ToCached(FirestoreHomeFeedService.HomePostItem post)
             {
-                return new HomeFeedLocalCache.CachedHomePost
-                {
-                    PostId = post.PostId,
-                    ClientNonce = post.ClientNonce,
-                    CreatedAtUtc = post.CreatedAtUtc,
-                    AuthorUid = post.AuthorUid,
-                    AuthorNickname = post.AuthorNickname,
-                    AuthorAvatarPath = post.AuthorAvatarPath,
-                    AuthorAvatarUrl = post.AuthorAvatarUrl,
-                    Text = post.Text ?? "",
-                    Attachments = post.Attachments.Select(HomeFeedLocalCache.FromAttachment).ToList(),
-                    LikeCount = post.LikeCount,
-                    CommentCount = post.CommentCount,
-                    ShareCount = post.ShareCount,
-                    PendingUpload = pending,
-                    SendError = sendError
-                };
-            }
+                var thumbKey = post.Attachments.FirstOrDefault()?.ThumbStoragePath
+                    ?? post.Attachments.FirstOrDefault()?.StoragePath;
 
-            private static HomeFeedLocalCache.CachedHomeAttachment ToCachedAttachment(HomeAttachmentVm vm)
-            {
-                return new HomeFeedLocalCache.CachedHomeAttachment
-                {
-                    Type = vm.Type,
-                    StoragePath = vm.StoragePath,
-                    DownloadUrl = vm.DownloadUrl,
-                    FileName = vm.FileName,
-                    ContentType = vm.ContentType,
-                    SizeBytes = vm.SizeBytes,
-                    DurationMs = vm.DurationMs,
-                    Extra = null,
-                    ThumbStoragePath = vm.ThumbStoragePath,
-                    LqipBase64 = vm.LqipBase64,
-                    PreviewType = vm.PreviewType,
-                    ThumbWidth = vm.ThumbWidth,
-                    ThumbHeight = vm.ThumbHeight,
-                    Waveform = vm.Waveform?.ToList()
-                };
+                return new HomeFeedLocalCache.CachedHomePost(
+                    post.PostId,
+                    post.AuthorNickname,
+                    post.Text ?? "",
+                    thumbKey,
+                    post.CreatedAtUtc);
             }
         }
 

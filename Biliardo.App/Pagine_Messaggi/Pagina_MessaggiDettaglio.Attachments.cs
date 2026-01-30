@@ -63,11 +63,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private void OnComposerPendingItemRemoved(object sender, PendingItemVm item)
         {
-            // 1.2) Cleanup locale (bozza audio o file selezionato)
-            if (!string.IsNullOrWhiteSpace(item.LocalFilePath))
-            {
-                try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
-            }
+            // 1.2) Nessuna cancellazione: i file sono in cache persistente (LRU).
         }
 
         // ============================================================
@@ -113,9 +109,36 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (!string.IsNullOrWhiteSpace(payload.Text))
                 {
                     var msgId = Guid.NewGuid().ToString("N");
+                    var createdAt = DateTimeOffset.UtcNow;
                     var vmText = CreateOptimisticTextMessage(msgId, myUid!, payload.Text);
                     vmText.RetryCommand = RetrySendCommand;
                     AddOptimisticMessage(vmText);
+                    await UpsertLocalMessageAsync(chatId!, peerId, new FirestoreChatService.MessageItem(
+                        MessageId: msgId,
+                        SenderId: myUid!,
+                        Type: "text",
+                        Text: payload.Text,
+                        CreatedAtUtc: createdAt,
+                        DeliveredTo: Array.Empty<string>(),
+                        ReadBy: Array.Empty<string>(),
+                        DeletedForAll: false,
+                        DeletedFor: Array.Empty<string>(),
+                        DeletedAtUtc: null,
+                        StoragePath: null,
+                        DurationMs: 0,
+                        FileName: null,
+                        ContentType: null,
+                        SizeBytes: 0,
+                        ThumbStoragePath: null,
+                        LqipBase64: null,
+                        ThumbWidth: null,
+                        ThumbHeight: null,
+                        PreviewType: null,
+                        Waveform: null,
+                        Latitude: null,
+                        Longitude: null,
+                        ContactName: null,
+                        ContactPhone: null));
 
                     pendingSend.Add((vmText, async () =>
                     {
@@ -133,10 +156,45 @@ namespace Biliardo.App.Pagine_Messaggi
                     if (attVm == null) continue;
 
                     var msgId = Guid.NewGuid().ToString("N");
+                    var createdAt = DateTimeOffset.UtcNow;
                     var vmAtt = CreateOptimisticAttachmentMessage(msgId, myUid!, attVm);
                     vmAtt.PendingLocalPath = attVm.LocalPath;
                     vmAtt.RetryCommand = RetrySendCommand;
                     AddOptimisticMessage(vmAtt);
+                    await UpsertLocalMessageAsync(chatId!, peerId, new FirestoreChatService.MessageItem(
+                        MessageId: msgId,
+                        SenderId: myUid!,
+                        Type: attVm.Kind switch
+                        {
+                            AttachmentKind.Audio => "audio",
+                            AttachmentKind.Photo => "photo",
+                            AttachmentKind.Video => "video",
+                            AttachmentKind.Location => "location",
+                            AttachmentKind.Contact => "contact",
+                            _ => "file"
+                        },
+                        Text: "",
+                        CreatedAtUtc: createdAt,
+                        DeliveredTo: Array.Empty<string>(),
+                        ReadBy: Array.Empty<string>(),
+                        DeletedForAll: false,
+                        DeletedFor: Array.Empty<string>(),
+                        DeletedAtUtc: null,
+                        StoragePath: attVm.MediaCacheKey,
+                        DurationMs: attVm.DurationMs,
+                        FileName: Path.GetFileName(attVm.LocalPath),
+                        ContentType: attVm.ContentType,
+                        SizeBytes: attVm.SizeBytes,
+                        ThumbStoragePath: null,
+                        LqipBase64: null,
+                        ThumbWidth: null,
+                        ThumbHeight: null,
+                        PreviewType: null,
+                        Waveform: attVm.Waveform,
+                        Latitude: attVm.Latitude,
+                        Longitude: attVm.Longitude,
+                        ContactName: attVm.ContactName,
+                        ContactPhone: attVm.ContactPhone));
 
                     pendingSend.Add((vmAtt, async () =>
                     {
@@ -267,12 +325,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 var fr = await MediaPicker.Default.PickPhotoAsync();
                 if (fr == null) return;
 
-                var local = await CopyToCacheAsync(fr, "photo");
+                var registration = await CopyToCacheAsync(fr, "photo");
+                var local = registration.LocalPath;
                 ComposerBar.TryAddPendingItem(new PendingItemVm
                 {
                     Kind = PendingKind.Image,
                     DisplayName = Path.GetFileName(local),
                     LocalFilePath = local,
+                    MediaCacheKey = registration.CacheKey,
                     SizeBytes = new FileInfo(local).Length
                 });
             }
@@ -281,12 +341,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 var fr = await MediaPicker.Default.PickVideoAsync();
                 if (fr == null) return;
 
-                var local = await CopyToCacheAsync(fr, "video");
+                var registration = await CopyToCacheAsync(fr, "video");
+                var local = registration.LocalPath;
                 ComposerBar.TryAddPendingItem(new PendingItemVm
                 {
                     Kind = PendingKind.Video,
                     DisplayName = Path.GetFileName(local),
                     LocalFilePath = local,
+                    MediaCacheKey = registration.CacheKey,
                     SizeBytes = new FileInfo(local).Length,
                     DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
                 });
@@ -305,12 +367,14 @@ namespace Biliardo.App.Pagine_Messaggi
             var fr = await MediaPicker.Default.CapturePhotoAsync();
             if (fr == null) return;
 
-            var local = await CopyToCacheAsync(fr, "camera_photo");
+            var registration = await CopyToCacheAsync(fr, "camera_photo");
+            var local = registration.LocalPath;
             ComposerBar.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.Image,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length
             });
         }
@@ -327,12 +391,14 @@ namespace Biliardo.App.Pagine_Messaggi
             var fr = await MediaPicker.Default.CaptureVideoAsync();
             if (fr == null) return;
 
-            var local = await CopyToCacheAsync(fr, "camera_video");
+            var registration = await CopyToCacheAsync(fr, "camera_video");
+            var local = registration.LocalPath;
             ComposerBar.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.Video,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length,
                 DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
             });
@@ -343,12 +409,14 @@ namespace Biliardo.App.Pagine_Messaggi
             var res = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Seleziona documento" });
             if (res == null) return;
 
-            var local = await CopyToCacheAsync(res, "doc");
+            var registration = await CopyToCacheAsync(res, "doc");
+            var local = registration.LocalPath;
             ComposerBar.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.File,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length
             });
         }
@@ -431,7 +499,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 6) HELPERS: COPIA FILE IN CACHE (per invio/upload)
         // ============================================================
-        private static async Task<string> CopyToCacheAsync(FileResult fr, string prefix)
+        private async Task<MediaCacheService.MediaRegistration> CopyToCacheAsync(FileResult fr, string prefix)
         {
             var ext = Path.GetExtension(fr.FileName);
             if (string.IsNullOrWhiteSpace(ext)) ext = ".bin";
@@ -442,7 +510,14 @@ namespace Biliardo.App.Pagine_Messaggi
             await using var dst = File.Create(dest);
             await src.CopyToAsync(dst);
 
-            return dest;
+            var contentType = MediaMetadataHelper.GuessContentType(fr.FileName);
+            var kind = GetMediaKind(contentType, fr.FileName).ToString().ToLowerInvariant();
+            var registration = await _mediaCache.RegisterLocalFileAsync(dest, kind, CancellationToken.None);
+            if (registration == null)
+                throw new InvalidOperationException("Registrazione cache locale fallita.");
+
+            try { if (File.Exists(dest)) File.Delete(dest); } catch { }
+            return registration;
         }
 
         // ============================================================
@@ -502,6 +577,22 @@ namespace Biliardo.App.Pagine_Messaggi
 
             ValidateAttachmentLimits(kind, sizeBytes, durationMs);
 
+            if (string.IsNullOrWhiteSpace(a.MediaCacheKey))
+            {
+                var originalPath = a.LocalPath;
+                var registration = await _mediaCache.RegisterLocalFileAsync(a.LocalPath, kind.ToString().ToLowerInvariant(), CancellationToken.None);
+                if (registration != null)
+                {
+                    a.MediaCacheKey = registration.CacheKey;
+                    a.LocalPath = registration.LocalPath;
+
+                    if (!string.Equals(originalPath, a.LocalPath, StringComparison.Ordinal))
+                    {
+                        try { if (File.Exists(originalPath)) File.Delete(originalPath); } catch { }
+                    }
+                }
+            }
+
             MediaPreviewResult? preview = null;
             if (kind is MediaKind.Image or MediaKind.Video or MediaKind.Pdf)
             {
@@ -520,6 +611,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 localFilePath: a.LocalPath,
                 contentType: contentType,
                 ct: default);
+
+            if (!string.IsNullOrWhiteSpace(a.MediaCacheKey))
+                await _mediaCache.RegisterAliasAsync(storagePath, a.MediaCacheKey, CancellationToken.None);
 
             string? thumbStoragePath = null;
             if (preview != null && AppMediaOptions.StoreThumbInStorage && File.Exists(preview.ThumbLocalPath))
@@ -551,6 +645,33 @@ namespace Biliardo.App.Pagine_Messaggi
                 contentType: contentType,
                 previewMap: previewMap,
                 waveform: a.Waveform);
+
+            await UpsertLocalMessageAsync(chatId, peerUid, new FirestoreChatService.MessageItem(
+                MessageId: msgId,
+                SenderId: myUid,
+                Type: type,
+                Text: "",
+                CreatedAtUtc: DateTimeOffset.UtcNow,
+                DeliveredTo: Array.Empty<string>(),
+                ReadBy: Array.Empty<string>(),
+                DeletedForAll: false,
+                DeletedFor: Array.Empty<string>(),
+                DeletedAtUtc: null,
+                StoragePath: storagePath,
+                DurationMs: durationMs,
+                FileName: fileName,
+                ContentType: contentType,
+                SizeBytes: sizeBytes,
+                ThumbStoragePath: thumbStoragePath,
+                LqipBase64: preview?.LqipBase64,
+                ThumbWidth: preview?.Width,
+                ThumbHeight: preview?.Height,
+                PreviewType: preview?.PreviewType,
+                Waveform: a.Waveform,
+                Latitude: a.Latitude,
+                Longitude: a.Longitude,
+                ContactName: a.ContactName,
+                ContactPhone: a.ContactPhone));
 
             if (preview != null && !string.IsNullOrWhiteSpace(preview.ThumbLocalPath))
             {
@@ -839,7 +960,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     Kind = AttachmentKind.Photo,
                     DisplayName = item.DisplayName,
                     LocalPath = item.LocalFilePath ?? "",
-                    SizeBytes = item.SizeBytes
+                    SizeBytes = item.SizeBytes,
+                    MediaCacheKey = item.MediaCacheKey
                 },
                 PendingKind.Video => new AttachmentVm
                 {
@@ -847,14 +969,16 @@ namespace Biliardo.App.Pagine_Messaggi
                     DisplayName = item.DisplayName,
                     LocalPath = item.LocalFilePath ?? "",
                     SizeBytes = item.SizeBytes,
-                    DurationMs = item.DurationMs
+                    DurationMs = item.DurationMs,
+                    MediaCacheKey = item.MediaCacheKey
                 },
                 PendingKind.File => new AttachmentVm
                 {
                     Kind = AttachmentKind.File,
                     DisplayName = item.DisplayName,
                     LocalPath = item.LocalFilePath ?? "",
-                    SizeBytes = item.SizeBytes
+                    SizeBytes = item.SizeBytes,
+                    MediaCacheKey = item.MediaCacheKey
                 },
                 PendingKind.AudioDraft => new AttachmentVm
                 {
@@ -862,7 +986,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     DisplayName = item.DisplayName,
                     LocalPath = item.LocalFilePath ?? "",
                     DurationMs = item.DurationMs,
-                    SizeBytes = item.SizeBytes
+                    SizeBytes = item.SizeBytes,
+                    MediaCacheKey = item.MediaCacheKey
                 },
                 PendingKind.Location => new AttachmentVm
                 {

@@ -142,6 +142,16 @@
                                                MaximumWidthRequest="{Binding Source={x:Reference ThisPage}, Path=BubbleMaxWidth}"
                                                HorizontalOptions="Start" />
 
+                                        <Button Text="Sincronizza"
+                                                IsVisible="{Binding HasSyncAction}"
+                                                Command="{Binding SyncCommand}"
+                                                CommandParameter="{Binding .}"
+                                                BackgroundColor="#0A5F2A"
+                                                TextColor="White"
+                                                FontSize="12"
+                                                Padding="8,2"
+                                                HorizontalOptions="Start" />
+
                                         <!-- FOTO -->
                                         <Border IsVisible="{Binding IsPhoto}"
                                                 StrokeThickness="0"

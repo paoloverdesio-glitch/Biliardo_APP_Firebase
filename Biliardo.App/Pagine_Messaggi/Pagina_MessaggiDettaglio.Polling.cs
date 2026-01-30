@@ -33,6 +33,17 @@ namespace Biliardo.App.Pagine_Messaggi
             // 1.4) Prefetch media (implementato in Media.cs - File 6)
             _ = SchedulePrefetchMediaAsync(first, last);
 
+            // 1.4b) Read receipts quando messaggi entrano nel viewport
+            for (var i = first; i <= last && i < Messaggi.Count; i++)
+            {
+                var vm = Messaggi[i];
+                if (vm.IsDateSeparator || vm.IsMine)
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(vm.Id))
+                    QueueRead(vm.Id);
+            }
+
             // 1.5) Se ho aggiornamenti pending, prova ad applicarli quando lo scroll va idle
             SchedulePendingApply();
 
@@ -86,18 +97,16 @@ namespace Biliardo.App.Pagine_Messaggi
                         return;
 
                     // 2.3) Contesto minimo necessario (evita apply se non ho sessione/chat)
-                    var idToken = _lastIdToken;
                     var myUid = _lastMyUid;
                     var peerId = _lastPeerId;
                     var chatId = _lastChatId;
 
-                    if (string.IsNullOrWhiteSpace(idToken) ||
-                        string.IsNullOrWhiteSpace(myUid) ||
+                    if (string.IsNullOrWhiteSpace(myUid) ||
                         string.IsNullOrWhiteSpace(peerId) ||
                         string.IsNullOrWhiteSpace(chatId))
                         return;
 
-                    await ApplyOrderedMessagesAsync(ordered, signature, idToken!, myUid!, peerId!, chatId!, token);
+                    await ApplyOrderedMessagesAsync(ordered, signature, myUid!, peerId!, chatId!, token);
                 }
                 catch { }
             }, token);
@@ -119,14 +128,6 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 3) POLLING LOOP
         // ============================================================
-        private void StartPollingAfterFirstRender(TimeSpan initialDelay, TimeSpan interval)
-        {
-            if (_pollCts != null) return;
-
-            _pollCts = new CancellationTokenSource();
-            _ = Task.Run(() => PollLoopAsync(initialDelay, interval, _pollCts.Token));
-        }
-
         private async Task LoadFromCacheAndRenderImmediatelyAsync()
         {
             if (_loadedFromCache)
@@ -162,7 +163,7 @@ namespace Biliardo.App.Pagine_Messaggi
                         lastDay = day;
                     }
 
-                    Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid!, peerId));
+                    Messaggi.Add(BuildVmFromMessage(m, myUid!, peerId));
                 }
 
                 IsLoadingMessages = false;
@@ -175,15 +176,11 @@ namespace Biliardo.App.Pagine_Messaggi
             if (_isLoadingOlder)
                 return;
 
-            var idToken = _lastIdToken;
-            var myUid = _lastMyUid;
+            var myUid = FirebaseSessionePersistente.GetLocalId();
             var peerId = _lastPeerId;
-            var chatId = _lastChatId;
 
-            if (string.IsNullOrWhiteSpace(idToken) ||
-                string.IsNullOrWhiteSpace(myUid) ||
-                string.IsNullOrWhiteSpace(peerId) ||
-                string.IsNullOrWhiteSpace(chatId))
+            if (string.IsNullOrWhiteSpace(myUid) ||
+                string.IsNullOrWhiteSpace(peerId))
                 return;
 
             var oldest = Messaggi.FirstOrDefault(x => !x.IsDateSeparator);
@@ -193,11 +190,17 @@ namespace Biliardo.App.Pagine_Messaggi
             _isLoadingOlder = true;
             try
             {
-                var older = await _fsChat.GetMessagesBeforeAsync(idToken!, chatId!, oldest.CreatedAt, limit: 40, ct: CancellationToken.None);
-                if (older.Count == 0)
+                var cacheKey = _chatCacheKey ?? _chatCache.GetCacheKey(_chatIdCached, peerId);
+                _chatCacheKey = cacheKey;
+
+                var olderRows = await _chatStore.ListMessagesBeforeAsync(cacheKey, oldest.CreatedAt, limit: 30, CancellationToken.None);
+                if (olderRows.Count == 0)
                     return;
 
-                var ordered = older.OrderBy(x => x.CreatedAtUtc).ToList();
+                var ordered = olderRows
+                    .Select(row => MapRowToMessage(row))
+                    .OrderBy(x => x.CreatedAtUtc)
+                    .ToList();
 
                 await MainThread.InvokeOnMainThreadAsync(() =>
                 {
@@ -218,12 +221,10 @@ namespace Biliardo.App.Pagine_Messaggi
                             lastDay = day;
                         }
 
-                        Messaggi.Insert(insertIndex++, ChatMessageVm.FromFirestore(m, myUid!, peerId!));
+                        var vm = BuildVmFromMessage(m, myUid!, peerId!);
+                        Messaggi.Insert(insertIndex++, vm);
                     }
                 });
-
-                _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId!);
-                await _chatCache.UpsertAppendAsync(_chatCacheKey, older, maxItems: 200, CancellationToken.None);
             }
             catch
             {
@@ -232,18 +233,6 @@ namespace Biliardo.App.Pagine_Messaggi
             finally
             {
                 _isLoadingOlder = false;
-            }
-        }
-
-        private void StopPolling()
-        {
-            var cts = _pollCts;
-            _pollCts = null;
-
-            if (cts != null)
-            {
-                try { cts.Cancel(); } catch { }
-                try { cts.Dispose(); } catch { }
             }
         }
 
@@ -271,16 +260,17 @@ namespace Biliardo.App.Pagine_Messaggi
             if (data == null || data.Count == 0)
                 return;
 
+            if (data.TryGetValue("chatId", out var chatId) && !string.IsNullOrWhiteSpace(chatId))
+                _chatIdCached = chatId;
+
             if (!IsRealtimePayloadForThisChat(data))
                 return;
 
-            if (TryBuildMessageFromPayload(data, out var message))
+            if (TryBuildMessageFromPayload(data, out var message, out var requiresSync))
             {
-                _ = AppendRealtimeMessageAsync(message);
+                _ = AppendRealtimeMessageAsync(message, requiresSync);
                 return;
             }
-
-            _ = LoadOnceFromServerAsync(CancellationToken.None);
         }
 
         private bool IsRealtimePayloadForThisChat(IReadOnlyDictionary<string, string> data)
@@ -302,9 +292,13 @@ namespace Biliardo.App.Pagine_Messaggi
             return false;
         }
 
-        private static bool TryBuildMessageFromPayload(IReadOnlyDictionary<string, string> data, out FirestoreChatService.MessageItem message)
+        private static bool TryBuildMessageFromPayload(
+            IReadOnlyDictionary<string, string> data,
+            out FirestoreChatService.MessageItem message,
+            out bool requiresSync)
         {
             message = default!;
+            requiresSync = false;
 
             if (!data.TryGetValue("messageId", out var messageId) || string.IsNullOrWhiteSpace(messageId))
                 return false;
@@ -314,9 +308,12 @@ namespace Biliardo.App.Pagine_Messaggi
 
             var text = data.TryGetValue("text", out var txt) ? txt ?? "" : "";
             var type = data.TryGetValue("type", out var t) ? t ?? "text" : "text";
+            var storagePath = data.TryGetValue("storagePath", out var sp) ? sp : null;
 
             if (!TryParseTimestamp(data, out var createdAt))
-                return false;
+                createdAt = DateTimeOffset.UtcNow;
+
+            requiresSync = string.IsNullOrWhiteSpace(text) && !string.IsNullOrWhiteSpace(storagePath);
 
             message = new FirestoreChatService.MessageItem(
                 MessageId: messageId,
@@ -329,7 +326,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 DeletedForAll: false,
                 DeletedFor: Array.Empty<string>(),
                 DeletedAtUtc: null,
-                StoragePath: null,
+                StoragePath: storagePath,
                 DurationMs: 0,
                 FileName: null,
                 ContentType: null,
@@ -376,7 +373,7 @@ namespace Biliardo.App.Pagine_Messaggi
             return false;
         }
 
-        private async Task AppendRealtimeMessageAsync(FirestoreChatService.MessageItem message)
+        private async Task AppendRealtimeMessageAsync(FirestoreChatService.MessageItem message, bool requiresSync)
         {
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
             var peerId = (_peerUserId ?? "").Trim();
@@ -394,33 +391,23 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (lastDay == null || day != lastDay.Value)
                     Messaggi.Add(ChatMessageVm.CreateDateSeparator(day));
 
-                Messaggi.Add(ChatMessageVm.FromFirestore(message, myUid, peerId));
+                var vm = BuildVmFromMessage(message, myUid, peerId);
+                if (requiresSync)
+                {
+                    vm.Text = "Contenuto disponibile";
+                    vm.RequiresSync = true;
+                    vm.SyncCommand = SyncMessageCommand;
+                }
+
+                Messaggi.Add(vm);
                 ScrollBottomImmediately(force: false);
             });
 
             _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
             await _chatCache.UpsertAppendAsync(_chatCacheKey, new[] { message }, maxItems: 200, CancellationToken.None);
-        }
 
-        private async Task PollLoopAsync(TimeSpan initialDelay, TimeSpan interval, CancellationToken ct)
-        {
-            try
-            {
-                if (initialDelay > TimeSpan.Zero)
-                    await Task.Delay(initialDelay, ct);
-            }
-            catch
-            {
-                return;
-            }
-
-            while (!ct.IsCancellationRequested)
-            {
-                try { await LoadOnceFromServerAsync(ct); } catch { }
-
-                try { await Task.Delay(interval, ct); }
-                catch { break; }
-            }
+            if (!string.Equals(message.SenderId, myUid, StringComparison.Ordinal))
+                QueueDelivered(message.MessageId);
         }
 
         // ============================================================
@@ -461,7 +448,7 @@ namespace Biliardo.App.Pagine_Messaggi
             return hc.ToHashCode().ToString("X");
         }
 
-        private async Task LoadOnceFromServerAsync(CancellationToken ct)
+        private async Task SyncChatFromServerAsync()
         {
             // 4.1) Validazione peer
             var peerId = (_peerUserId ?? "").Trim();
@@ -474,25 +461,34 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             // 4.3) Token + uid
-            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(CancellationToken.None);
             var myUid = FirebaseSessionePersistente.GetLocalId();
 
             if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
                 return;
 
             // 4.4) chatId
-            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
+            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, CancellationToken.None);
             _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
 
             // 4.5) cache contesto per pending apply
-            _lastIdToken = idToken;
             _lastMyUid = myUid;
             _lastPeerId = peerId;
             _lastChatId = chatId;
 
             // 4.6) lettura ultimi messaggi
-            var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: ct);
+            var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: CancellationToken.None);
             var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
+            var latest = ordered.LastOrDefault();
+            if (latest != null)
+            {
+                await _chatStore.UpsertChatAsync(new Cache_Locale.SQLite.ChatCacheStore.ChatRow(
+                    chatId,
+                    peerId,
+                    latest.MessageId,
+                    UnreadCount: 0,
+                    UpdatedAtUtc: latest.CreatedAtUtc), CancellationToken.None);
+            }
 
             // 4.7) firma
             var sig = ComputeUiSignature(ordered);
@@ -515,7 +511,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             // 4.9) apply immediato
-            await ApplyOrderedMessagesAsync(ordered, sig, idToken!, myUid!, peerId, chatId, ct);
+            await ApplyOrderedMessagesAsync(ordered, sig, myUid!, peerId, chatId, CancellationToken.None);
         }
 
         // ============================================================
@@ -524,7 +520,6 @@ namespace Biliardo.App.Pagine_Messaggi
         private async Task ApplyOrderedMessagesAsync(
             List<FirestoreChatService.MessageItem> ordered,
             string signature,
-            string idToken,
             string myUid,
             string peerId,
             string chatId,
@@ -539,31 +534,6 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             _lastUiSignature = signature;
-
-            // 5.2) receipts best-effort in background (batch, no loop patch)
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var inbound = ordered.Where(x => !string.Equals(x.SenderId, myUid, StringComparison.Ordinal)).ToList();
-                    var toDeliver = inbound
-                        .Where(x => x.DeliveredTo == null || !x.DeliveredTo.Contains(myUid, StringComparer.Ordinal))
-                        .Select(x => x.MessageId)
-                        .ToList();
-
-                    var toRead = inbound
-                        .Where(x => x.ReadBy == null || !x.ReadBy.Contains(myUid, StringComparer.Ordinal))
-                        .Select(x => x.MessageId)
-                        .ToList();
-
-                    if (toDeliver.Count > 0)
-                        await _fsChat.MarkDeliveredBatchAsync(chatId, toDeliver, myUid, ct);
-
-                    if (toRead.Count > 0)
-                        await _fsChat.MarkReadBatchAsync(chatId, toRead, myUid, ct);
-                }
-                catch { }
-            }, ct);
 
             // 5.3) apply in UI thread
             await MainThread.InvokeOnMainThreadAsync(() =>
@@ -598,7 +568,7 @@ namespace Biliardo.App.Pagine_Messaggi
                             lastDay = day;
                         }
 
-                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
+                        Messaggi.Add(BuildVmFromMessage(m, myUid, peerId));
                     }
 
                     appended = true;
@@ -699,7 +669,7 @@ namespace Biliardo.App.Pagine_Messaggi
                             lastDay = day;
                         }
 
-                        Messaggi.Add(ChatMessageVm.FromFirestore(m, myUid, peerId));
+                        Messaggi.Add(BuildVmFromMessage(m, myUid, peerId));
                         appended = true;
                     }
                 }
@@ -799,14 +769,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (!string.IsNullOrWhiteSpace(_lastChatId) && !string.IsNullOrWhiteSpace(_lastMyUid))
                     await _fsChat.DeleteMessageForMeAsync(_lastChatId, m.Id, _lastMyUid);
 
-                await LoadOnceFromServerAsync(CancellationToken.None);
+                await SyncChatFromServerAsync();
             }
             else if (choice == "Elimina per tutti")
             {
                 if (!string.IsNullOrWhiteSpace(_lastChatId))
                     await _fsChat.DeleteMessageForAllAsync(_lastChatId, m.Id);
 
-                await LoadOnceFromServerAsync(CancellationToken.None);
+                await SyncChatFromServerAsync();
             }
         }
 

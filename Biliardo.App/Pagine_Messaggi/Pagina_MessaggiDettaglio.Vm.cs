@@ -39,6 +39,7 @@ namespace Biliardo.App.Pagine_Messaggi
             public AttachmentKind Kind { get; set; }
             public string DisplayName { get; set; } = "";
             public string LocalPath { get; set; } = "";
+            public string? MediaCacheKey { get; set; }
 
             // 3.2) Metadati media/file
             public string? ContentType { get; set; }
@@ -72,6 +73,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         public sealed class ChatMessageVm : BindableObject
         {
+            private bool _requiresSync;
             private const int PlaybackWaveHistoryMs = 5000;
             private const int PlaybackWaveTickMs = 80;
             private const float PlaybackWaveStrokePx = 2f;
@@ -327,6 +329,32 @@ namespace Biliardo.App.Pagine_Messaggi
             // ------------------------------------------------------------
             public string? ContactName { get; set; }
             public string? ContactPhone { get; set; }
+
+            private Command<ChatMessageVm>? _syncCommand;
+
+            public Command<ChatMessageVm>? SyncCommand
+            {
+                get => _syncCommand;
+                set
+                {
+                    _syncCommand = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasSyncAction));
+                }
+            }
+
+            public bool RequiresSync
+            {
+                get => _requiresSync;
+                set
+                {
+                    _requiresSync = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasSyncAction));
+                }
+            }
+
+            public bool HasSyncAction => RequiresSync && SyncCommand != null;
 
             public bool IsContact => !DeletedForAll && string.Equals(Type, "contact", StringComparison.OrdinalIgnoreCase);
 

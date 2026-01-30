@@ -24,6 +24,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         public string LocalId { get; set; } = Guid.NewGuid().ToString("N");
         public PendingKind Kind { get; set; }
         public string? LocalFilePath { get; set; }
+        public string? MediaCacheKey { get; set; }
         public string DisplayName { get; set; } = "";
         public object? Extra { get; set; }
 

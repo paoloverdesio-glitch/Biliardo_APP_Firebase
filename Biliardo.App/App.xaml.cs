@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui.ApplicationModel;
@@ -25,23 +26,8 @@ namespace Biliardo.App
         // === Service locator minimale per lifecycle events (Android/iOS) ===
         public static IServiceProvider? RootServices { get; private set; }
 
-        internal static void SetForegroundState(bool isForeground)
-        {
-            try
-            {
-                var svc = RootServices?.GetService<ForegroundDeliveredReceiptsService>();
-                svc?.SetForeground(isForeground);
-            }
-            catch
-            {
-                // best-effort
-            }
-        }
-
         private readonly IPushNotificationService? _push;
         private Dictionary<string, string>? _pendingPushData;
-
-        private readonly ForegroundDeliveredReceiptsService? _deliveredSvc;
 
         public App(IServiceProvider services)
         {
@@ -85,9 +71,6 @@ namespace Biliardo.App
             }
 
             // Servizio foreground receipts (delivered) per ✓✓ grigie al mittente
-            _deliveredSvc = services.GetService<ForegroundDeliveredReceiptsService>();
-            _deliveredSvc?.SetForeground(false); // IMPORTANT: mai attivare prima di avere sessione valida
-
 #if DEBUG
             if (UsaPaginaDebugNotifiche)
             {
@@ -145,17 +128,12 @@ namespace Biliardo.App
                         Application.Current.MainPage = new NavigationPage(new Pagina_Home());
                         DiagLog.Step("Navigation", "AutoToHome");
 
-                        // Ora che siamo effettivamente in Home (utente autenticato), abilitiamo i servizi
-                        _deliveredSvc?.SetForeground(true);
-                        _ = Task.Run(RegisterPushTokenIfPossibleAsync);
-
                         await TryHandlePendingPushAsync();
                         return;
                     }
                 }
 
                 // Nessuna sessione (o biometria richiesta): stay/login e nessun accesso a Firestore
-                _deliveredSvc?.SetForeground(false);
                 Application.Current.MainPage = new NavigationPage(new Pagina_Login());
                 DiagLog.Step("Navigation", "ToLogin");
 
@@ -164,7 +142,6 @@ namespace Biliardo.App
             catch (Exception ex)
             {
                 DiagLog.Exception("Auth.BootstrapAndRoute", ex);
-                _deliveredSvc?.SetForeground(false);
                 Application.Current.MainPage = new NavigationPage(new Pagina_Login());
                 await TryHandlePendingPushAsync();
             }
@@ -185,6 +162,7 @@ namespace Biliardo.App
 
                     // FIX CS1503: IDictionary<string,string> -> IReadOnlyDictionary<string,string>
                     var ro = n.Data.ToDictionary(kv => kv.Key, kv => kv.Value);
+                    _ = Task.Run(() => PushCacheUpdater.UpdateAsync(ro, CancellationToken.None));
                     PublishRealtimeFromPush(ro);
                 }
             }
@@ -207,7 +185,10 @@ namespace Biliardo.App
                     .ToDictionary(k => k.Key, v => v.Value);
 
                 if (_pendingPushData.Count > 0)
+                {
                     DiagLog.Note("Push.Data", string.Join(";", _pendingPushData.Select(kv => $"{kv.Key}={kv.Value}")));
+                    _ = Task.Run(() => PushCacheUpdater.UpdateAsync(_pendingPushData, CancellationToken.None));
+                }
             }
             catch (Exception ex)
             {
@@ -264,63 +245,6 @@ namespace Biliardo.App
             catch (Exception ex)
             {
                 DiagLog.Exception("Push.Navigation", ex);
-            }
-        }
-
-        private async Task RegisterPushTokenIfPossibleAsync()
-        {
-            if (_push == null)
-                return;
-
-            try
-            {
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-                var uid = FirebaseSessionePersistente.GetLocalId();
-
-                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(uid))
-                    return;
-
-                var fcm = await _push.GetTokenAsync();
-                if (string.IsNullOrWhiteSpace(fcm))
-                    return;
-
-                var platform = DeviceInfo.Platform.ToString().ToLowerInvariant();
-                var device = $"{DeviceInfo.Manufacturer} {DeviceInfo.Model} (OS {DeviceInfo.VersionString})";
-                var now = DateTimeOffset.UtcNow;
-
-                var fields = new Dictionary<string, object>
-                {
-                    ["fcmToken"] = FirestoreRestClient.VString(fcm),
-                    ["fcmPlatform"] = FirestoreRestClient.VString(platform),
-                    ["fcmDevice"] = FirestoreRestClient.VString(device),
-                    ["fcmUpdatedAt"] = FirestoreRestClient.VTimestamp(now)
-                };
-
-                // ALLINEATO alle rules: /users/{uid}
-                try
-                {
-                    await FirestoreRestClient.PatchDocumentAsync(
-                        documentPath: $"users/{uid}",
-                        fields: fields,
-                        updateMaskFieldPaths: new[] { "fcmToken", "fcmPlatform", "fcmDevice", "fcmUpdatedAt" },
-                        idToken: idToken,
-                        ct: default);
-                }
-                catch
-                {
-                    await FirestoreRestClient.CreateDocumentAsync(
-                        collectionPath: "users",
-                        documentId: uid,
-                        fields: fields,
-                        idToken: idToken,
-                        ct: default);
-                }
-
-                DiagLog.Note("Push.Register", "OK(Firestore users/{uid})");
-            }
-            catch (Exception ex)
-            {
-                DiagLog.Exception("Push.Register", ex);
             }
         }
 

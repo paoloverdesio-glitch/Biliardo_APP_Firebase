@@ -177,6 +177,20 @@
                                             Padding="6,2" />
                                 </HorizontalStackLayout>
 
+                                <HorizontalStackLayout Spacing="10"
+                                                      IsVisible="{Binding HasSyncAction}">
+                                    <Label Text="Contenuto disponibile"
+                                           TextColor="White"
+                                           FontSize="12" />
+                                    <Button Text="Sincronizza"
+                                            Command="{Binding SyncCommand}"
+                                            CommandParameter="{Binding .}"
+                                            BackgroundColor="#0A5F2A"
+                                            TextColor="White"
+                                            FontSize="12"
+                                            Padding="8,2" />
+                                </HorizontalStackLayout>
+
                                 <Label Text="{Binding Text}"
                                        TextColor="White"
                                        LineBreakMode="WordWrap"

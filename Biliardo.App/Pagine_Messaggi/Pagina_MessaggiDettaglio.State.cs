@@ -102,6 +102,7 @@ namespace Biliardo.App.Pagine_Messaggi
         public ObservableCollection<string> EmojiItems { get; } = new();
         public Command<ChatMessageVm> OpenPdfCommand { get; set; } = null!;
         public Command<ChatMessageVm> RetrySendCommand { get; set; } = null!;
+        public Command<ChatMessageVm> SyncMessageCommand { get; set; } = null!;
 
         // ============================================================
         // 6) HEADER / TITOLI (BINDING XAML)
@@ -207,7 +208,6 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private bool _peerProfileLoaded;
 
-        private string? _lastIdToken;
         private string? _lastMyUid;
         private string? _lastPeerId;
         private string? _lastChatId;
@@ -229,6 +229,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
         private readonly MediaCacheService _mediaCache = new();
+        private readonly Cache_Locale.SQLite.ChatCacheStore _chatStore = new();
 
         // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
         private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
@@ -242,8 +243,6 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 13) POLLING / DIFF / PENDING APPLY (anti-jank)
         // ============================================================
-        private CancellationTokenSource? _pollCts;
-        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(2500);
         private string _lastUiSignature = "";
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
