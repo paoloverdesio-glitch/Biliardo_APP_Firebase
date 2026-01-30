@@ -81,7 +81,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
                 Csv(Time(vm.EndTime)),
                 Csv(Ms(vm.EndTime)),
                 Csv(vm.DurationMs),
-                Csv(vm.Success == true ? "OK" : "FAIL"),
+                Csv(vm.OutcomeLabel),
                 Csv(vm.ErrorMessage));
 
             await AppendLineAsync(DotsFilePath, line);

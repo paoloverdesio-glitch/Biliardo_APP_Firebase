@@ -1,6 +1,8 @@
 ﻿using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Utilita;
 using Microsoft.Maui.Controls;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Biliardo.App.Pagine_Messaggi
@@ -28,6 +30,10 @@ namespace Biliardo.App.Pagine_Messaggi
             DisplayNomeCompleto = "";
 
             RefreshVoiceBindings();
+
+            _firstRenderGate = new FirstRenderGate(this, CvMessaggi);
+            ComposerBar.SizeChanged += OnLayoutSizeChanged;
+            SizeChanged += OnLayoutSizeChanged;
         }
 
         public Pagina_MessaggiDettaglio(string peerUserId, string peerNickname) : this()
@@ -49,11 +55,29 @@ namespace Biliardo.App.Pagine_Messaggi
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
 
-            _ = LoadCachedMessagesAsync();
-            StartPolling();
+            _ = OnAppearingAsync();
             RefreshVoiceBindings();
+        }
 
-            _ = EnsurePeerProfileAsync();
+        private async Task OnAppearingAsync()
+        {
+            StopPolling();
+            CancelPendingApply();
+            _appearanceCts?.Cancel();
+            _appearanceCts = new CancellationTokenSource();
+            var ct = _appearanceCts.Token;
+
+            await LoadFromCacheAndRenderImmediatelyAsync();
+            await LoadPeerProfileFromCacheAsync();
+            ScrollBottomImmediately(force: true);
+
+            await _firstRenderGate!.WaitAsync();
+            if (ct.IsCancellationRequested)
+                return;
+
+            StartRealtimeUpdatesAfterFirstRender();
+            StartPollingAfterFirstRender(TimeSpan.FromSeconds(5), _pollInterval);
+            _ = EnsurePeerProfileAfterFirstRenderAsync();
         }
 
         protected override void OnDisappearing()
@@ -69,10 +93,12 @@ namespace Biliardo.App.Pagine_Messaggi
 
             // 2.2) Stop sottosistemi
             StopPolling();
+            StopRealtimeUpdates();
             StopVoiceUiLoop();
             StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
+            _appearanceCts?.Cancel();
 
             // 2.3) Sicurezza: se esco mentre registro, cancello in background
             _ = Task.Run(async () =>
@@ -124,7 +150,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 5) PROFILO PEER (NOME COMPLETO SOTTO TITOLO CHAT)
         // ============================================================
-        private async Task EnsurePeerProfileAsync()
+        private async Task LoadPeerProfileFromCacheAsync()
         {
             if (_peerProfileLoaded)
                 return;
@@ -133,7 +159,30 @@ namespace Biliardo.App.Pagine_Messaggi
             if (string.IsNullOrWhiteSpace(peerId))
                 return;
 
+            var cached = await _userPublicCache.TryGetAsync(peerId, CancellationToken.None);
+            if (cached == null)
+                return;
+
+            DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
             _peerProfileLoaded = true;
+        }
+
+        private async Task EnsurePeerProfileAfterFirstRenderAsync()
+        {
+            if (_peerProfileLoaded)
+                return;
+
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(peerId))
+                return;
+
+            var cached = await _userPublicCache.TryGetAsync(peerId, CancellationToken.None);
+            if (cached != null)
+            {
+                DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
+                _peerProfileLoaded = true;
+                return;
+            }
 
             try
             {
@@ -143,6 +192,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 var display = BuildDisplayNomeCompleto(profile.FirstName, profile.LastName);
                 DisplayNomeCompleto = display;
+                _peerProfileLoaded = true;
+                await _userPublicCache.UpsertAsync(peerId, profile, CancellationToken.None);
             }
             catch { }
         }

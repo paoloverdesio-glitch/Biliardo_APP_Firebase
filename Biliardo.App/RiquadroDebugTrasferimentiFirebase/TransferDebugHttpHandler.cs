@@ -31,12 +31,21 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             {
                 response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 long? responseBytes = response.Content?.Headers.ContentLength;
-                _monitor.EndApi(token, response.IsSuccessStatusCode, (int)response.StatusCode, responseBytes, null);
+                _monitor.EndApi(token, TransferOutcome.Success, (int)response.StatusCode, responseBytes, null);
                 return response;
+            }
+            catch (TaskCanceledException ex)
+            {
+                var outcome = cancellationToken.IsCancellationRequested
+                    ? TransferOutcome.Cancelled
+                    : TransferOutcome.Timeout;
+
+                _monitor.EndApi(token, outcome, response != null ? (int)response.StatusCode : null, null, ex.Message);
+                throw;
             }
             catch (Exception ex)
             {
-                _monitor.EndApi(token, false, response != null ? (int)response.StatusCode : null, null, ex.Message);
+                _monitor.EndApi(token, TransferOutcome.Fail, response != null ? (int)response.StatusCode : null, null, ex.Message);
                 throw;
             }
         }

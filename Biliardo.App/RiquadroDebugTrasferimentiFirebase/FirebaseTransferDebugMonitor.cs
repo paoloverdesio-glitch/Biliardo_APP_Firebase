@@ -74,7 +74,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 ActiveStorageTransfers.Add(vm);
-                RecalculateTopStorage(); // SOLO quando cambia l’elenco (add/remove)
+                RecalculateTopStorage(); // SOLO quando cambia lâ€™elenco (add/remove)
             });
 
             return token;
@@ -137,7 +137,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
                     vm.TransferredBytes = vm.TotalBytes;
 
                 ActiveStorageTransfers.Remove(vm);
-                RecalculateTopStorage(); // SOLO quando cambia l’elenco (add/remove)
+                RecalculateTopStorage(); // SOLO quando cambia lâ€™elenco (add/remove)
             });
 
             _ = Task.Run(() => CsvLoggers.AppendBarAsync(vm));
@@ -170,6 +170,11 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
 
         public void EndApi(ApiToken token, bool success, int? statusCode, long? responseBytes, string? errorMessage)
         {
+            EndApi(token, success ? TransferOutcome.Success : TransferOutcome.Fail, statusCode, responseBytes, errorMessage);
+        }
+
+        public void EndApi(ApiToken token, TransferOutcome outcome, int? statusCode, long? responseBytes, string? errorMessage)
+        {
             if (token == null) return;
 
             DotTransferVm? vm;
@@ -186,7 +191,8 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
             {
                 vm.EndTime = endTime;
                 vm.DurationMs = (long)(endTime - vm.StartTime).TotalMilliseconds;
-                vm.Success = success;
+                vm.Success = outcome == TransferOutcome.Success;
+                vm.Outcome = outcome;
                 vm.StatusCode = statusCode;
                 vm.ResponseBytes = responseBytes;
                 vm.ErrorMessage = errorMessage ?? "";
@@ -214,7 +220,7 @@ namespace Biliardo.App.RiquadroDebugTrasferimentiFirebase
 
         private void RecalculateTopStorage()
         {
-            // Top 8 più grandi per TotalBytes (come richiesto).
+            // Top 8 piÃ¹ grandi per TotalBytes (come richiesto).
             var ordered = ActiveStorageTransfers
                 .OrderByDescending(x => x.TotalBytes)
                 .ThenBy(x => x.StartTime)

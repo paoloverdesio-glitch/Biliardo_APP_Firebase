@@ -4,6 +4,8 @@ using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
+using Biliardo.App.Cache_Locale.Profili;
+using Biliardo.App.Utilita;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using System;
@@ -216,6 +218,8 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private bool _userNearBottom = true;
         private bool _isLoadingOlder;
+        private CancellationTokenSource? _appearanceCts;
+        private bool _realtimeSubscribed;
 
         // Modali: evita stop polling quando apro un modal (foto fullscreen, bottom sheet, ecc.)
         private bool _suppressStopPollingOnce;
@@ -228,6 +232,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
         // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
         private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
+        private readonly UserPublicLocalCache _userPublicCache = new();
 
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 
@@ -238,7 +243,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // 13) POLLING / DIFF / PENDING APPLY (anti-jank)
         // ============================================================
         private CancellationTokenSource? _pollCts;
-        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
+        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(2500);
         private string _lastUiSignature = "";
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
@@ -251,6 +256,12 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         private readonly HashSet<string> _prefetchMediaMessageIds = new(StringComparer.Ordinal);
         private CancellationTokenSource? _prefetchCts;
+
+        // ============================================================
+        // 14.1) GATE PRIMA RENDER + DEBOUNCE LAYOUT
+        // ============================================================
+        private FirstRenderGate? _firstRenderGate;
+        private readonly DebounceAsync _layoutScrollDebounce = new();
 
         // ============================================================
         // 15) VOICE (WhatsApp-like) - campi condivisi
@@ -330,70 +341,5 @@ namespace Biliardo.App.Pagine_Messaggi
             ChatScrollTuning.Apply(CvMessaggi);
         }
 
-        // ============================================================
-        // 19) CHAT LOCAL CACHE (STUB MINIMO PER RISOLVERE CS0246)
-        // ============================================================
-        private sealed class ChatLocalCache
-        {
-            private sealed class Entry
-            {
-                public List<FirestoreChatService.MessageItem> Items { get; }
-                public DateTimeOffset SavedAtUtc { get; }
-
-                public Entry(List<FirestoreChatService.MessageItem> items)
-                {
-                    Items = items;
-                    SavedAtUtc = DateTimeOffset.UtcNow;
-                }
-            }
-
-            private readonly Dictionary<string, Entry> _mem = new(StringComparer.Ordinal);
-            private readonly object _lock = new();
-
-            public Task<List<FirestoreChatService.MessageItem>?> TryLoadAsync(string cacheKey, CancellationToken ct = default)
-            {
-                if (string.IsNullOrWhiteSpace(cacheKey))
-                    return Task.FromResult<List<FirestoreChatService.MessageItem>?>(null);
-
-                lock (_lock)
-                {
-                    if (_mem.TryGetValue(cacheKey, out var e))
-                        return Task.FromResult<List<FirestoreChatService.MessageItem>?>(new List<FirestoreChatService.MessageItem>(e.Items));
-                }
-
-                return Task.FromResult<List<FirestoreChatService.MessageItem>?>(null);
-            }
-
-            public Task SaveAsync(string cacheKey, IEnumerable<FirestoreChatService.MessageItem> items, CancellationToken ct = default)
-            {
-                if (string.IsNullOrWhiteSpace(cacheKey))
-                    return Task.CompletedTask;
-
-                var list = items is List<FirestoreChatService.MessageItem> l ? new List<FirestoreChatService.MessageItem>(l)
-                    : new List<FirestoreChatService.MessageItem>(items ?? Array.Empty<FirestoreChatService.MessageItem>());
-
-                lock (_lock)
-                {
-                    _mem[cacheKey] = new Entry(list);
-                }
-
-                return Task.CompletedTask;
-            }
-
-            public Task ClearAsync(CancellationToken ct = default)
-            {
-                lock (_lock) { _mem.Clear(); }
-                return Task.CompletedTask;
-            }
-
-            public Task RemoveAsync(string cacheKey, CancellationToken ct = default)
-            {
-                if (string.IsNullOrWhiteSpace(cacheKey))
-                    return Task.CompletedTask;
-
-                lock (_lock) { _mem.Remove(cacheKey); }
-                return Task.CompletedTask;
-            }
-        }
     }
 }

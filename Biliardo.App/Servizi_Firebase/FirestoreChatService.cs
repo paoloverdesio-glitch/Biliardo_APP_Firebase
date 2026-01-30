@@ -784,6 +784,62 @@ namespace Biliardo.App.Servizi_Firebase
                 ct);
         }
 
+        public async Task MarkDeliveredBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            var ids = messageIds?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList()
+                ?? new List<string>();
+            if (ids.Count == 0)
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var writes = ids.Select(messageId =>
+                (documentPath: $"chats/{chatId}/messages/{messageId}",
+                 transforms: (IReadOnlyList<FirestoreRestClient.FieldTransform>)new[]
+                 {
+                     FirestoreRestClient.TransformAppendMissingElements("deliveredTo", new object[]
+                     {
+                         FirestoreRestClient.VString(myUid)
+                     }),
+                     FirestoreRestClient.TransformServerTimestamp("updatedAt")
+                 })).ToList();
+
+            await FirestoreRestClient.CommitBatchAsync(writes, idToken, ct);
+        }
+
+        public async Task MarkReadBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            var ids = messageIds?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList()
+                ?? new List<string>();
+            if (ids.Count == 0)
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var writes = ids.Select(messageId =>
+                (documentPath: $"chats/{chatId}/messages/{messageId}",
+                 transforms: (IReadOnlyList<FirestoreRestClient.FieldTransform>)new[]
+                 {
+                     FirestoreRestClient.TransformAppendMissingElements("readBy", new object[]
+                     {
+                         FirestoreRestClient.VString(myUid)
+                     }),
+                     FirestoreRestClient.TransformServerTimestamp("updatedAt")
+                 })).ToList();
+
+            await FirestoreRestClient.CommitBatchAsync(writes, idToken, ct);
+        }
+
         private static async Task PatchChatPreviewAsync(
             string idToken,
             string chatId,

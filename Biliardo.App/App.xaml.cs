@@ -13,6 +13,7 @@ using Biliardo.App.Pagine_Home;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Realtime;
 using Plugin.Firebase.CloudMessaging.EventArgs;
 
 namespace Biliardo.App
@@ -179,7 +180,13 @@ namespace Biliardo.App
                 DiagLog.Note("Push.Body", n?.Body ?? "");
 
                 if (n?.Data != null && n.Data.Count > 0)
+                {
                     DiagLog.Note("Push.Data", string.Join(";", n.Data.Select(kv => $"{kv.Key}={kv.Value}")));
+
+                    // FIX CS1503: IDictionary<string,string> -> IReadOnlyDictionary<string,string>
+                    var ro = n.Data.ToDictionary(kv => kv.Key, kv => kv.Value);
+                    PublishRealtimeFromPush(ro);
+                }
             }
             catch (Exception ex)
             {
@@ -315,6 +322,27 @@ namespace Biliardo.App
             {
                 DiagLog.Exception("Push.Register", ex);
             }
+        }
+
+        private static void PublishRealtimeFromPush(IReadOnlyDictionary<string, string> data)
+        {
+            if (data == null || data.Count == 0)
+                return;
+
+            var kind = data.TryGetValue("kind", out var k) ? k : "";
+            if (string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase))
+            {
+                BusEventiRealtime.Instance.PublishChatMessage(data);
+                return;
+            }
+
+            if (string.Equals(kind, "home_post", StringComparison.OrdinalIgnoreCase))
+            {
+                BusEventiRealtime.Instance.PublishHomePost(data);
+                return;
+            }
+
+            // fallback: se non conosco il tipo, non pubblico
         }
     }
 }

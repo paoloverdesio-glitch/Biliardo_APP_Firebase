@@ -26,6 +26,9 @@ namespace Biliardo.App.Servizi_Firebase
 
         private volatile bool _isForeground;
         private readonly SemaphoreSlim _tickLock = new(1, 1);
+        private readonly object _perChatLock = new();
+        private readonly Dictionary<string, long> _lastChatBatchTicks = new(StringComparer.Ordinal);
+        private static readonly TimeSpan MinChatBatchInterval = TimeSpan.FromSeconds(4);
 
         public ForegroundDeliveredReceiptsService(FirestoreChatService fsChat)
         {
@@ -159,6 +162,9 @@ namespace Biliardo.App.Servizi_Firebase
 
         private async Task ProcessChatAsync(string idToken, string myUid, string chatId, CancellationToken ct)
         {
+            if (!CanBatchChat(chatId))
+                return;
+
             // Messaggi recenti (DESC)
             var msgs = await _fsChat.GetLastMessagesAsync(idToken, chatId, limit: 40, ct: ct);
             if (msgs == null || msgs.Count == 0)
@@ -175,22 +181,38 @@ namespace Biliardo.App.Servizi_Firebase
             if (toDeliver.Count == 0)
                 return;
 
-            foreach (var m in toDeliver)
+            try
             {
-                try
+                await _fsChat.MarkDeliveredBatchAsync(chatId, toDeliver.Select(x => x.MessageId), myUid, ct);
+                StampChatBatch(chatId);
+            }
+            catch
+            {
+                // best-effort: se una commit fallisce, riproveremo al prossimo tick
+            }
+        }
+
+        private bool CanBatchChat(string chatId)
+        {
+            var now = Environment.TickCount64;
+            lock (_perChatLock)
+            {
+                if (_lastChatBatchTicks.TryGetValue(chatId, out var last))
                 {
-                    await _fsChat.TryMarkDeliveredAsync(
-                        idToken: idToken,
-                        chatId: chatId,
-                        messageId: m.MessageId,
-                        currentDeliveredTo: m.DeliveredTo,
-                        myUid: myUid,
-                        ct: ct);
+                    if (now - last < MinChatBatchInterval.TotalMilliseconds)
+                        return false;
                 }
-                catch
-                {
-                    // best-effort: se una patch fallisce, continuiamo sugli altri
-                }
+            }
+
+            return true;
+        }
+
+        private void StampChatBatch(string chatId)
+        {
+            var now = Environment.TickCount64;
+            lock (_perChatLock)
+            {
+                _lastChatBatchTicks[chatId] = now;
             }
         }
 
