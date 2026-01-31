@@ -132,6 +132,11 @@
 
         <!-- ===================== [B2] CORPO (PULITO) ======================== -->
         <Grid Grid.Row="1" RowDefinitions="*,Auto" Padding="10,0,10,10">
+            <ActivityIndicator IsVisible="{Binding IsHomeLoading}"
+                               IsRunning="{Binding IsHomeLoading}"
+                               Color="White"
+                               HorizontalOptions="Center"
+                               VerticalOptions="Start" />
             <CollectionView x:Name="FeedCollection"
                             ItemsSource="{Binding Posts}"
                             SelectionMode="None"
@@ -280,6 +285,14 @@
                                                     <Label Text="&#x1F4C5; Evento"
                                                            TextColor="White" />
                                                 </Border>
+
+                                                <ActivityIndicator IsVisible="{Binding IsDownloading}"
+                                                                   IsRunning="{Binding IsDownloading}"
+                                                                   Color="White"
+                                                                   HorizontalOptions="Center"
+                                                                   VerticalOptions="Center"
+                                                                   HeightRequest="24"
+                                                                   WidthRequest="24" />
                                             </Grid>
                                         </DataTemplate>
                                     </BindableLayout.ItemTemplate>

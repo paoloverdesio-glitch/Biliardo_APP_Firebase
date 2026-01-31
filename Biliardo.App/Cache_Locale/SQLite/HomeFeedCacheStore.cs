@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 
 namespace Biliardo.App.Cache_Locale.SQLite
@@ -103,7 +104,11 @@ WHERE PostId IN (
     LIMIT -1 OFFSET $maxItems
 );";
             cmd.Parameters.AddWithValue("$maxItems", maxItems);
-            await cmd.ExecuteNonQueryAsync(ct);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+#if DEBUG
+            if (affected > 0)
+                Debug.WriteLine($"[HomeFeedCacheStore] TrimOldest removed={affected}");
+#endif
         }
     }
 }

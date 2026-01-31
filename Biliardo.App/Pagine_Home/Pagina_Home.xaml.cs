@@ -66,6 +66,7 @@ namespace Biliardo.App.Pagine_Home
         public Command<HomePostVm> RetryHomePostCommand { get; }
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
+        private bool _isHomeLoading;
         private HashSet<string> _likedPostIds = new(StringComparer.Ordinal);
         private string _currentUid = "";
 
@@ -84,6 +85,17 @@ namespace Biliardo.App.Pagine_Home
         private readonly SemaphoreSlim _syncHomeLock = new(1, 1);
         private bool _loadedFromMemory;
         private bool _homeSyncDone;
+
+        public bool IsHomeLoading
+        {
+            get => _isHomeLoading;
+            private set
+            {
+                if (_isHomeLoading == value) return;
+                _isHomeLoading = value;
+                OnPropertyChanged();
+            }
+        }
 
         // ===================== 3) COSTRUTTORE ============================
         public Pagina_Home()
@@ -233,6 +245,8 @@ namespace Biliardo.App.Pagine_Home
                 _currentUid = FirebaseSessionePersistente.GetLocalId() ?? "";
                 _likedPostIds = await _homeLikesCache.LoadAsync(_currentUid);
 
+                IsHomeLoading = true;
+
                 if (!_loadedFromMemory && HomeFeedMemoryCache.Instance.TryGet(out var memory))
                 {
                     _loadedFromMemory = true;
@@ -255,15 +269,7 @@ namespace Biliardo.App.Pagine_Home
                     .OrderByDescending(x => x.CreatedAtUtc)
                     .ToList();
 
-                Posts.Clear();
-                foreach (var post in ordered)
-                {
-                    var vm = HomePostVm.FromCached(post);
-                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
-                    vm.RetryCommand = RetryHomePostCommand;
-                    vm.SyncCommand = null;
-                    Posts.Add(vm);
-                }
+                await ApplyHomeSnapshotAsync(ordered);
 
                 _noMoreHomePosts = false;
                 _homeFeedCursor = null;
@@ -273,6 +279,10 @@ namespace Biliardo.App.Pagine_Home
             catch
             {
                 // cache best-effort
+            }
+            finally
+            {
+                IsHomeLoading = false;
             }
         }
 
@@ -395,6 +405,42 @@ namespace Biliardo.App.Pagine_Home
             foreach (var vm in Posts)
                 snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
             HomeFeedMemoryCache.Instance.Set(snapshot);
+        }
+
+        private async Task ApplyHomeSnapshotAsync(IReadOnlyList<HomeFeedLocalCache.CachedHomePost> ordered)
+        {
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var incomingIds = new HashSet<string>(ordered.Select(x => x.PostId), StringComparer.Ordinal);
+
+                for (var i = Posts.Count - 1; i >= 0; i--)
+                {
+                    if (!incomingIds.Contains(Posts[i].PostId))
+                        Posts.RemoveAt(i);
+                }
+
+                for (var i = 0; i < ordered.Count; i++)
+                {
+                    var cached = ordered[i];
+                    var vm = HomePostVm.FromCached(cached);
+                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                    vm.RetryCommand = RetryHomePostCommand;
+                    vm.SyncCommand = null;
+
+                    var existing = Posts.FirstOrDefault(x => x.PostId == vm.PostId);
+                    if (existing == null)
+                    {
+                        Posts.Insert(Math.Min(i, Posts.Count), vm);
+                    }
+                    else
+                    {
+                        var index = Posts.IndexOf(existing);
+                        if (index >= 0 && index != i)
+                            Posts.Move(index, i);
+                        Posts[i] = vm;
+                    }
+                }
+            });
         }
 
         private void StartRealtimeUpdatesAfterFirstRender()
@@ -591,6 +637,7 @@ namespace Biliardo.App.Pagine_Home
                 if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
                     return;
 
+                IsHomeLoading = true;
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.ServerSyncTimeoutSeconds));
                 await SyncHomeFromServerAsync(null, cts.Token);
                 _homeSyncDone = true;
@@ -604,6 +651,10 @@ namespace Biliardo.App.Pagine_Home
             {
                 if (Posts.Count == 0)
                     await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore");
+            }
+            finally
+            {
+                IsHomeLoading = false;
             }
         }
 
@@ -1248,12 +1299,17 @@ namespace Biliardo.App.Pagine_Home
             {
                 try
                 {
+                    MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = true);
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
                     var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, att.FileName ?? "video.mp4", isThumb: false, cts.Token);
                     if (!string.IsNullOrWhiteSpace(local))
                         att.LocalPath = local;
                 }
                 catch { }
+                finally
+                {
+                    MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = false);
+                }
             });
         }
 
@@ -1420,6 +1476,7 @@ namespace Biliardo.App.Pagine_Home
 
             try
             {
+                MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = true);
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
                 var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, fileName, isThumb: false, cts.Token);
                 if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
@@ -1443,6 +1500,10 @@ namespace Biliardo.App.Pagine_Home
                 if (showErrors)
                     await ShowPopupAsync("Impossibile aprire il contenuto.", "Errore");
                 return null;
+            }
+            finally
+            {
+                MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = false);
             }
         }
 
@@ -1976,6 +2037,7 @@ namespace Biliardo.App.Pagine_Home
         public sealed class HomeAttachmentVm : BindableObject
         {
             private bool _isPlaying;
+            private bool _isDownloading;
 
             public string Type { get; set; } = "";
             public string? StoragePath { get; set; }
@@ -2023,6 +2085,12 @@ namespace Biliardo.App.Pagine_Home
             }
 
             public string AudioPlayLabel => IsPlaying ? "Stop" : "Play";
+
+            public bool IsDownloading
+            {
+                get => _isDownloading;
+                set { _isDownloading = value; OnPropertyChanged(); }
+            }
 
             public ImageSource? DisplayPreviewSource
             {

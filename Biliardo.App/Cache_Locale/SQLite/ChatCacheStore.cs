@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 
 namespace Biliardo.App.Cache_Locale.SQLite
@@ -109,7 +110,11 @@ WHERE ChatId = $chatId AND MessageId IN (
 );";
             cmd.Parameters.AddWithValue("$chatId", chatId);
             cmd.Parameters.AddWithValue("$maxItems", maxItems);
-            await cmd.ExecuteNonQueryAsync(ct);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+#if DEBUG
+            if (affected > 0)
+                Debug.WriteLine($"[ChatCacheStore] TrimChatMessages chatId={chatId} removed={affected}");
+#endif
         }
 
         public async Task TrimChatListAsync(int maxItems, CancellationToken ct)
@@ -128,13 +133,17 @@ WHERE ChatId IN (
     LIMIT -1 OFFSET $maxItems
 );";
             cmd.Parameters.AddWithValue("$maxItems", maxItems);
-            await cmd.ExecuteNonQueryAsync(ct);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
 
             await using var cleanup = conn.CreateCommand();
             cleanup.CommandText = @"
 DELETE FROM Messages
 WHERE ChatId NOT IN (SELECT ChatId FROM Chats);";
-            await cleanup.ExecuteNonQueryAsync(ct);
+            var orphans = await cleanup.ExecuteNonQueryAsync(ct);
+#if DEBUG
+            if (affected > 0 || orphans > 0)
+                Debug.WriteLine($"[ChatCacheStore] TrimChatList removedChats={affected} removedOrphanMessages={orphans}");
+#endif
         }
 
         public async Task ResetUnreadAsync(string chatId, CancellationToken ct)

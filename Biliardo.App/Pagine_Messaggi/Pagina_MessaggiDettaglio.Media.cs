@@ -225,6 +225,7 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 try
                 {
+                    MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = true);
                     var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "video.mp4", isThumb: false, CancellationToken.None);
                     if (!string.IsNullOrWhiteSpace(local))
                     {
@@ -232,6 +233,10 @@ namespace Biliardo.App.Pagine_Messaggi
                     }
                 }
                 catch { }
+                finally
+                {
+                    MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = false);
+                }
             });
         }
 
@@ -438,6 +443,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(idToken))
                     return null;
 
+                MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = true);
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
                 var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "file.bin", isThumb: false, cts.Token);
                 if (string.IsNullOrWhiteSpace(local))
@@ -468,6 +474,10 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (showErrors)
                     await DisplayAlert("Errore", "Impossibile aprire il contenuto.", "OK");
                 return null;
+            }
+            finally
+            {
+                MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = false);
             }
         }
 

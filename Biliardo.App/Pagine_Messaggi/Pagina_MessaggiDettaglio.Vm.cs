@@ -167,6 +167,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             private bool _hasSendError;
+            private bool _isDownloading;
             public bool HasSendError
             {
                 get => _hasSendError;
@@ -175,6 +176,16 @@ namespace Biliardo.App.Pagine_Messaggi
                     _hasSendError = value;
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(ShowRetry));
+                }
+            }
+
+            public bool IsDownloading
+            {
+                get => _isDownloading;
+                set
+                {
+                    _isDownloading = value;
+                    OnPropertyChanged();
                 }
             }
 
