@@ -1,6 +1,8 @@
 ﻿using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Utilita;
+using Biliardo.App.Infrastructure;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.Networking;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -83,6 +85,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             StartRealtimeUpdatesAfterFirstRender();
+            _ = SyncChatFromServerWithTimeoutAsync();
         }
 
         protected override void OnDisappearing()
@@ -230,6 +233,42 @@ namespace Biliardo.App.Pagine_Messaggi
                 return fn;
 
             return $"{fn} {ln}".Trim();
+        }
+
+        private async Task SyncChatFromServerWithTimeoutAsync()
+        {
+            if (_serverSyncDone || Interlocked.Exchange(ref _serverSyncFlag, 1) == 1)
+                return;
+
+            try
+            {
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                {
+                    if (Messaggi.Count == 0)
+                        await DisplayAlert("Offline", "Contenuto non disponibile offline.", "OK");
+
+                    IsLoadingMessages = false;
+                    return;
+                }
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.ServerSyncTimeoutSeconds));
+                await SyncChatFromServerAsync(cts.Token);
+                _serverSyncDone = true;
+            }
+            catch (OperationCanceledException)
+            {
+                IsLoadingMessages = false;
+                await DisplayAlert("Errore rete", "Timeout aggiornamento chat.", "OK");
+            }
+            catch (Exception ex)
+            {
+                IsLoadingMessages = false;
+                await DisplayAlert("Errore", ex.Message, "OK");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _serverSyncFlag, 0);
+            }
         }
 
         // ============================================================

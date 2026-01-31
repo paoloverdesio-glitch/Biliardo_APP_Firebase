@@ -2,11 +2,15 @@
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Cache_Locale.Profili;
 using Biliardo.App.Cache_Locale.SQLite;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Realtime;
+using Biliardo.App.Servizi_Sicurezza;
 using Microsoft.Maui.ApplicationModel;
+using Microsoft.Maui.Networking;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -191,7 +195,9 @@ namespace Biliardo.App.Pagine_Messaggi
                 // Difensivo: nessuna selezione residua
                 try { ListaChat.SelectedItem = null; } catch { }
 
+                await _vm.TryLoadFromMemoryAsync();
                 await _vm.CaricaAsync();
+                _ = StartChatListServerSyncAsync();
                 StartRealtimeUpdates();
             }
             catch (Exception ex)
@@ -275,16 +281,49 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _ = _vm.CaricaAsync();
         }
+
+        private async Task StartChatListServerSyncAsync()
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.ServerSyncTimeoutSeconds));
+                var ok = await _vm.SyncFromServerOnceAsync(cts.Token);
+                if (!ok)
+                    await DisplayAlert("Errore rete", "Impossibile aggiornare la lista chat.", "OK");
+            }
+            catch (OperationCanceledException)
+            {
+                await DisplayAlert("Errore rete", "Timeout aggiornamento lista chat.", "OK");
+            }
+            catch (Exception ex)
+            {
+                await DisplayAlert("Errore", ex.Message, "OK");
+            }
+        }
     }
 
     // ===================== ViewModel + Model =====================
 
-    public sealed class ListaViewModel
+    public sealed class ListaViewModel : INotifyPropertyChanged
     {
         public ObservableCollection<ChatPreview> ChatPreviews { get; } = new();
 
         private int _isLoadingFlag; // 0/1 (thread-safe)
         private int _suspendedFlag; // 0/1 (thread-safe)
+        private int _serverSyncFlag;
+        private bool _serverSyncDone;
+
+        private bool _isLoading;
+        public bool IsLoading
+        {
+            get => _isLoading;
+            private set
+            {
+                if (_isLoading == value) return;
+                _isLoading = value;
+                OnPropertyChanged(nameof(IsLoading));
+            }
+        }
 
         public bool IsSuspended => Volatile.Read(ref _suspendedFlag) == 1;
 
@@ -294,6 +333,31 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly ChatCacheStore _chatStore = new();
         private readonly UserPublicLocalCache _profileCache = new();
         private readonly Dictionary<string, FirestoreDirectoryService.UserPublicItem> _userCache = new(StringComparer.Ordinal);
+        private readonly FirestoreChatService _fsChat = new("biliardoapp");
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        private void OnPropertyChanged(string propertyName)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+        public async Task TryLoadFromMemoryAsync()
+        {
+            if (IsSuspended)
+                return;
+
+            if (!ChatListMemoryCache.Instance.TryGet(out var cached))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (IsSuspended)
+                    return;
+
+                ChatPreviews.Clear();
+                foreach (var it in cached)
+                    ChatPreviews.Add(it);
+            });
+        }
 
         public async Task CaricaAsync()
         {
@@ -311,12 +375,13 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(myUid))
                     throw new InvalidOperationException("Sessione Firebase assente/scaduta. Rifai login Firebase.");
 
+                IsLoading = true;
                 var chats = await _chatStore.ListChatsAsync(CancellationToken.None);
 
                 // Ordina lato client per updatedAt/lastAt desc (stile WhatsApp)
                 var ordered = chats
                     .Where(c => !string.IsNullOrWhiteSpace(c.PeerUid))
-                    .OrderByDescending(c => c.UpdatedAtUtc)
+                    .OrderByDescending(c => c.LastMessageAtUtc ?? c.UpdatedAtUtc)
                     .ToList();
 
                 // Prepara nuova lista in memoria (no UI)
@@ -324,7 +389,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 foreach (var c in ordered)
                 {
-                    var whenUtc = c.UpdatedAtUtc;
+                    var whenUtc = c.LastMessageAtUtc ?? c.UpdatedAtUtc;
                     var whenLocal = whenUtc.ToLocalTime().DateTime;
 
                     var peerUid = c.PeerUid;
@@ -338,9 +403,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     var photoUrl = p?.PhotoUrl ?? "";
                     var photoLocal = p?.PhotoLocalPath ?? "";
 
-                    var lastMessage = await _chatStore.GetLatestMessageAsync(c.ChatId, CancellationToken.None);
-                    var preview = lastMessage?.Text ?? "";
-                    var type = string.IsNullOrWhiteSpace(preview) && !string.IsNullOrWhiteSpace(lastMessage?.MediaKey) ? "file" : "text";
+                    var preview = c.LastMessageText ?? "";
+                    var type = c.LastMessageType ?? "text";
 
                     if (string.IsNullOrWhiteSpace(preview) || preview.Trim().Length == 0)
                     {
@@ -373,10 +437,64 @@ namespace Biliardo.App.Pagine_Messaggi
                         ChatPreviews.Add(it);
                 });
 
+                ChatListMemoryCache.Instance.Set(newItems);
+
             }
             finally
             {
+                IsLoading = false;
                 Interlocked.Exchange(ref _isLoadingFlag, 0);
+            }
+        }
+
+        public async Task<bool> SyncFromServerOnceAsync(CancellationToken ct)
+        {
+            if (_serverSyncDone)
+                return true;
+
+            if (Interlocked.Exchange(ref _serverSyncFlag, 1) == 1)
+                return true;
+
+            try
+            {
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                    return false;
+
+                var provider = await SessionePersistente.GetProviderAsync();
+                if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+                var myUid = FirebaseSessionePersistente.GetLocalId();
+                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
+                    return false;
+
+                var chats = await _fsChat.ListChatsAsync(idToken!, myUid!, limit: 60, ct: ct);
+                foreach (var chat in chats)
+                {
+                    var existing = await _chatStore.GetChatAsync(chat.ChatId, ct);
+                    var unread = existing?.UnreadCount ?? 0;
+                    var updatedAt = chat.UpdatedAtUtc ?? chat.LastAtUtc ?? DateTimeOffset.UtcNow;
+
+                    await _chatStore.UpsertChatAsync(new ChatCacheStore.ChatRow(
+                        chat.ChatId,
+                        chat.PeerUid,
+                        existing?.LastMessageId,
+                        chat.LastText,
+                        chat.LastType,
+                        chat.LastAtUtc,
+                        unread,
+                        updatedAt), ct);
+                }
+
+                await _chatStore.TrimChatListAsync(AppCacheOptions.MaxChatListEntries, ct);
+                _serverSyncDone = true;
+                await CaricaAsync();
+                return true;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _serverSyncFlag, 0);
             }
         }
 

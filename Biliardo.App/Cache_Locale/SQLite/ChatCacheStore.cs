@@ -2,13 +2,22 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 
 namespace Biliardo.App.Cache_Locale.SQLite
 {
     public sealed class ChatCacheStore
     {
-        public sealed record ChatRow(string ChatId, string PeerUid, string? LastMessageId, int UnreadCount, DateTimeOffset UpdatedAtUtc);
+        public sealed record ChatRow(
+            string ChatId,
+            string PeerUid,
+            string? LastMessageId,
+            string? LastMessageText,
+            string? LastMessageType,
+            DateTimeOffset? LastMessageAtUtc,
+            int UnreadCount,
+            DateTimeOffset UpdatedAtUtc);
         public sealed record MessageRow(string ChatId, string MessageId, string SenderId, string? Text, string? MediaKey, DateTimeOffset CreatedAtUtc);
 
         public async Task UpsertChatAsync(ChatRow chat, CancellationToken ct)
@@ -19,16 +28,22 @@ namespace Biliardo.App.Cache_Locale.SQLite
             await using var conn = SQLiteDatabase.OpenConnection();
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
-INSERT INTO Chats(ChatId, PeerUid, LastMessageId, UnreadCount, UpdatedAtUtc)
-VALUES ($chatId, $peerUid, $lastMessageId, $unreadCount, $updatedAtUtc)
+INSERT INTO Chats(ChatId, PeerUid, LastMessageId, LastMessageText, LastMessageType, LastMessageAtUtc, UnreadCount, UpdatedAtUtc)
+VALUES ($chatId, $peerUid, $lastMessageId, $lastMessageText, $lastMessageType, $lastMessageAtUtc, $unreadCount, $updatedAtUtc)
 ON CONFLICT(ChatId) DO UPDATE SET
     PeerUid = excluded.PeerUid,
     LastMessageId = excluded.LastMessageId,
+    LastMessageText = excluded.LastMessageText,
+    LastMessageType = excluded.LastMessageType,
+    LastMessageAtUtc = excluded.LastMessageAtUtc,
     UnreadCount = excluded.UnreadCount,
     UpdatedAtUtc = excluded.UpdatedAtUtc;";
             cmd.Parameters.AddWithValue("$chatId", chat.ChatId);
             cmd.Parameters.AddWithValue("$peerUid", chat.PeerUid);
             cmd.Parameters.AddWithValue("$lastMessageId", (object?)chat.LastMessageId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$lastMessageText", (object?)chat.LastMessageText ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$lastMessageType", (object?)chat.LastMessageType ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$lastMessageAtUtc", chat.LastMessageAtUtc?.UtcDateTime.ToString("O") ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("$unreadCount", chat.UnreadCount);
             cmd.Parameters.AddWithValue("$updatedAtUtc", chat.UpdatedAtUtc.UtcDateTime.ToString("O"));
             await cmd.ExecuteNonQueryAsync(ct);
@@ -39,7 +54,7 @@ ON CONFLICT(ChatId) DO UPDATE SET
             var list = new List<ChatRow>();
             await using var conn = SQLiteDatabase.OpenConnection();
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT ChatId, PeerUid, LastMessageId, UnreadCount, UpdatedAtUtc FROM Chats ORDER BY UpdatedAtUtc DESC;";
+            cmd.CommandText = "SELECT ChatId, PeerUid, LastMessageId, LastMessageText, LastMessageType, LastMessageAtUtc, UnreadCount, UpdatedAtUtc FROM Chats ORDER BY UpdatedAtUtc DESC;";
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -47,8 +62,11 @@ ON CONFLICT(ChatId) DO UPDATE SET
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.IsDBNull(2) ? null : reader.GetString(2),
-                    reader.GetInt32(3),
-                    DateTimeOffset.Parse(reader.GetString(4))));
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+                    reader.GetInt32(6),
+                    DateTimeOffset.Parse(reader.GetString(7))));
             }
             return list;
         }
@@ -57,7 +75,7 @@ ON CONFLICT(ChatId) DO UPDATE SET
         {
             await using var conn = SQLiteDatabase.OpenConnection();
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT ChatId, PeerUid, LastMessageId, UnreadCount, UpdatedAtUtc FROM Chats WHERE ChatId = $chatId LIMIT 1;";
+            cmd.CommandText = "SELECT ChatId, PeerUid, LastMessageId, LastMessageText, LastMessageType, LastMessageAtUtc, UnreadCount, UpdatedAtUtc FROM Chats WHERE ChatId = $chatId LIMIT 1;";
             cmd.Parameters.AddWithValue("$chatId", chatId);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct))
@@ -67,8 +85,65 @@ ON CONFLICT(ChatId) DO UPDATE SET
                 reader.GetString(0),
                 reader.GetString(1),
                 reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.GetInt32(3),
-                DateTimeOffset.Parse(reader.GetString(4)));
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+                reader.GetInt32(6),
+                DateTimeOffset.Parse(reader.GetString(7)));
+        }
+
+        public async Task TrimChatMessagesAsync(string chatId, int maxItems, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || maxItems <= 0)
+                return;
+
+            await using var conn = SQLiteDatabase.OpenConnection();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+DELETE FROM Messages
+WHERE ChatId = $chatId AND MessageId IN (
+    SELECT MessageId
+    FROM Messages
+    WHERE ChatId = $chatId
+    ORDER BY CreatedAtUtc DESC
+    LIMIT -1 OFFSET $maxItems
+);";
+            cmd.Parameters.AddWithValue("$chatId", chatId);
+            cmd.Parameters.AddWithValue("$maxItems", maxItems);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+#if DEBUG
+            if (affected > 0)
+                Debug.WriteLine($"[ChatCacheStore] TrimChatMessages chatId={chatId} removed={affected}");
+#endif
+        }
+
+        public async Task TrimChatListAsync(int maxItems, CancellationToken ct)
+        {
+            if (maxItems <= 0)
+                return;
+
+            await using var conn = SQLiteDatabase.OpenConnection();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+DELETE FROM Chats
+WHERE ChatId IN (
+    SELECT ChatId
+    FROM Chats
+    ORDER BY UpdatedAtUtc DESC
+    LIMIT -1 OFFSET $maxItems
+);";
+            cmd.Parameters.AddWithValue("$maxItems", maxItems);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+
+            await using var cleanup = conn.CreateCommand();
+            cleanup.CommandText = @"
+DELETE FROM Messages
+WHERE ChatId NOT IN (SELECT ChatId FROM Chats);";
+            var orphans = await cleanup.ExecuteNonQueryAsync(ct);
+#if DEBUG
+            if (affected > 0 || orphans > 0)
+                Debug.WriteLine($"[ChatCacheStore] TrimChatList removedChats={affected} removedOrphanMessages={orphans}");
+#endif
         }
 
         public async Task ResetUnreadAsync(string chatId, CancellationToken ct)

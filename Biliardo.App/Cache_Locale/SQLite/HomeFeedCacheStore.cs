@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 
 namespace Biliardo.App.Cache_Locale.SQLite
@@ -85,6 +86,29 @@ LIMIT $limit;";
                     DateTimeOffset.Parse(reader.GetString(5))));
             }
             return list;
+        }
+
+        public async Task TrimOldestAsync(int maxItems, CancellationToken ct)
+        {
+            if (maxItems <= 0)
+                return;
+
+            await using var conn = SQLiteDatabase.OpenConnection();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+DELETE FROM HomeFeed
+WHERE PostId IN (
+    SELECT PostId
+    FROM HomeFeed
+    ORDER BY CreatedAtUtc DESC
+    LIMIT -1 OFFSET $maxItems
+);";
+            cmd.Parameters.AddWithValue("$maxItems", maxItems);
+            var affected = await cmd.ExecuteNonQueryAsync(ct);
+#if DEBUG
+            if (affected > 0)
+                Debug.WriteLine($"[HomeFeedCacheStore] TrimOldest removed={affected}");
+#endif
         }
     }
 }

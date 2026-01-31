@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Biliardo.App.Cache_Locale.SQLite;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Servizi_Firebase;
 
@@ -75,6 +76,9 @@ namespace Biliardo.App.Servizi_Notifiche
             var mediaKey = data.TryGetValue("mediaKey", out var mk) ? mk : null;
             if (string.IsNullOrWhiteSpace(mediaKey) && data.TryGetValue("storagePath", out var sp))
                 mediaKey = sp;
+            var msgType = data.TryGetValue("type", out var type) ? type : null;
+            if (string.IsNullOrWhiteSpace(msgType))
+                msgType = string.IsNullOrWhiteSpace(text) && !string.IsNullOrWhiteSpace(mediaKey) ? "file" : "text";
 
             var chatStore = new ChatCacheStore();
             await chatStore.UpsertMessagesAsync(new[]
@@ -91,8 +95,12 @@ namespace Biliardo.App.Servizi_Notifiche
                 chatId,
                 peerUid ?? "",
                 messageId,
+                text,
+                msgType,
+                createdAt,
                 unread,
                 createdAt), ct);
+            await chatStore.TrimChatListAsync(AppCacheOptions.MaxChatListEntries, ct);
 
             await TrySendDeliveredAsync(chatId, messageId, senderId, myUid, ct);
         }

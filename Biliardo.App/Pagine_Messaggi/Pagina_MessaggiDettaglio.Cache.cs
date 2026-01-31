@@ -1,5 +1,6 @@
 using System;
 using Biliardo.App.Cache_Locale.SQLite;
+using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
 
 namespace Biliardo.App.Pagine_Messaggi
@@ -58,12 +59,15 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task UpsertLocalMessageAsync(string chatId, string peerId, FirestoreChatService.MessageItem message)
         {
-            await _chatCache.UpsertAppendAsync(chatId, new[] { message }, maxItems: 200, CancellationToken.None);
+            await _chatCache.UpsertAppendAsync(chatId, new[] { message }, maxItems: AppCacheOptions.MaxChatMessagesPerChat, CancellationToken.None);
 
             await _chatStore.UpsertChatAsync(new ChatCacheStore.ChatRow(
                 chatId,
                 peerId,
                 message.MessageId,
+                message.Text,
+                message.Type,
+                message.CreatedAtUtc,
                 UnreadCount: 0,
                 UpdatedAtUtc: message.CreatedAtUtc), CancellationToken.None);
         }

@@ -34,7 +34,7 @@
             <ui:UserAvatarView Grid.Column="1"
                                AvatarUrl="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarUrl}"
                                AvatarPath="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarPath}"
-                               DisplayName="{Binding Source={x:Reference ThisPage}, Path=TitoloChat}"
+                               DisplayName="{Binding Source={x:Reference ThisPage}, Path=AvatarDisplayName}"
                                Size="42"
                                VerticalOptions="Center" />
 
@@ -278,6 +278,14 @@
                                                                    FileName="{Binding FileName}"
                                                                    DurationMs="{Binding DurationMs}"
                                                                    Waveform="{Binding AudioWaveform}" />
+
+                                        <ActivityIndicator IsVisible="{Binding IsDownloading}"
+                                                           IsRunning="{Binding IsDownloading}"
+                                                           Color="White"
+                                                           HorizontalOptions="Center"
+                                                           VerticalOptions="Center"
+                                                           HeightRequest="24"
+                                                           WidthRequest="24" />
 
                                         <!-- LOCATION -->
                                         <ui:LocationPreviewView IsVisible="{Binding IsLocation}"

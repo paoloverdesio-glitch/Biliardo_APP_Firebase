@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.ApplicationModel.Communication;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.Networking;
 using Microsoft.Maui.Storage;
 
 #if ANDROID
@@ -27,6 +28,7 @@ using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Processing;
 using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Infrastructure;
 
 // ✅ FIX: MediaSource corretto (CommunityToolkit)
 using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
@@ -63,7 +65,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (sender is not BindableObject bo || bo.BindingContext is not ChatMessageVm m)
                     return;
 
-                var path = await EnsureMediaDownloadedAsync(m);
+                var path = await EnsureMediaDownloadedAsync(m, showErrors: true);
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                     return;
 
@@ -165,7 +167,7 @@ namespace Biliardo.App.Pagine_Messaggi
             if (!m.IsPhoto && !m.IsFileNonPdf)
                 return;
 
-            var path = await EnsureMediaDownloadedAsync(m);
+            var path = await EnsureMediaDownloadedAsync(m, showErrors: true);
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
                 await DisplayAlert("Info", "File non disponibile.", "OK");
@@ -185,7 +187,7 @@ namespace Biliardo.App.Pagine_Messaggi
             if (m == null)
                 return;
 
-            var path = await EnsureMediaDownloadedAsync(m);
+            var path = await EnsureMediaDownloadedAsync(m, showErrors: true);
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
                 await DisplayAlert("Info", "PDF non disponibile.", "OK");
@@ -223,6 +225,7 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 try
                 {
+                    MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = true);
                     var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "video.mp4", isThumb: false, CancellationToken.None);
                     if (!string.IsNullOrWhiteSpace(local))
                     {
@@ -230,6 +233,10 @@ namespace Biliardo.App.Pagine_Messaggi
                     }
                 }
                 catch { }
+                finally
+                {
+                    MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = false);
+                }
             });
         }
 
@@ -303,7 +310,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 foreach (var x in Messaggi.Where(x => x.IsAudioPlaying))
                     x.IsAudioPlaying = false;
 
-                var path = await EnsureMediaDownloadedAsync(m);
+                var path = await EnsureMediaDownloadedAsync(m, showErrors: true);
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 {
                     await DisplayAlert("Info", "Audio non disponibile.", "OK");
@@ -403,7 +410,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 7) DOWNLOAD MEDIA (cache su FileSystem.CacheDirectory)
         // ============================================================
-        private async Task<string?> EnsureMediaDownloadedAsync(ChatMessageVm m)
+        private async Task<string?> EnsureMediaDownloadedAsync(ChatMessageVm m, bool showErrors)
         {
             if (m == null) return null;
 
@@ -417,14 +424,34 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(m.StoragePath))
                     return null;
 
+                var cached = await _mediaCache.TryGetCachedPathAsync(m.StoragePath, isThumb: false);
+                if (!string.IsNullOrWhiteSpace(cached) && File.Exists(cached))
+                {
+                    MainThread.BeginInvokeOnMainThread(() => m.MediaLocalPath = cached);
+                    return cached;
+                }
+
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                {
+                    if (showErrors)
+                        await DisplayAlert("Offline", "Contenuto non disponibile offline.", "OK");
+                    return null;
+                }
+
                 // 7.3) token
                 var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
                 if (string.IsNullOrWhiteSpace(idToken))
                     return null;
 
-                var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "file.bin", isThumb: false, CancellationToken.None);
+                MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = true);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
+                var local = await _mediaCache.GetOrDownloadAsync(idToken!, m.StoragePath!, m.FileName ?? "file.bin", isThumb: false, cts.Token);
                 if (string.IsNullOrWhiteSpace(local))
+                {
+                    if (showErrors)
+                        await DisplayAlert("Errore", "Impossibile scaricare il file.", "OK");
                     return null;
+                }
 
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
@@ -436,9 +463,21 @@ namespace Biliardo.App.Pagine_Messaggi
 
                 return local;
             }
+            catch (OperationCanceledException)
+            {
+                if (showErrors)
+                    await DisplayAlert("Errore", "Timeout download contenuto.", "OK");
+                return null;
+            }
             catch
             {
+                if (showErrors)
+                    await DisplayAlert("Errore", "Impossibile aprire il contenuto.", "OK");
                 return null;
+            }
+            finally
+            {
+                MainThread.BeginInvokeOnMainThread(() => m.IsDownloading = false);
             }
         }
 

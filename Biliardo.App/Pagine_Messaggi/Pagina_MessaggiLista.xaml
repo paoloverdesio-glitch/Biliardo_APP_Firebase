@@ -25,6 +25,11 @@
                 MaxVisible="10"
                 IsVisible="False" />
 
+            <ActivityIndicator IsVisible="{Binding IsLoading}"
+                               IsRunning="{Binding IsLoading}"
+                               Color="White"
+                               HorizontalOptions="Center" />
+
             <CollectionView x:Name="ListaChat"
                             ItemsSource="{Binding ChatPreviews}"
                             SelectionMode="Single"

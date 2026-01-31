@@ -10,6 +10,7 @@ using Microsoft.Maui.Controls;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Sicurezza;
 using Biliardo.App.Realtime;
+using Biliardo.App.Infrastructure;
 
 namespace Biliardo.App.Pagine_Messaggi
 {
@@ -142,12 +143,24 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
+            if (ChatDetailMemoryCache.Instance.TryGet(_chatCacheKey, out var memoryItems) && !_loadedFromMemory)
+            {
+                _loadedFromMemory = true;
+                await RenderMessagesAsync(memoryItems, myUid, peerId);
+            }
+
             var cached = await _chatCache.TryReadAsync(_chatCacheKey, CancellationToken.None);
             if (cached.Count == 0)
                 return;
 
             _loadedFromCache = true;
 
+            await RenderMessagesAsync(cached, myUid, peerId);
+            ChatDetailMemoryCache.Instance.Set(_chatCacheKey, cached);
+        }
+
+        private async Task RenderMessagesAsync(IReadOnlyList<FirestoreChatService.MessageItem> cached, string myUid, string peerId)
+        {
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 if (Messaggi.Count > 0)
@@ -406,7 +419,17 @@ namespace Biliardo.App.Pagine_Messaggi
             });
 
             _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
-            await _chatCache.UpsertAppendAsync(_chatCacheKey, new[] { message }, maxItems: 200, CancellationToken.None);
+            await _chatCache.UpsertAppendAsync(_chatCacheKey, new[] { message }, maxItems: AppCacheOptions.MaxChatMessagesPerChat, CancellationToken.None);
+
+            await _chatStore.UpsertChatAsync(new Cache_Locale.SQLite.ChatCacheStore.ChatRow(
+                _chatCacheKey,
+                peerId,
+                message.MessageId,
+                message.Text,
+                message.Type,
+                message.CreatedAtUtc,
+                UnreadCount: 0,
+                UpdatedAtUtc: message.CreatedAtUtc), CancellationToken.None);
 
             if (!string.Equals(message.SenderId, myUid, StringComparison.Ordinal))
                 QueueDelivered(message.MessageId);
@@ -450,7 +473,7 @@ namespace Biliardo.App.Pagine_Messaggi
             return hc.ToHashCode().ToString("X");
         }
 
-        private async Task SyncChatFromServerAsync()
+        private async Task SyncChatFromServerAsync(CancellationToken ct = default)
         {
             // 4.1) Validazione peer
             var peerId = (_peerUserId ?? "").Trim();
@@ -463,14 +486,14 @@ namespace Biliardo.App.Pagine_Messaggi
                 return;
 
             // 4.3) Token + uid
-            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(CancellationToken.None);
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
             var myUid = FirebaseSessionePersistente.GetLocalId();
 
             if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
                 return;
 
             // 4.4) chatId
-            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, CancellationToken.None);
+            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
             _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
 
             // 4.5) cache contesto per pending apply
@@ -479,7 +502,7 @@ namespace Biliardo.App.Pagine_Messaggi
             _lastChatId = chatId;
 
             // 4.6) lettura ultimi messaggi
-            var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: CancellationToken.None);
+            var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: ct);
             var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
             var latest = ordered.LastOrDefault();
             if (latest != null)
@@ -488,8 +511,11 @@ namespace Biliardo.App.Pagine_Messaggi
                     chatId,
                     peerId,
                     latest.MessageId,
+                    latest.Text,
+                    latest.Type,
+                    latest.CreatedAtUtc,
                     UnreadCount: 0,
-                    UpdatedAtUtc: latest.CreatedAtUtc), CancellationToken.None);
+                    UpdatedAtUtc: latest.CreatedAtUtc), ct);
             }
 
             // 4.7) firma
@@ -513,7 +539,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             // 4.9) apply immediato
-            await ApplyOrderedMessagesAsync(ordered, sig, myUid!, peerId, chatId, CancellationToken.None);
+            await ApplyOrderedMessagesAsync(ordered, sig, myUid!, peerId, chatId, ct);
         }
 
         // ============================================================
@@ -684,7 +710,8 @@ namespace Biliardo.App.Pagine_Messaggi
             try
             {
                 _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
-                await _chatCache.UpsertAppendAsync(_chatCacheKey, ordered, maxItems: 200, ct);
+                await _chatCache.UpsertAppendAsync(_chatCacheKey, ordered, maxItems: AppCacheOptions.MaxChatMessagesPerChat, ct);
+                ChatDetailMemoryCache.Instance.Set(_chatCacheKey, ordered);
             }
             catch
             {
