@@ -45,6 +45,7 @@ namespace Biliardo.App.Infrastructure
                 rows.Add(MapToRow(cacheKey, m));
 
             await _store.UpsertMessagesAsync(rows, ct);
+            await _store.TrimChatMessagesAsync(cacheKey, maxItems, ct);
         }
 
         public async Task UpsertAppendAsync(string cacheKey, IEnumerable<FirestoreChatService.MessageItem> incoming, int maxItems, CancellationToken ct)
@@ -57,6 +58,7 @@ namespace Biliardo.App.Infrastructure
                 rows.Add(MapToRow(cacheKey, m));
 
             await _store.UpsertMessagesAsync(rows, ct);
+            await _store.TrimChatMessagesAsync(cacheKey, maxItems, ct);
         }
 
         public async Task<IReadOnlyList<ChatCacheSummary>> ListSummariesAsync(CancellationToken ct)

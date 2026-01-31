@@ -34,7 +34,7 @@
             <ui:UserAvatarView Grid.Column="1"
                                AvatarUrl="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarUrl}"
                                AvatarPath="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarPath}"
-                               DisplayName="{Binding Source={x:Reference ThisPage}, Path=TitoloChat}"
+                               DisplayName="{Binding Source={x:Reference ThisPage}, Path=AvatarDisplayName}"
                                Size="42"
                                VerticalOptions="Center" />
 

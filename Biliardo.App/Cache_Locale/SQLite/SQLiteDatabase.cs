@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Microsoft.Data.Sqlite;
 using Microsoft.Maui.Storage;
@@ -33,6 +34,9 @@ CREATE TABLE IF NOT EXISTS Chats (
     ChatId TEXT PRIMARY KEY,
     PeerUid TEXT NOT NULL,
     LastMessageId TEXT,
+    LastMessageText TEXT,
+    LastMessageType TEXT,
+    LastMessageAtUtc TEXT,
     UnreadCount INTEGER NOT NULL,
     UpdatedAtUtc TEXT NOT NULL,
     ServerTimestamp TEXT
@@ -109,8 +113,36 @@ CREATE TABLE IF NOT EXISTS MissingContentQueue (
 CREATE INDEX IF NOT EXISTS IX_MissingContentQueue_CreatedAtUtc ON MissingContentQueue(CreatedAtUtc DESC);
 ";
                 cmd.ExecuteNonQuery();
+
+                EnsureChatColumns(conn);
                 _initialized = true;
             }
+        }
+
+        private static void EnsureChatColumns(SqliteConnection conn)
+        {
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var pragma = conn.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA table_info(Chats);";
+                using var reader = pragma.ExecuteReader();
+                while (reader.Read())
+                    existing.Add(reader.GetString(1));
+            }
+
+            AddColumnIfMissing(conn, existing, "LastMessageText", "TEXT");
+            AddColumnIfMissing(conn, existing, "LastMessageType", "TEXT");
+            AddColumnIfMissing(conn, existing, "LastMessageAtUtc", "TEXT");
+        }
+
+        private static void AddColumnIfMissing(SqliteConnection conn, HashSet<string> existing, string column, string type)
+        {
+            if (existing.Contains(column))
+                return;
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"ALTER TABLE Chats ADD COLUMN {column} {type};";
+            cmd.ExecuteNonQuery();
         }
 
         public static SqliteConnection OpenConnection()

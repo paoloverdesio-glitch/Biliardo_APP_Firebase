@@ -154,17 +154,13 @@
                                 <HorizontalStackLayout Spacing="10" VerticalOptions="Center">
                                     <ui:UserAvatarView AvatarUrl="{Binding AuthorAvatarUrl}"
                                                        AvatarPath="{Binding AuthorAvatarPath}"
-                                                       DisplayName="{Binding AuthorNickname}"
+                                                       DisplayName="{Binding AuthorAvatarDisplayName}"
                                                        Size="42" />
                                     <VerticalStackLayout Spacing="0">
-                                        <Label Text="{Binding AuthorNickname}"
+                                        <Label Text="{Binding AuthorDisplayName}"
                                                TextColor="{Binding AuthorNicknameColor}"
-                                               FontAttributes="Bold" />
-                                        <Label Text="{Binding AuthorFullNameDisplay}"
-                                               IsVisible="{Binding HasAuthorFullName}"
-                                               TextColor="{Binding AuthorNicknameColor}"
-                                               FontSize="12"
-                                               Opacity="0.9" />
+                                               FontAttributes="Bold"
+                                               LineBreakMode="TailTruncation" />
                                     </VerticalStackLayout>
                                 </HorizontalStackLayout>
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Biliardo.App.Cache_Locale.SQLite;
+using Biliardo.App.Infrastructure;
 
 namespace Biliardo.App.Cache_Locale.Home
 {
@@ -48,6 +49,8 @@ namespace Biliardo.App.Cache_Locale.Home
                     new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.AuthorFullName, post.Text, post.ThumbKey, post.CreatedAtUtc),
                     ct);
             }
+
+            await _store.TrimOldestAsync(AppCacheOptions.MaxHomePosts, ct);
         }
 
         public Task UpsertTop(CachedHomePost post, CancellationToken ct = default)
@@ -55,9 +58,7 @@ namespace Biliardo.App.Cache_Locale.Home
             if (post == null)
                 return Task.CompletedTask;
 
-            return _store.UpsertPostAsync(
-                new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.AuthorFullName, post.Text, post.ThumbKey, post.CreatedAtUtc),
-                ct);
+            return UpsertAndTrimAsync(post, ct);
         }
 
         public Task MergeNewTop(IEnumerable<CachedHomePost> newOnes, CancellationToken ct = default)
@@ -74,7 +75,21 @@ namespace Biliardo.App.Cache_Locale.Home
                     ct));
             }
 
-            return Task.WhenAll(tasks);
+            return TrimAfterBatchAsync(tasks, ct);
+        }
+
+        private async Task UpsertAndTrimAsync(CachedHomePost post, CancellationToken ct)
+        {
+            await _store.UpsertPostAsync(
+                new HomeFeedCacheStore.HomePostRow(post.PostId, post.AuthorName, post.AuthorFullName, post.Text, post.ThumbKey, post.CreatedAtUtc),
+                ct);
+            await _store.TrimOldestAsync(AppCacheOptions.MaxHomePosts, ct);
+        }
+
+        private async Task TrimAfterBatchAsync(IEnumerable<Task> tasks, CancellationToken ct)
+        {
+            await Task.WhenAll(tasks);
+            await _store.TrimOldestAsync(AppCacheOptions.MaxHomePosts, ct);
         }
     }
 }

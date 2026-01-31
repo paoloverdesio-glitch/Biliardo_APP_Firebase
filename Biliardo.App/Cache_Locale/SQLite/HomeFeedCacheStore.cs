@@ -86,5 +86,24 @@ LIMIT $limit;";
             }
             return list;
         }
+
+        public async Task TrimOldestAsync(int maxItems, CancellationToken ct)
+        {
+            if (maxItems <= 0)
+                return;
+
+            await using var conn = SQLiteDatabase.OpenConnection();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+DELETE FROM HomeFeed
+WHERE PostId IN (
+    SELECT PostId
+    FROM HomeFeed
+    ORDER BY CreatedAtUtc DESC
+    LIMIT -1 OFFSET $maxItems
+);";
+            cmd.Parameters.AddWithValue("$maxItems", maxItems);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
     }
 }

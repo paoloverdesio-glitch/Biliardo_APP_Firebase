@@ -112,7 +112,12 @@ namespace Biliardo.App.Pagine_Messaggi
         public string TitoloChat
         {
             get => _titoloChat;
-            set { _titoloChat = value; OnPropertyChanged(); }
+            set
+            {
+                _titoloChat = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(AvatarDisplayName));
+            }
         }
 
         private string _displayNomeCompleto = "";
@@ -124,10 +129,12 @@ namespace Biliardo.App.Pagine_Messaggi
                 _displayNomeCompleto = value ?? "";
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasDisplayNomeCompleto));
+                OnPropertyChanged(nameof(AvatarDisplayName));
             }
         }
 
         public bool HasDisplayNomeCompleto => !string.IsNullOrWhiteSpace(DisplayNomeCompleto);
+        public string AvatarDisplayName => HasDisplayNomeCompleto ? DisplayNomeCompleto : TitoloChat;
 
         private string _peerAvatarUrl = "";
         public string PeerAvatarUrl
@@ -230,11 +237,14 @@ namespace Biliardo.App.Pagine_Messaggi
         private string? _chatIdCached;
         private string? _chatCacheKey;
         private bool _loadedFromCache;
+        private bool _loadedFromMemory;
 
         private bool _userNearBottom = true;
         private bool _isLoadingOlder;
         private CancellationTokenSource? _appearanceCts;
         private bool _realtimeSubscribed;
+        private int _serverSyncFlag;
+        private bool _serverSyncDone;
 
         // Modali: evita stop aggiornamenti realtime quando apro un modal (foto fullscreen, bottom sheet, ecc.)
         private bool _suppressStopRealtimeOnce;
