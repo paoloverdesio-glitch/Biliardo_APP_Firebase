@@ -72,7 +72,7 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
-            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "Utente";
+            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "";
 
             string? avatarPath = null;
             string? avatarUrl = null;
@@ -85,6 +85,8 @@ namespace Biliardo.App.Servizi_Firebase
                 var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
                 if (profile != null)
                 {
+                    if (!string.IsNullOrWhiteSpace(profile.Nickname))
+                        nickname = profile.Nickname;
                     avatarPath = profile.PhotoUrl;
                     avatarUrl = profile.PhotoUrl;
                     firstName = profile.FirstName;
@@ -101,7 +103,7 @@ namespace Biliardo.App.Servizi_Firebase
             var fields = new Dictionary<string, object>
             {
                 ["authorUid"] = FirestoreRestClient.VString(myUid),
-                ["authorNickname"] = FirestoreRestClient.VString(nickname),
+                ["authorNickname"] = string.IsNullOrWhiteSpace(nickname) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(nickname),
                 ["authorFirstName"] = string.IsNullOrWhiteSpace(firstName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(firstName),
                 ["authorLastName"] = string.IsNullOrWhiteSpace(lastName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(lastName),
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
@@ -358,6 +360,8 @@ namespace Biliardo.App.Servizi_Firebase
             try
             {
                 var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
+                if (!string.IsNullOrWhiteSpace(profile?.Nickname))
+                    nickname = profile.Nickname;
                 avatarPath = profile?.PhotoUrl;
             }
             catch
@@ -368,7 +372,7 @@ namespace Biliardo.App.Servizi_Firebase
             var fields = new Dictionary<string, object>
             {
                 ["authorUid"] = FirestoreRestClient.VString(myUid),
-                ["authorNickname"] = FirestoreRestClient.VString(nickname),
+                ["authorNickname"] = string.IsNullOrWhiteSpace(nickname) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(nickname),
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
                 ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
                 ["createdAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
