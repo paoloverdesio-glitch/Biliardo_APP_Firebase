@@ -22,11 +22,11 @@ namespace Biliardo.App.Infrastructure.Media
         // =====================================================================
         // THUMB / LQIP
         // =====================================================================
-        public const int ThumbMaxLongSidePx = 480;
-        public const int ThumbJpegQuality = 75;
+        public const int ThumbMaxLongSidePx = 1920;
+        public const int ThumbJpegQuality = 100;
         public const int LqipMaxLongSidePx = 32;
         public const int LqipJpegQuality = 35;
-        public const bool StoreLqipInFirestore = true;
+        public const bool StoreLqipInFirestore = false;
         public const bool StoreThumbInStorage = true;
         public const int MaxLqipBase64Bytes = 10_000; // se supera, non salvare lqip (evita Firestore payload grossi)
 
@@ -36,7 +36,7 @@ namespace Biliardo.App.Infrastructure.Media
         public const long CacheMaxBytes = 1_073_741_824; // 1GB
         public const int DownloadConcurrency = 2;
         public const bool PrefetchThumbsOnScroll = true;
-        public const bool DownloadOriginalOnScroll = false;
+        public const bool DownloadOriginalOnScroll = true;
 
         // =====================================================================
         // AUTOPLAY VIDEO (per pagina)
@@ -49,7 +49,7 @@ namespace Biliardo.App.Infrastructure.Media
         // FALLBACK/COMPAT
         // =====================================================================
         public const bool GenerateThumbIfMissingAfterDownload = true;
-        public const bool GenerateLqipIfMissingAfterDownload = true;
+        public const bool GenerateLqipIfMissingAfterDownload = false;
         public const bool TryUpdateFirestoreWithGeneratedThumbInfo = false; // IMPORTANT: non aggiornare payload dopo create (rules + semplicità)
 
         // =====================================================================
