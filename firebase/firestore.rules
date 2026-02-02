@@ -157,14 +157,17 @@ service cloud.firestore {
       // Creazione post: solo autore, counters a zero, deleted=false
       allow create: if signedIn()
         && request.resource.data.keys().toSet().hasOnly([
-          'authorUid','authorNickname','authorAvatarPath','authorAvatarUrl',
+          'authorUid','authorNickname','authorFirstName','authorLastName','authorAvatarPath','authorAvatarUrl',
           'createdAt','text','attachments',
           'likeCount','commentCount','shareCount',
-          'deleted','deletedAt','repostOfPostId'
+          'deleted','deletedAt','repostOfPostId','clientNonce',
+          'schemaVersion','ready'
         ])
         && request.resource.data.authorUid == uid()
         && request.resource.data.authorUid is string
         && request.resource.data.authorNickname is string
+        && (request.resource.data.authorFirstName == null || request.resource.data.authorFirstName is string)
+        && (request.resource.data.authorLastName == null || request.resource.data.authorLastName is string)
         && (request.resource.data.authorAvatarPath == null || request.resource.data.authorAvatarPath is string)
         && (request.resource.data.authorAvatarUrl == null || request.resource.data.authorAvatarUrl is string)
         && request.resource.data.createdAt is timestamp
@@ -179,19 +182,27 @@ service cloud.firestore {
         && request.resource.data.deleted is bool
         && request.resource.data.deleted == false
         && request.resource.data.deletedAt == null
-        && (request.resource.data.repostOfPostId == null || request.resource.data.repostOfPostId is string);
+        && (request.resource.data.repostOfPostId == null || request.resource.data.repostOfPostId is string)
+        && (request.resource.data.clientNonce == null || request.resource.data.clientNonce is string)
+        && request.resource.data.schemaVersion is int
+        && request.resource.data.ready is bool;
 
       allow update: if (
           signedIn()
           && postNotDeleted()
           && request.resource.data.authorUid == resource.data.authorUid
           && request.resource.data.authorNickname == resource.data.authorNickname
+          && request.resource.data.authorFirstName == resource.data.authorFirstName
+          && request.resource.data.authorLastName == resource.data.authorLastName
           && request.resource.data.authorAvatarPath == resource.data.authorAvatarPath
           && request.resource.data.authorAvatarUrl == resource.data.authorAvatarUrl
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.text == resource.data.text
           && request.resource.data.attachments == resource.data.attachments
           && request.resource.data.repostOfPostId == resource.data.repostOfPostId
+          && request.resource.data.clientNonce == resource.data.clientNonce
+          && request.resource.data.schemaVersion == resource.data.schemaVersion
+          && request.resource.data.ready == resource.data.ready
           && request.resource.data.deleted == resource.data.deleted
           && request.resource.data.deletedAt == resource.data.deletedAt
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -208,10 +219,38 @@ service cloud.firestore {
           isAuthor()
           && postNotDeleted()
           && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.authorNickname == resource.data.authorNickname
+          && request.resource.data.authorFirstName == resource.data.authorFirstName
+          && request.resource.data.authorLastName == resource.data.authorLastName
+          && request.resource.data.authorAvatarPath == resource.data.authorAvatarPath
+          && request.resource.data.authorAvatarUrl == resource.data.authorAvatarUrl
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.text == resource.data.text
+          && request.resource.data.repostOfPostId == resource.data.repostOfPostId
+          && request.resource.data.clientNonce == resource.data.clientNonce
+          && request.resource.data.schemaVersion == resource.data.schemaVersion
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'attachments','ready'
+          ])
+          && request.resource.data.attachments is list
+          && request.resource.data.ready is bool
+        )
+        || (
+          isAuthor()
+          && postNotDeleted()
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.authorNickname == resource.data.authorNickname
+          && request.resource.data.authorFirstName == resource.data.authorFirstName
+          && request.resource.data.authorLastName == resource.data.authorLastName
+          && request.resource.data.authorAvatarPath == resource.data.authorAvatarPath
+          && request.resource.data.authorAvatarUrl == resource.data.authorAvatarUrl
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.text == resource.data.text
           && request.resource.data.attachments == resource.data.attachments
           && request.resource.data.repostOfPostId == resource.data.repostOfPostId
+          && request.resource.data.clientNonce == resource.data.clientNonce
+          && request.resource.data.schemaVersion == resource.data.schemaVersion
+          && request.resource.data.ready == resource.data.ready
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'deleted','deletedAt'
           ])
@@ -244,7 +283,8 @@ service cloud.firestore {
         allow create: if signedIn()
           && postNotDeleted()
           && request.resource.data.keys().toSet().hasOnly([
-            'authorUid','authorNickname','authorAvatarPath','authorAvatarUrl','createdAt','text'
+            'authorUid','authorNickname','authorAvatarPath','authorAvatarUrl','createdAt','text',
+            'schemaVersion','ready','attachments'
           ])
           && request.resource.data.authorUid == uid()
           && request.resource.data.authorUid is string
@@ -252,7 +292,10 @@ service cloud.firestore {
           && (request.resource.data.authorAvatarPath == null || request.resource.data.authorAvatarPath is string)
           && (request.resource.data.authorAvatarUrl == null || request.resource.data.authorAvatarUrl is string)
           && request.resource.data.createdAt is timestamp
-          && request.resource.data.text is string;
+          && request.resource.data.text is string
+          && (!('schemaVersion' in request.resource.data) || request.resource.data.schemaVersion is int)
+          && (!('ready' in request.resource.data) || request.resource.data.ready is bool)
+          && (!('attachments' in request.resource.data) || request.resource.data.attachments is list);
 
         allow update: if false;
         allow delete: if false;
