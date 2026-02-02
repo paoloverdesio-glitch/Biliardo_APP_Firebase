@@ -59,9 +59,25 @@ CREATE TABLE IF NOT EXISTS HomeFeed (
     PostId TEXT PRIMARY KEY,
     AuthorName TEXT,
     AuthorFullName TEXT,
+    AuthorUid TEXT,
+    AuthorNickname TEXT,
+    AuthorFirstName TEXT,
+    AuthorLastName TEXT,
+    AuthorAvatarPath TEXT,
+    AuthorAvatarUrl TEXT,
     Text TEXT,
     ThumbKey TEXT,
     CreatedAtUtc TEXT NOT NULL,
+    SchemaVersion INTEGER,
+    Ready INTEGER,
+    Deleted INTEGER,
+    DeletedAtUtc TEXT,
+    LikeCount INTEGER,
+    CommentCount INTEGER,
+    ShareCount INTEGER,
+    RepostOfPostId TEXT,
+    ClientNonce TEXT,
+    AttachmentsJson TEXT,
     ServerTimestamp TEXT
 );
 CREATE INDEX IF NOT EXISTS IX_HomeFeed_CreatedAtUtc ON HomeFeed(CreatedAtUtc DESC);
@@ -115,6 +131,7 @@ CREATE INDEX IF NOT EXISTS IX_MissingContentQueue_CreatedAtUtc ON MissingContent
                 cmd.ExecuteNonQuery();
 
                 EnsureChatColumns(conn);
+                EnsureHomeFeedColumns(conn);
                 _initialized = true;
             }
         }
@@ -130,18 +147,47 @@ CREATE INDEX IF NOT EXISTS IX_MissingContentQueue_CreatedAtUtc ON MissingContent
                     existing.Add(reader.GetString(1));
             }
 
-            AddColumnIfMissing(conn, existing, "LastMessageText", "TEXT");
-            AddColumnIfMissing(conn, existing, "LastMessageType", "TEXT");
-            AddColumnIfMissing(conn, existing, "LastMessageAtUtc", "TEXT");
+            AddColumnIfMissing(conn, "Chats", existing, "LastMessageText", "TEXT");
+            AddColumnIfMissing(conn, "Chats", existing, "LastMessageType", "TEXT");
+            AddColumnIfMissing(conn, "Chats", existing, "LastMessageAtUtc", "TEXT");
         }
 
-        private static void AddColumnIfMissing(SqliteConnection conn, HashSet<string> existing, string column, string type)
+        private static void EnsureHomeFeedColumns(SqliteConnection conn)
+        {
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var pragma = conn.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA table_info(HomeFeed);";
+                using var reader = pragma.ExecuteReader();
+                while (reader.Read())
+                    existing.Add(reader.GetString(1));
+            }
+
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AuthorUid", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AuthorNickname", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AuthorFirstName", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AuthorLastName", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AuthorAvatarPath", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AuthorAvatarUrl", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "SchemaVersion", "INTEGER");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "Ready", "INTEGER");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "Deleted", "INTEGER");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "DeletedAtUtc", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "LikeCount", "INTEGER");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "CommentCount", "INTEGER");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "ShareCount", "INTEGER");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "RepostOfPostId", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "ClientNonce", "TEXT");
+            AddColumnIfMissing(conn, "HomeFeed", existing, "AttachmentsJson", "TEXT");
+        }
+
+        private static void AddColumnIfMissing(SqliteConnection conn, string table, HashSet<string> existing, string column, string type)
         {
             if (existing.Contains(column))
                 return;
 
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"ALTER TABLE Chats ADD COLUMN {column} {type};";
+            cmd.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {type};";
             cmd.ExecuteNonQuery();
         }
 

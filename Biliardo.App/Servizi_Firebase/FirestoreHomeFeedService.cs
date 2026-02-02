@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Biliardo.App.Infrastructure.Home;
 
 namespace Biliardo.App.Servizi_Firebase
 {
@@ -44,6 +45,8 @@ namespace Biliardo.App.Servizi_Firebase
             DateTimeOffset? DeletedAtUtc,
             string? RepostOfPostId,
             string? ClientNonce,
+            int SchemaVersion,
+            bool Ready,
             bool IsLiked = false
         );
 
@@ -56,7 +59,10 @@ namespace Biliardo.App.Servizi_Firebase
             string? AuthorAvatarPath,
             string? AuthorAvatarUrl,
             DateTimeOffset CreatedAtUtc,
-            string Text);
+            string Text,
+            IReadOnlyList<HomeAttachment> Attachments,
+            int SchemaVersion,
+            bool Ready);
 
         public sealed record PageResult<T>(IReadOnlyList<T> Items, string? NextCursor);
 
@@ -100,8 +106,39 @@ namespace Biliardo.App.Servizi_Firebase
 
             var now = DateTimeOffset.UtcNow;
 
+            var safeText = text ?? "";
+            var safeAttachments = attachments ?? Array.Empty<HomeAttachment>();
+
+            if (string.IsNullOrWhiteSpace(safeText) && safeAttachments.Count == 0 && string.IsNullOrWhiteSpace(repostOfPostId))
+                throw new InvalidOperationException("Post vuoto.");
+
+            var draft = new HomePostContractV2(
+                PostId: "draft",
+                CreatedAtUtc: now,
+                AuthorUid: myUid,
+                AuthorNickname: nickname ?? "",
+                AuthorFirstName: firstName,
+                AuthorLastName: lastName,
+                AuthorAvatarPath: avatarPath,
+                AuthorAvatarUrl: avatarUrl,
+                Text: safeText,
+                Attachments: safeAttachments.Select(ToContractAttachment).ToArray(),
+                Deleted: false,
+                DeletedAtUtc: null,
+                RepostOfPostId: repostOfPostId,
+                ClientNonce: clientNonce,
+                LikeCount: 0,
+                CommentCount: 0,
+                ShareCount: 0,
+                SchemaVersion: HomePostValidatorV2.SchemaVersion,
+                Ready: false);
+
+            var isReady = HomePostValidatorV2.IsServerReady(draft);
+
             var fields = new Dictionary<string, object>
             {
+                ["schemaVersion"] = FirestoreRestClient.VInt(HomePostValidatorV2.SchemaVersion),
+                ["ready"] = FirestoreRestClient.VBool(safeAttachments.Count == 0 ? isReady : false),
                 ["authorUid"] = FirestoreRestClient.VString(myUid),
                 ["authorNickname"] = string.IsNullOrWhiteSpace(nickname) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(nickname),
                 ["authorFirstName"] = string.IsNullOrWhiteSpace(firstName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(firstName),
@@ -109,8 +146,8 @@ namespace Biliardo.App.Servizi_Firebase
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
                 ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarUrl) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarUrl),
                 ["createdAt"] = FirestoreRestClient.VTimestamp(now),
-                ["text"] = FirestoreRestClient.VString(text ?? ""),
-                ["attachments"] = FirestoreRestClient.VArray(attachments?.Select(ToFirestoreAttachment).ToArray() ?? Array.Empty<object>()),
+                ["text"] = FirestoreRestClient.VString(safeText),
+                ["attachments"] = FirestoreRestClient.VArray(safeAttachments.Select(ToFirestoreAttachment).ToArray()),
                 ["likeCount"] = FirestoreRestClient.VInt(0),
                 ["commentCount"] = FirestoreRestClient.VInt(0),
                 ["shareCount"] = FirestoreRestClient.VInt(0),
@@ -122,7 +159,26 @@ namespace Biliardo.App.Servizi_Firebase
 
             var res = await FirestoreRestClient.CreateDocumentAsync("home_posts", null, fields, idToken, ct);
             var name = ReadString(res.RootElement, "name") ?? "";
-            return ExtractLastPathSegment(name);
+            var postId = ExtractLastPathSegment(name);
+
+            if (safeAttachments.Count > 0)
+            {
+                var patchReady = isReady;
+                var patchFields = new Dictionary<string, object>
+                {
+                    ["attachments"] = FirestoreRestClient.VArray(safeAttachments.Select(ToFirestoreAttachment).ToArray()),
+                    ["ready"] = FirestoreRestClient.VBool(patchReady)
+                };
+
+                await FirestoreRestClient.PatchDocumentAsync(
+                    $"home_posts/{postId}",
+                    patchFields,
+                    new[] { "attachments", "ready" },
+                    idToken,
+                    ct);
+            }
+
+            return postId;
         }
 
         /// <summary>
@@ -179,7 +235,11 @@ namespace Biliardo.App.Servizi_Firebase
             }
 
             using var json = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
-            var items = ParsePosts(json);
+            var parse = ParsePosts(json);
+            var items = parse.Items;
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine($"[HomeFeed] postsFetchedTotal={parse.Stats.PostsFetchedTotal} postsRenderedV2={parse.Stats.PostsRenderedV2} postsSkippedLegacyMissingSchemaOrReady={parse.Stats.PostsSkippedLegacyMissingSchemaOrReady} postsSkippedNotReady={parse.Stats.PostsSkippedNotReady} postsSkippedDeleted={parse.Stats.PostsSkippedDeleted} postsSkippedMissingNickname={parse.Stats.PostsSkippedMissingNickname}");
+#endif
 
             string? next = null;
             if (items.Count > 0 && items.Count >= pageSize)
@@ -376,7 +436,10 @@ namespace Biliardo.App.Servizi_Firebase
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
                 ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
                 ["createdAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
-                ["text"] = FirestoreRestClient.VString(text ?? "")
+                ["text"] = FirestoreRestClient.VString(text ?? ""),
+                ["schemaVersion"] = FirestoreRestClient.VInt(HomePostValidatorV2.SchemaVersion),
+                ["ready"] = FirestoreRestClient.VBool(true),
+                ["attachments"] = FirestoreRestClient.VArray(Array.Empty<object>())
             };
 
             await FirestoreRestClient.CreateDocumentAsync($"home_posts/{postId}/comments", null, fields, idToken, ct);
@@ -499,34 +562,113 @@ namespace Biliardo.App.Servizi_Firebase
             return FirestoreRestClient.VMap(fields);
         }
 
-        private static List<HomePostItem> ParsePosts(JsonDocument doc)
+        private static HomeAttachmentContractV2 ToContractAttachment(HomeAttachment attachment)
+        {
+            return new HomeAttachmentContractV2(
+                Type: attachment.Type ?? "",
+                FileName: attachment.FileName,
+                ContentType: attachment.ContentType,
+                SizeBytes: attachment.SizeBytes,
+                DurationMs: attachment.DurationMs,
+                Extra: attachment.Extra,
+                PreviewStoragePath: attachment.ThumbStoragePath,
+                FullStoragePath: attachment.StoragePath,
+                DownloadUrl: attachment.DownloadUrl,
+                PreviewLocalPath: null,
+                FullLocalPath: null,
+                LqipBase64: attachment.LqipBase64,
+                PreviewType: attachment.PreviewType,
+                PreviewWidth: attachment.ThumbWidth,
+                PreviewHeight: attachment.ThumbHeight,
+                Waveform: attachment.Waveform);
+        }
+
+        private sealed record ParseStats(
+            int PostsFetchedTotal,
+            int PostsRenderedV2,
+            int PostsSkippedLegacyMissingSchemaOrReady,
+            int PostsSkippedNotReady,
+            int PostsSkippedDeleted,
+            int PostsSkippedMissingNickname);
+
+        private sealed record ParseResult(List<HomePostItem> Items, ParseStats Stats);
+
+        private static ParseResult ParsePosts(JsonDocument doc)
         {
             var list = new List<HomePostItem>();
-            if (doc.RootElement.ValueKind != JsonValueKind.Array) return list;
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return new ParseResult(list, new ParseStats(0, 0, 0, 0, 0, 0));
+            }
+
+            var total = 0;
+            var rendered = 0;
+            var skippedLegacy = 0;
+            var skippedNotReady = 0;
+            var skippedDeleted = 0;
+            var skippedNickname = 0;
 
             foreach (var el in doc.RootElement.EnumerateArray())
             {
                 if (!el.TryGetProperty("document", out var d) || d.ValueKind != JsonValueKind.Object) continue;
 
+                total++;
                 var name = ReadString(d, "name") ?? "";
                 var postId = ExtractLastPathSegment(name);
                 if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object) continue;
 
                 var deleted = ReadBoolField(fields, "deleted") ?? false;
                 if (deleted)
+                {
+                    skippedDeleted++;
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"[HomeFeed] skip postId={postId} reason=deleted");
+#endif
                     continue;
+                }
 
-                list.Add(new HomePostItem(
+                var schemaVersion = (int)(ReadIntField(fields, "schemaVersion") ?? 0);
+                var readyField = ReadBoolField(fields, "ready");
+                if (schemaVersion != HomePostValidatorV2.SchemaVersion || readyField == null)
+                {
+                    skippedLegacy++;
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"[HomeFeed] skip postId={postId} reason=missing schemaVersion/ready");
+#endif
+                    continue;
+                }
+
+                if (readyField != true)
+                {
+                    skippedNotReady++;
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"[HomeFeed] skip postId={postId} reason=ready=false");
+#endif
+                    continue;
+                }
+
+                var nickname = ReadStringField(fields, "authorNickname") ?? "";
+                if (string.IsNullOrWhiteSpace(nickname))
+                {
+                    skippedNickname++;
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"[HomeFeed] skip postId={postId} reason=authorNickname missing");
+#endif
+                    continue;
+                }
+
+                var attachments = ReadAttachments(fields);
+                var post = new HomePostItem(
                     PostId: postId,
                     AuthorUid: ReadStringField(fields, "authorUid") ?? "",
-                    AuthorNickname: ReadStringField(fields, "authorNickname") ?? "",
+                    AuthorNickname: nickname,
                     AuthorFirstName: ReadStringField(fields, "authorFirstName") ?? "",
                     AuthorLastName: ReadStringField(fields, "authorLastName") ?? "",
                     AuthorAvatarPath: ReadStringField(fields, "authorAvatarPath"),
                     AuthorAvatarUrl: ReadStringField(fields, "authorAvatarUrl"),
                     CreatedAtUtc: ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.UtcNow,
                     Text: ReadStringField(fields, "text") ?? "",
-                    Attachments: ReadAttachments(fields),
+                    Attachments: attachments,
                     LikeCount: (int)(ReadIntField(fields, "likeCount") ?? 0),
                     CommentCount: (int)(ReadIntField(fields, "commentCount") ?? 0),
                     ShareCount: (int)(ReadIntField(fields, "shareCount") ?? 0),
@@ -534,11 +676,46 @@ namespace Biliardo.App.Servizi_Firebase
                     DeletedAtUtc: ReadTimestampField(fields, "deletedAt"),
                     RepostOfPostId: ReadStringField(fields, "repostOfPostId"),
                     ClientNonce: ReadStringField(fields, "clientNonce"),
+                    SchemaVersion: schemaVersion,
+                    Ready: readyField.Value,
                     IsLiked: false
-                ));
+                );
+
+                var contract = new HomePostContractV2(
+                    PostId: post.PostId,
+                    CreatedAtUtc: post.CreatedAtUtc,
+                    AuthorUid: post.AuthorUid,
+                    AuthorNickname: post.AuthorNickname,
+                    AuthorFirstName: post.AuthorFirstName,
+                    AuthorLastName: post.AuthorLastName,
+                    AuthorAvatarPath: post.AuthorAvatarPath,
+                    AuthorAvatarUrl: post.AuthorAvatarUrl,
+                    Text: post.Text,
+                    Attachments: attachments.Select(ToContractAttachment).ToArray(),
+                    Deleted: post.Deleted,
+                    DeletedAtUtc: post.DeletedAtUtc,
+                    RepostOfPostId: post.RepostOfPostId,
+                    ClientNonce: post.ClientNonce,
+                    LikeCount: post.LikeCount,
+                    CommentCount: post.CommentCount,
+                    ShareCount: post.ShareCount,
+                    SchemaVersion: post.SchemaVersion,
+                    Ready: post.Ready);
+
+                if (!HomePostValidatorV2.IsRenderSafe(contract, out var reason))
+                {
+#if DEBUG
+                    System.Diagnostics.Debug.WriteLine($"[HomeFeed] skip postId={postId} reason={reason}");
+#endif
+                    continue;
+                }
+
+                rendered++;
+                list.Add(post);
             }
 
-            return list;
+            var stats = new ParseStats(total, rendered, skippedLegacy, skippedNotReady, skippedDeleted, skippedNickname);
+            return new ParseResult(list, stats);
         }
 
         private static List<HomeCommentItem> ParseComments(JsonDocument doc)
@@ -553,6 +730,10 @@ namespace Biliardo.App.Servizi_Firebase
                 var commentId = ExtractLastPathSegment(name);
                 if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object) continue;
 
+                var schemaVersion = (int)(ReadIntField(fields, "schemaVersion") ?? 1);
+                var ready = ReadBoolField(fields, "ready") ?? true;
+                var attachments = ReadAttachments(fields);
+
                 list.Add(new HomeCommentItem(
                     CommentId: commentId,
                     AuthorUid: ReadStringField(fields, "authorUid") ?? "",
@@ -560,7 +741,10 @@ namespace Biliardo.App.Servizi_Firebase
                     AuthorAvatarPath: ReadStringField(fields, "authorAvatarPath"),
                     AuthorAvatarUrl: ReadStringField(fields, "authorAvatarUrl"),
                     CreatedAtUtc: ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.UtcNow,
-                    Text: ReadStringField(fields, "text") ?? ""
+                    Text: ReadStringField(fields, "text") ?? "",
+                    Attachments: attachments,
+                    SchemaVersion: schemaVersion,
+                    Ready: ready
                 ));
             }
 

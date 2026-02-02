@@ -163,10 +163,15 @@
                                                        DisplayName="{Binding AuthorAvatarDisplayName}"
                                                        Size="42" />
                                     <VerticalStackLayout Spacing="0">
-                                        <Label Text="{Binding AuthorDisplayName}"
+                                        <Label Text="{Binding AuthorNickname}"
                                                TextColor="{Binding AuthorNicknameColor}"
                                                FontAttributes="Bold"
                                                LineBreakMode="TailTruncation" />
+                                        <Label Text="{Binding AuthorFullNameDisplay}"
+                                               TextColor="#B0B0B0"
+                                               FontSize="12"
+                                               LineBreakMode="WordWrap"
+                                               IsVisible="{Binding HasAuthorFullName}" />
                                     </VerticalStackLayout>
                                 </HorizontalStackLayout>
 
@@ -287,13 +292,20 @@
                                                            TextColor="White" />
                                                 </Border>
 
-                                                <ActivityIndicator IsVisible="{Binding IsDownloading}"
-                                                                   IsRunning="{Binding IsDownloading}"
+                                                <ActivityIndicator IsVisible="{Binding IsBusy}"
+                                                                   IsRunning="{Binding IsBusy}"
                                                                    Color="White"
                                                                    HorizontalOptions="Center"
                                                                    VerticalOptions="Center"
                                                                    HeightRequest="24"
                                                                    WidthRequest="24" />
+                                                <Label Text="{Binding DownloadCountdownLabel}"
+                                                       IsVisible="{Binding IsDownloading}"
+                                                       TextColor="#E0E0E0"
+                                                       FontSize="12"
+                                                       HorizontalOptions="Center"
+                                                       VerticalOptions="End"
+                                                       Margin="0,28,0,0" />
                                             </Grid>
                                         </DataTemplate>
                                     </BindableLayout.ItemTemplate>

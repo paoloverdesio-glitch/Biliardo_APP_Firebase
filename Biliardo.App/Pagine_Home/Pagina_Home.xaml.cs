@@ -15,6 +15,7 @@ using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Home;
 using Biliardo.App.Infrastructure.Media.Processing;
+using Biliardo.App.Infrastructure.Home;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Pagine_Debug;
 using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
@@ -37,6 +38,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
 
@@ -426,6 +428,7 @@ namespace Biliardo.App.Pagine_Home
                                         return;
                                 }
 
+                                MainThread.BeginInvokeOnMainThread(() => att.IsPreviewDownloading = true);
                                 var thumbLocal = await _mediaCache.GetOrDownloadAsync(idToken!, att.ThumbStoragePath!, att.FileName ?? "thumb.jpg", isThumb: true, ct);
                                 if (string.IsNullOrWhiteSpace(thumbLocal))
                                     return;
@@ -435,6 +438,7 @@ namespace Biliardo.App.Pagine_Home
                             catch { }
                             finally
                             {
+                                MainThread.BeginInvokeOnMainThread(() => att.IsPreviewDownloading = false);
                                 try { sem.Release(); } catch { }
                             }
                         }, ct));
@@ -604,8 +608,15 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task HandleHomePushAsync(IReadOnlyDictionary<string, string> data)
         {
-            if (!TryBuildHomeFromPayload(data, out var cached, out var requiresSync))
+            if (!TryBuildHomeFromPayload(data, out var postId, out var cached, out var requiresSync))
                 return;
+
+            if (cached == null)
+            {
+                if (requiresSync)
+                    await _fetchMissing.EnqueueAsync(postId, "home_post", data, priority: 5, CancellationToken.None);
+                return;
+            }
 
             await _homeFeedCache.UpsertTop(cached);
             if (requiresSync)
@@ -620,12 +631,12 @@ namespace Biliardo.App.Pagine_Home
                 vm.SyncCommand = null;
                 vm.RequiresSync = requiresSync;
 
-                if (existing != null)
-                {
-                    var index = Posts.IndexOf(existing);
-                    if (index >= 0)
-                        Posts[index] = vm;
-                }
+            if (existing != null)
+            {
+                var index = Posts.IndexOf(existing);
+                if (index >= 0)
+                    Posts[index] = vm;
+            }
                 else
                 {
                     Posts.Insert(0, vm);
@@ -640,13 +651,15 @@ namespace Biliardo.App.Pagine_Home
 
         private static bool TryBuildHomeFromPayload(
             IReadOnlyDictionary<string, string> data,
-            out HomeFeedLocalCache.CachedHomePost cached,
+            out string postId,
+            out HomeFeedLocalCache.CachedHomePost? cached,
             out bool requiresSync)
         {
-            cached = default!;
+            cached = null;
             requiresSync = false;
 
-            if (!data.TryGetValue("postId", out var postId) || string.IsNullOrWhiteSpace(postId))
+            postId = data.TryGetValue("postId", out var postIdValue) ? postIdValue : "";
+            if (string.IsNullOrWhiteSpace(postId))
                 return false;
 
             var authorName = data.TryGetValue("authorName", out var author) ? author : null;
@@ -655,7 +668,6 @@ namespace Biliardo.App.Pagine_Home
 
             var authorFirst = data.TryGetValue("authorFirstName", out var first) ? first : null;
             var authorLast = data.TryGetValue("authorLastName", out var last) ? last : null;
-            var authorFullName = $"{authorFirst} {authorLast}".Trim();
 
             var text = data.TryGetValue("text", out var t) ? t : null;
             var thumbKey = data.TryGetValue("thumbKey", out var thumb) ? thumb : null;
@@ -666,13 +678,35 @@ namespace Biliardo.App.Pagine_Home
                 createdAt = DateTimeOffset.UtcNow;
 
             requiresSync = string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(thumbKey);
-            cached = new HomeFeedLocalCache.CachedHomePost(
-                postId,
-                authorName,
-                string.IsNullOrWhiteSpace(authorFullName) ? null : authorFullName,
-                text,
-                thumbKey,
-                createdAt);
+            var schemaVersion = data.TryGetValue("schemaVersion", out var schemaValue) && int.TryParse(schemaValue, out var schemaParsed)
+                ? schemaParsed
+                : 0;
+            var ready = data.TryGetValue("ready", out var readyValue) && bool.TryParse(readyValue, out var readyParsed) && readyParsed;
+
+            var draft = new HomeFeedLocalCache.CachedHomePost(
+                PostId: postId,
+                AuthorUid: data.TryGetValue("authorUid", out var authorUid) ? authorUid : "",
+                AuthorNickname: authorName ?? "",
+                AuthorFirstName: authorFirst,
+                AuthorLastName: authorLast,
+                AuthorAvatarPath: data.TryGetValue("authorAvatarPath", out var avatarPath) ? avatarPath : null,
+                AuthorAvatarUrl: data.TryGetValue("authorAvatarUrl", out var avatarUrl) ? avatarUrl : null,
+                Text: text ?? "",
+                ThumbKey: thumbKey,
+                CreatedAtUtc: createdAt,
+                Attachments: Array.Empty<HomeAttachmentContractV2>(),
+                LikeCount: data.TryGetValue("likeCount", out var likeValue) && int.TryParse(likeValue, out var likeParsed) ? likeParsed : 0,
+                CommentCount: data.TryGetValue("commentCount", out var commentValue) && int.TryParse(commentValue, out var commentParsed) ? commentParsed : 0,
+                ShareCount: data.TryGetValue("shareCount", out var shareValue) && int.TryParse(shareValue, out var shareParsed) ? shareParsed : 0,
+                Deleted: false,
+                DeletedAtUtc: null,
+                RepostOfPostId: data.TryGetValue("repostOfPostId", out var repostValue) ? repostValue : null,
+                ClientNonce: data.TryGetValue("clientNonce", out var nonceValue) ? nonceValue : null,
+                SchemaVersion: schemaVersion,
+                Ready: ready);
+
+            if (HomePostValidatorV2.IsCacheSafe(BuildContractFromCached(draft), out _))
+                cached = draft;
 
             return true;
         }
@@ -802,6 +836,20 @@ namespace Biliardo.App.Pagine_Home
             pending.HasFullData = true;
             pending.CreatedAtUtc = post.CreatedAtUtc;
             pending.Text = post.Text ?? "";
+            pending.AuthorUid = post.AuthorUid;
+            pending.AuthorNickname = post.AuthorNickname;
+            pending.AuthorFirstName = post.AuthorFirstName;
+            pending.AuthorLastName = post.AuthorLastName;
+            pending.AuthorAvatarPath = post.AuthorAvatarPath;
+            pending.AuthorAvatarUrl = post.AuthorAvatarUrl;
+            pending.LikeCount = post.LikeCount;
+            pending.CommentCount = post.CommentCount;
+            pending.ShareCount = post.ShareCount;
+            pending.SchemaVersion = post.SchemaVersion;
+            pending.Ready = post.Ready;
+            pending.Deleted = post.Deleted;
+            pending.DeletedAtUtc = post.DeletedAtUtc;
+            pending.RepostOfPostId = post.RepostOfPostId;
             pending.Attachments.Clear();
             foreach (var att in post.Attachments)
                 pending.AttachAttachment(HomeAttachmentVm.FromService(att));
@@ -924,7 +972,6 @@ namespace Biliardo.App.Pagine_Home
             var nickname = _myProfile?.Nickname;
             if (string.IsNullOrWhiteSpace(nickname))
                 nickname = FirebaseSessionePersistente.GetDisplayName();
-            var fullName = _myProfile?.FullNameOrPlaceholder ?? "";
             var clientNonce = Guid.NewGuid().ToString("N");
 
             var vm = new HomePostVm
@@ -933,11 +980,15 @@ namespace Biliardo.App.Pagine_Home
                 ClientNonce = clientNonce,
                 AuthorUid = myUid,
                 AuthorNickname = nickname ?? "",
-                AuthorFullName = fullName,
+                AuthorFirstName = _myProfile?.FirstName ?? "",
+                AuthorLastName = _myProfile?.LastName ?? "",
                 AuthorAvatarPath = _myProfile?.PhotoUrl,
                 AuthorAvatarUrl = _myProfile?.PhotoUrl,
                 CreatedAtUtc = DateTimeOffset.UtcNow,
                 Text = payload.Text ?? "",
+                SchemaVersion = HomePostValidatorV2.SchemaVersion,
+                Ready = true,
+                Deleted = false,
                 IsPendingUpload = true,
                 HasSendError = false,
                 PendingText = payload.Text ?? ""
@@ -1031,6 +1082,9 @@ namespace Biliardo.App.Pagine_Home
                 vm.IsPendingUpload = false;
                 vm.HasSendError = false;
                 vm.HasFullData = true;
+                vm.SchemaVersion = HomePostValidatorV2.SchemaVersion;
+                vm.Ready = true;
+                vm.Deleted = false;
                 vm.Attachments.Clear();
                 foreach (var att in attachments)
                     vm.AttachAttachment(HomeAttachmentVm.FromService(att));
@@ -1426,33 +1480,11 @@ namespace Biliardo.App.Pagine_Home
                 return;
             }
 
-            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-            if (string.IsNullOrWhiteSpace(idToken))
+            var local = await EnsureHomeMediaDownloadedAsync(att, att.FileName ?? "video.mp4", showErrors: true);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
                 return;
 
-            var url = !string.IsNullOrWhiteSpace(att.DownloadUrl)
-                ? att.DownloadUrl
-                : FirebaseStorageRestClient.BuildAuthDownloadUrl(FirebaseStorageRestClient.DefaultStorageBucket, att.StoragePath);
-
-            await Navigation.PushAsync(new VideoPlayerPage(url, att.DisplayPreviewSource));
-
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = true);
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
-                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, att.FileName ?? "video.mp4", isThumb: false, cts.Token);
-                    if (!string.IsNullOrWhiteSpace(local))
-                        att.LocalPath = local;
-                }
-                catch { }
-                finally
-                {
-                    MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = false);
-                }
-            });
+            await Navigation.PushAsync(new VideoPlayerPage(local, att.DisplayPreviewSource));
         }
 
         private async Task OpenImageFromHomeAsync(HomeAttachmentVm att)
@@ -1616,11 +1648,27 @@ namespace Biliardo.App.Pagine_Home
             if (string.IsNullOrWhiteSpace(idToken))
                 return null;
 
+            CancellationTokenSource? cts = null;
+            CancellationTokenSource? countdownCts = null;
+            Task? countdownTask = null;
             try
             {
                 MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = true);
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
+                cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
+                countdownCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                countdownTask = Task.Run(async () =>
+                {
+                    var remaining = AppCacheOptions.MediaDownloadTimeoutSeconds;
+                    while (remaining >= 0 && !countdownCts.IsCancellationRequested)
+                    {
+                        MainThread.BeginInvokeOnMainThread(() => att.DownloadCountdownSeconds = remaining);
+                        await Task.Delay(1000, countdownCts.Token);
+                        remaining--;
+                    }
+                }, countdownCts.Token);
+
                 var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, fileName, isThumb: false, cts.Token);
+                countdownCts.Cancel();
                 if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
                 {
                     if (showErrors)
@@ -1645,6 +1693,19 @@ namespace Biliardo.App.Pagine_Home
             }
             finally
             {
+                if (countdownCts != null)
+                {
+                    try { countdownCts.Cancel(); } catch { }
+                }
+                if (countdownTask != null)
+                {
+                    try { await countdownTask; } catch { }
+                }
+                if (countdownCts != null)
+                    countdownCts.Dispose();
+                if (cts != null)
+                    cts.Dispose();
+                MainThread.BeginInvokeOnMainThread(() => att.DownloadCountdownSeconds = 0);
                 MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = false);
             }
         }
@@ -1961,7 +2022,8 @@ namespace Biliardo.App.Pagine_Home
             public string? ClientNonce { get; set; }
             public string AuthorUid { get; set; } = "";
             public string AuthorNickname { get; set; } = "";
-            public string AuthorFullName { get; set; } = "";
+            public string AuthorFirstName { get; set; } = "";
+            public string AuthorLastName { get; set; } = "";
             public string? AuthorAvatarPath { get; set; }
             public string? AuthorAvatarUrl { get; set; }
             public DateTimeOffset CreatedAtUtc { get; set; }
@@ -1970,6 +2032,11 @@ namespace Biliardo.App.Pagine_Home
             public int LikeCount { get; set; }
             public int CommentCount { get; set; }
             public int ShareCount { get; set; }
+            public int SchemaVersion { get; set; } = HomePostValidatorV2.SchemaVersion;
+            public bool Ready { get; set; }
+            public bool Deleted { get; set; }
+            public DateTimeOffset? DeletedAtUtc { get; set; }
+            public string? RepostOfPostId { get; set; }
             public string LikeHeartGlyph => LikeCount > 0 ? "❤️" : "🤍";
 
 
@@ -2026,14 +2093,10 @@ namespace Biliardo.App.Pagine_Home
             public List<PendingItemVm> PendingItems { get; } = new();
 
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
+            public string AuthorFullName => $"{AuthorFirstName} {AuthorLastName}".Trim();
             public bool HasAuthorFullName => !string.IsNullOrWhiteSpace(AuthorFullName);
             public string AuthorFullNameDisplay => HasAuthorFullName ? $"({AuthorFullName})" : "";
-            public string AuthorDisplayName
-                => HasAuthorFullName && !string.IsNullOrWhiteSpace(AuthorNickname)
-                    ? $"{AuthorNickname} ({AuthorFullName})"
-                    : HasAuthorFullName
-                        ? AuthorFullName
-                        : AuthorNickname;
+            public string AuthorDisplayName => AuthorNickname;
             public string AuthorAvatarDisplayName => HasAuthorFullName ? AuthorFullName : AuthorNickname;
 
             public Color AuthorNicknameColor => GetNicknameColor(PostId);
@@ -2118,7 +2181,8 @@ namespace Biliardo.App.Pagine_Home
                     ClientNonce = post.ClientNonce,
                     AuthorUid = post.AuthorUid,
                     AuthorNickname = post.AuthorNickname,
-                    AuthorFullName = $"{post.AuthorFirstName} {post.AuthorLastName}".Trim(),
+                    AuthorFirstName = post.AuthorFirstName,
+                    AuthorLastName = post.AuthorLastName,
                     AuthorAvatarPath = post.AuthorAvatarPath,
                     AuthorAvatarUrl = post.AuthorAvatarUrl,
                     CreatedAtUtc = post.CreatedAtUtc,
@@ -2126,6 +2190,11 @@ namespace Biliardo.App.Pagine_Home
                     LikeCount = post.LikeCount,
                     CommentCount = post.CommentCount,
                     ShareCount = post.ShareCount,
+                    SchemaVersion = post.SchemaVersion,
+                    Ready = post.Ready,
+                    Deleted = post.Deleted,
+                    DeletedAtUtc = post.DeletedAtUtc,
+                    RepostOfPostId = post.RepostOfPostId,
                     IsLiked = post.IsLiked,
                     IsPendingUpload = false,
                     HasSendError = false,
@@ -2143,24 +2212,35 @@ namespace Biliardo.App.Pagine_Home
 
             public static HomePostVm FromCached(HomeFeedLocalCache.CachedHomePost post)
             {
-                var text = string.IsNullOrWhiteSpace(post.Text) ? "Contenuto disponibile" : post.Text!;
-                var requiresSync = string.IsNullOrWhiteSpace(post.Text) && string.IsNullOrWhiteSpace(post.ThumbKey);
+                var requiresSync = string.IsNullOrWhiteSpace(post.Text) && (post.Attachments == null || post.Attachments.Count == 0);
                 var vm = new HomePostVm
                 {
                     PostId = post.PostId,
-                    AuthorNickname = post.AuthorName ?? "",
-                    AuthorFullName = post.AuthorFullName ?? "",
+                    AuthorUid = post.AuthorUid,
+                    AuthorNickname = post.AuthorNickname,
+                    AuthorFirstName = post.AuthorFirstName ?? "",
+                    AuthorLastName = post.AuthorLastName ?? "",
+                    AuthorAvatarPath = post.AuthorAvatarPath,
+                    AuthorAvatarUrl = post.AuthorAvatarUrl,
                     CreatedAtUtc = post.CreatedAtUtc,
-                    Text = text,
-                    LikeCount = 0,
-                    CommentCount = 0,
-                    ShareCount = 0,
+                    Text = post.Text ?? "",
+                    LikeCount = post.LikeCount,
+                    CommentCount = post.CommentCount,
+                    ShareCount = post.ShareCount,
+                    SchemaVersion = post.SchemaVersion,
+                    Ready = post.Ready,
+                    Deleted = post.Deleted,
+                    DeletedAtUtc = post.DeletedAtUtc,
+                    RepostOfPostId = post.RepostOfPostId,
                     IsLiked = false,
                     IsPendingUpload = false,
                     HasSendError = false,
-                    PendingText = text,
+                    PendingText = post.Text ?? "",
                     RequiresSync = requiresSync
                 };
+
+                foreach (var att in post.Attachments ?? Array.Empty<HomeAttachmentContractV2>())
+                    vm.AttachAttachment(HomeAttachmentVm.FromContract(att));
 
                 vm.UpdateReadyState();
 
@@ -2169,9 +2249,14 @@ namespace Biliardo.App.Pagine_Home
 
             private void UpdateReadyState()
             {
-                var hasPayload = HasText || HasAttachments;
-                var hasMediaPreviews = Attachments.All(att => !att.RequiresPreview || att.HasPreviewSource);
-                IsReadyForDisplay = HasFullData && hasPayload && hasMediaPreviews;
+                if (IsPendingUpload || HasSendError)
+                {
+                    IsReadyForDisplay = true;
+                    return;
+                }
+
+                var contract = BuildContractFromVm(this);
+                IsReadyForDisplay = HomePostValidatorV2.IsRenderSafe(contract, out _);
             }
 
             private static readonly Color[] NicknamePalette = new[]
@@ -2205,12 +2290,26 @@ namespace Biliardo.App.Pagine_Home
                     ?? vm.Attachments.FirstOrDefault()?.StoragePath;
 
                 return new HomeFeedLocalCache.CachedHomePost(
-                    vm.PostId,
-                    vm.AuthorNickname,
-                    vm.AuthorFullName,
-                    vm.Text ?? "",
-                    thumbKey,
-                    vm.CreatedAtUtc);
+                    PostId: vm.PostId,
+                    AuthorUid: vm.AuthorUid,
+                    AuthorNickname: vm.AuthorNickname,
+                    AuthorFirstName: vm.AuthorFirstName,
+                    AuthorLastName: vm.AuthorLastName,
+                    AuthorAvatarPath: vm.AuthorAvatarPath,
+                    AuthorAvatarUrl: vm.AuthorAvatarUrl,
+                    Text: vm.Text ?? "",
+                    ThumbKey: thumbKey,
+                    CreatedAtUtc: vm.CreatedAtUtc,
+                    Attachments: vm.Attachments.Select(Pagina_Home.ToContract).ToArray(),
+                    LikeCount: vm.LikeCount,
+                    CommentCount: vm.CommentCount,
+                    ShareCount: vm.ShareCount,
+                    Deleted: vm.Deleted,
+                    DeletedAtUtc: vm.DeletedAtUtc,
+                    RepostOfPostId: vm.RepostOfPostId,
+                    ClientNonce: vm.ClientNonce,
+                    SchemaVersion: vm.SchemaVersion,
+                    Ready: vm.Ready);
             }
 
             public static HomeFeedLocalCache.CachedHomePost ToCached(FirestoreHomeFeedService.HomePostItem post)
@@ -2219,19 +2318,144 @@ namespace Biliardo.App.Pagine_Home
                     ?? post.Attachments.FirstOrDefault()?.StoragePath;
 
                 return new HomeFeedLocalCache.CachedHomePost(
-                    post.PostId,
-                    post.AuthorNickname,
-                    $"{post.AuthorFirstName} {post.AuthorLastName}".Trim(),
-                    post.Text ?? "",
-                    thumbKey,
-                    post.CreatedAtUtc);
+                    PostId: post.PostId,
+                    AuthorUid: post.AuthorUid,
+                    AuthorNickname: post.AuthorNickname,
+                    AuthorFirstName: post.AuthorFirstName,
+                    AuthorLastName: post.AuthorLastName,
+                    AuthorAvatarPath: post.AuthorAvatarPath,
+                    AuthorAvatarUrl: post.AuthorAvatarUrl,
+                    Text: post.Text ?? "",
+                    ThumbKey: thumbKey,
+                    CreatedAtUtc: post.CreatedAtUtc,
+                    Attachments: post.Attachments.Select(Pagina_Home.ToContract).ToArray(),
+                    LikeCount: post.LikeCount,
+                    CommentCount: post.CommentCount,
+                    ShareCount: post.ShareCount,
+                    Deleted: post.Deleted,
+                    DeletedAtUtc: post.DeletedAtUtc,
+                    RepostOfPostId: post.RepostOfPostId,
+                    ClientNonce: post.ClientNonce,
+                    SchemaVersion: post.SchemaVersion,
+                    Ready: post.Ready);
             }
+
+        }
+
+        private static HomePostContractV2 BuildContractFromVm(HomePostVm vm)
+        {
+            return new HomePostContractV2(
+                PostId: vm.PostId,
+                CreatedAtUtc: vm.CreatedAtUtc,
+                AuthorUid: vm.AuthorUid,
+                AuthorNickname: vm.AuthorNickname,
+                AuthorFirstName: vm.AuthorFirstName,
+                AuthorLastName: vm.AuthorLastName,
+                AuthorAvatarPath: vm.AuthorAvatarPath,
+                AuthorAvatarUrl: vm.AuthorAvatarUrl,
+                Text: vm.Text ?? "",
+                Attachments: vm.Attachments.Select(ToContract).ToArray(),
+                Deleted: vm.Deleted,
+                DeletedAtUtc: vm.DeletedAtUtc,
+                RepostOfPostId: vm.RepostOfPostId,
+                ClientNonce: vm.ClientNonce,
+                LikeCount: vm.LikeCount,
+                CommentCount: vm.CommentCount,
+                ShareCount: vm.ShareCount,
+                SchemaVersion: vm.SchemaVersion,
+                Ready: vm.Ready);
+        }
+
+        private static HomePostContractV2 BuildContractFromCached(HomeFeedLocalCache.CachedHomePost post)
+        {
+            return new HomePostContractV2(
+                PostId: post.PostId,
+                CreatedAtUtc: post.CreatedAtUtc,
+                AuthorUid: post.AuthorUid,
+                AuthorNickname: post.AuthorNickname,
+                AuthorFirstName: post.AuthorFirstName,
+                AuthorLastName: post.AuthorLastName,
+                AuthorAvatarPath: post.AuthorAvatarPath,
+                AuthorAvatarUrl: post.AuthorAvatarUrl,
+                Text: post.Text ?? "",
+                Attachments: post.Attachments ?? Array.Empty<HomeAttachmentContractV2>(),
+                Deleted: post.Deleted,
+                DeletedAtUtc: post.DeletedAtUtc,
+                RepostOfPostId: post.RepostOfPostId,
+                ClientNonce: post.ClientNonce,
+                LikeCount: post.LikeCount,
+                CommentCount: post.CommentCount,
+                ShareCount: post.ShareCount,
+                SchemaVersion: post.SchemaVersion,
+                Ready: post.Ready);
+        }
+
+        private static HomeAttachmentContractV2 ToContract(HomeAttachmentVm att)
+        {
+            return new HomeAttachmentContractV2(
+                Type: att.Type ?? "",
+                FileName: att.FileName,
+                ContentType: att.ContentType,
+                SizeBytes: att.SizeBytes,
+                DurationMs: att.DurationMs,
+                Extra: BuildAttachmentExtra(att),
+                PreviewStoragePath: att.ThumbStoragePath,
+                FullStoragePath: att.StoragePath,
+                DownloadUrl: att.DownloadUrl,
+                PreviewLocalPath: att.ThumbLocalPath,
+                FullLocalPath: att.LocalPath,
+                LqipBase64: att.LqipBase64,
+                PreviewType: att.PreviewType,
+                PreviewWidth: att.ThumbWidth,
+                PreviewHeight: att.ThumbHeight,
+                Waveform: att.Waveform);
+        }
+
+        private static HomeAttachmentContractV2 ToContract(FirestoreHomeFeedService.HomeAttachment att)
+        {
+            return new HomeAttachmentContractV2(
+                Type: att.Type ?? "",
+                FileName: att.FileName,
+                ContentType: att.ContentType,
+                SizeBytes: att.SizeBytes,
+                DurationMs: att.DurationMs,
+                Extra: att.Extra,
+                PreviewStoragePath: att.ThumbStoragePath,
+                FullStoragePath: att.StoragePath,
+                DownloadUrl: att.DownloadUrl,
+                PreviewLocalPath: null,
+                FullLocalPath: null,
+                LqipBase64: att.LqipBase64,
+                PreviewType: att.PreviewType,
+                PreviewWidth: att.ThumbWidth,
+                PreviewHeight: att.ThumbHeight,
+                Waveform: att.Waveform);
+        }
+
+        private static Dictionary<string, object>? BuildAttachmentExtra(HomeAttachmentVm att)
+        {
+            if (att == null)
+                return null;
+
+            if (att.IsLocation)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["lat"] = att.Latitude ?? 0,
+                    ["lon"] = att.Longitude ?? 0,
+                    ["address"] = att.Address ?? ""
+                };
+            }
+
+            return null;
         }
 
         public sealed class HomeAttachmentVm : BindableObject
         {
             private bool _isPlaying;
             private bool _isDownloading;
+            private bool _isPreviewDownloading;
+            private int _downloadCountdownSeconds;
 
             public string Type { get; set; } = "";
             public string? StoragePath { get; set; }
@@ -2310,8 +2534,46 @@ namespace Biliardo.App.Pagine_Home
             public bool IsDownloading
             {
                 get => _isDownloading;
-                set { _isDownloading = value; OnPropertyChanged(); }
+                set
+                {
+                    if (_isDownloading == value)
+                        return;
+                    _isDownloading = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsBusy));
+                    OnPropertyChanged(nameof(DownloadCountdownLabel));
+                }
             }
+
+            public bool IsPreviewDownloading
+            {
+                get => _isPreviewDownloading;
+                set
+                {
+                    if (_isPreviewDownloading == value)
+                        return;
+                    _isPreviewDownloading = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsBusy));
+                }
+            }
+
+            public int DownloadCountdownSeconds
+            {
+                get => _downloadCountdownSeconds;
+                set
+                {
+                    if (_downloadCountdownSeconds == value)
+                        return;
+                    _downloadCountdownSeconds = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(DownloadCountdownLabel));
+                }
+            }
+
+            public string DownloadCountdownLabel => IsDownloading ? $"Download {DownloadCountdownSeconds}s" : "";
+
+            public bool IsBusy => IsDownloading || IsPreviewDownloading;
 
             public ImageSource? DisplayPreviewSource
             {
@@ -2352,6 +2614,40 @@ namespace Biliardo.App.Pagine_Home
 
                 if (att.Extra != null)
                 {
+                    if (att.Extra.TryGetValue("lat", out var lat))
+                        vm.Latitude = ReadDoubleExtra(lat);
+                    if (att.Extra.TryGetValue("lon", out var lon))
+                        vm.Longitude = ReadDoubleExtra(lon);
+                    if (att.Extra.TryGetValue("address", out var addr))
+                        vm.Address = ReadStringExtra(addr);
+                }
+
+                return vm;
+            }
+
+            public static HomeAttachmentVm FromContract(HomeAttachmentContractV2 att)
+            {
+                var vm = new HomeAttachmentVm
+                {
+                    Type = att.Type ?? "",
+                    StoragePath = att.FullStoragePath,
+                    DownloadUrl = att.DownloadUrl,
+                    FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
+                    ContentType = att.ContentType,
+                    SizeBytes = att.SizeBytes,
+                    DurationMs = att.DurationMs,
+                    ThumbStoragePath = att.PreviewStoragePath,
+                    LqipBase64 = att.LqipBase64,
+                    PreviewType = att.PreviewType,
+                    ThumbWidth = att.PreviewWidth,
+                    ThumbHeight = att.PreviewHeight,
+                    Waveform = att.Waveform,
+                    LocalPath = att.FullLocalPath,
+                    ThumbLocalPath = att.PreviewLocalPath
+                };
+
+                if (att.Extra != null)
+                {
                     if (att.Extra.TryGetValue("lat", out var lat) && lat is double latVal)
                         vm.Latitude = latVal;
                     if (att.Extra.TryGetValue("lon", out var lon) && lon is double lonVal)
@@ -2361,6 +2657,30 @@ namespace Biliardo.App.Pagine_Home
                 }
 
                 return vm;
+            }
+
+            private static double? ReadDoubleExtra(object? value)
+            {
+                if (value is double d)
+                    return d;
+                if (value is float f)
+                    return f;
+                if (value is long l)
+                    return l;
+                if (value is int i)
+                    return i;
+                if (value is JsonElement el && el.ValueKind == JsonValueKind.Number && el.TryGetDouble(out var d2))
+                    return d2;
+                return null;
+            }
+
+            private static string? ReadStringExtra(object? value)
+            {
+                if (value is string s)
+                    return s;
+                if (value is JsonElement el && el.ValueKind == JsonValueKind.String)
+                    return el.GetString();
+                return null;
             }
         }
 

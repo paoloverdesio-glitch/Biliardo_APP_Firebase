@@ -36,7 +36,7 @@ namespace Biliardo.App.Infrastructure.Media
         public const long CacheMaxBytes = 1_073_741_824; // 1GB
         public const int DownloadConcurrency = 2;
         public const bool PrefetchThumbsOnScroll = true;
-        public const bool DownloadOriginalOnScroll = true;
+        public const bool DownloadOriginalOnScroll = false;
 
         // =====================================================================
         // AUTOPLAY VIDEO (per pagina)

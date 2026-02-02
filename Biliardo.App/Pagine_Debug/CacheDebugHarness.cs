@@ -63,22 +63,50 @@ namespace Biliardo.App.Pagine_Debug
             var homeCache = new HomeFeedLocalCache();
             var now = DateTimeOffset.UtcNow;
 
-            // CachedHomePost(PostId, AuthorName, AuthorFullName, Text, ThumbKey, CreatedAtUtc)
+            // CachedHomePost (V2)
             var post1 = new HomeFeedLocalCache.CachedHomePost(
                 PostId: "p1",
-                AuthorName: "test",
-                AuthorFullName: "test",
+                AuthorUid: "u1",
+                AuthorNickname: "test",
+                AuthorFirstName: "test",
+                AuthorLastName: "user",
+                AuthorAvatarPath: null,
+                AuthorAvatarUrl: null,
                 Text: "t1",
                 ThumbKey: null,
-                CreatedAtUtc: now);
+                CreatedAtUtc: now,
+                Attachments: Array.Empty<Biliardo.App.Infrastructure.Home.HomeAttachmentContractV2>(),
+                LikeCount: 0,
+                CommentCount: 0,
+                ShareCount: 0,
+                Deleted: false,
+                DeletedAtUtc: null,
+                RepostOfPostId: null,
+                ClientNonce: null,
+                SchemaVersion: Biliardo.App.Infrastructure.Home.HomePostValidatorV2.SchemaVersion,
+                Ready: true);
 
             var post2 = new HomeFeedLocalCache.CachedHomePost(
                 PostId: "p2",
-                AuthorName: "test",
-                AuthorFullName: "test",
+                AuthorUid: "u1",
+                AuthorNickname: "test",
+                AuthorFirstName: "test",
+                AuthorLastName: "user",
+                AuthorAvatarPath: null,
+                AuthorAvatarUrl: null,
                 Text: "t2",
                 ThumbKey: null,
-                CreatedAtUtc: now.AddSeconds(1));
+                CreatedAtUtc: now.AddSeconds(1),
+                Attachments: Array.Empty<Biliardo.App.Infrastructure.Home.HomeAttachmentContractV2>(),
+                LikeCount: 0,
+                CommentCount: 0,
+                ShareCount: 0,
+                Deleted: false,
+                DeletedAtUtc: null,
+                RepostOfPostId: null,
+                ClientNonce: null,
+                SchemaVersion: Biliardo.App.Infrastructure.Home.HomePostValidatorV2.SchemaVersion,
+                Ready: true);
 
             await homeCache.SaveAsync(new[] { post1 }, CancellationToken.None);
             await homeCache.MergeNewTop(new[] { post2 }, CancellationToken.None);
