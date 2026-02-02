@@ -22,7 +22,7 @@ namespace Biliardo.App.Cache_Locale.Home
             string Text,
             string? ThumbKey,
             DateTimeOffset CreatedAtUtc,
-            IReadOnlyList<HomeAttachmentContractV2> Attachments,
+            IReadOnlyList<HomeAttachmentContractV2>? Attachments,
             int LikeCount,
             int CommentCount,
             int ShareCount,
@@ -166,6 +166,8 @@ namespace Biliardo.App.Cache_Locale.Home
 
         private static bool IsCacheSafe(CachedHomePost post)
         {
+            var attachments = post.Attachments ?? Array.Empty<HomeAttachmentContractV2>();
+
             var contract = new HomePostContractV2(
                 PostId: post.PostId,
                 CreatedAtUtc: post.CreatedAtUtc,
@@ -176,7 +178,7 @@ namespace Biliardo.App.Cache_Locale.Home
                 AuthorAvatarPath: post.AuthorAvatarPath,
                 AuthorAvatarUrl: post.AuthorAvatarUrl,
                 Text: post.Text,
-                Attachments: post.Attachments ?? Array.Empty<HomeAttachmentContractV2>(),
+                Attachments: attachments,
                 Deleted: post.Deleted,
                 DeletedAtUtc: post.DeletedAtUtc,
                 RepostOfPostId: post.RepostOfPostId,
@@ -205,7 +207,9 @@ namespace Biliardo.App.Cache_Locale.Home
 
             try
             {
-                return JsonSerializer.Deserialize<List<HomeAttachmentContractV2>>(json, SerializerOptions) ?? Array.Empty<HomeAttachmentContractV2>();
+                // FIX CS0019: fallback dello stesso tipo (List<T>), non array
+                return JsonSerializer.Deserialize<List<HomeAttachmentContractV2>>(json, SerializerOptions)
+                       ?? new List<HomeAttachmentContractV2>();
             }
             catch
             {

@@ -65,6 +65,7 @@ ON CONFLICT(PostId) DO UPDATE SET
     RepostOfPostId = excluded.RepostOfPostId,
     ClientNonce = excluded.ClientNonce,
     AttachmentsJson = excluded.AttachmentsJson;";
+
             cmd.Parameters.AddWithValue("$postId", post.PostId);
             cmd.Parameters.AddWithValue("$authorName", (object?)post.AuthorName ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$authorFullName", (object?)post.AuthorFullName ?? DBNull.Value);
@@ -80,13 +81,14 @@ ON CONFLICT(PostId) DO UPDATE SET
             cmd.Parameters.AddWithValue("$schemaVersion", post.SchemaVersion);
             cmd.Parameters.AddWithValue("$ready", post.Ready ? 1 : 0);
             cmd.Parameters.AddWithValue("$deleted", post.Deleted ? 1 : 0);
-            cmd.Parameters.AddWithValue("$deletedAtUtc", post.DeletedAtUtc?.UtcDateTime.ToString("O") ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("$deletedAtUtc", (object?)post.DeletedAtUtc?.UtcDateTime.ToString("O") ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$likeCount", post.LikeCount);
             cmd.Parameters.AddWithValue("$commentCount", post.CommentCount);
             cmd.Parameters.AddWithValue("$shareCount", post.ShareCount);
             cmd.Parameters.AddWithValue("$repostOfPostId", (object?)post.RepostOfPostId ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$clientNonce", (object?)post.ClientNonce ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$attachmentsJson", (object?)post.AttachmentsJson ?? DBNull.Value);
+
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -95,12 +97,15 @@ ON CONFLICT(PostId) DO UPDATE SET
             var list = new List<HomePostRow>();
             await using var conn = SQLiteDatabase.OpenConnection();
             await using var cmd = conn.CreateCommand();
+
             cmd.CommandText = @"
 SELECT PostId, AuthorName, AuthorFullName, AuthorUid, AuthorNickname, AuthorFirstName, AuthorLastName, AuthorAvatarPath, AuthorAvatarUrl, Text, ThumbKey, CreatedAtUtc, SchemaVersion, Ready, Deleted, DeletedAtUtc, LikeCount, CommentCount, ShareCount, RepostOfPostId, ClientNonce, AttachmentsJson
 FROM HomeFeed
 ORDER BY CreatedAtUtc DESC
 LIMIT $limit;";
+
             cmd.Parameters.AddWithValue("$limit", limit);
+
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -126,8 +131,10 @@ LIMIT $limit;";
                     reader.IsDBNull(18) ? 0 : reader.GetInt32(18),
                     reader.IsDBNull(19) ? null : reader.GetString(19),
                     reader.IsDBNull(20) ? null : reader.GetString(20),
-                    reader.IsDBNull(21) ? null : reader.GetString(21))));
+                    reader.IsDBNull(21) ? null : reader.GetString(21)
+                ));
             }
+
             return list;
         }
 
@@ -136,14 +143,17 @@ LIMIT $limit;";
             var list = new List<HomePostRow>();
             await using var conn = SQLiteDatabase.OpenConnection();
             await using var cmd = conn.CreateCommand();
+
             cmd.CommandText = @"
 SELECT PostId, AuthorName, AuthorFullName, AuthorUid, AuthorNickname, AuthorFirstName, AuthorLastName, AuthorAvatarPath, AuthorAvatarUrl, Text, ThumbKey, CreatedAtUtc, SchemaVersion, Ready, Deleted, DeletedAtUtc, LikeCount, CommentCount, ShareCount, RepostOfPostId, ClientNonce, AttachmentsJson
 FROM HomeFeed
 WHERE CreatedAtUtc < $before
 ORDER BY CreatedAtUtc DESC
 LIMIT $limit;";
+
             cmd.Parameters.AddWithValue("$before", beforeUtc.UtcDateTime.ToString("O"));
             cmd.Parameters.AddWithValue("$limit", limit);
+
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -169,8 +179,10 @@ LIMIT $limit;";
                     reader.IsDBNull(18) ? 0 : reader.GetInt32(18),
                     reader.IsDBNull(19) ? null : reader.GetString(19),
                     reader.IsDBNull(20) ? null : reader.GetString(20),
-                    reader.IsDBNull(21) ? null : reader.GetString(21))));
+                    reader.IsDBNull(21) ? null : reader.GetString(21)
+                ));
             }
+
             return list;
         }
 
@@ -181,6 +193,7 @@ LIMIT $limit;";
 
             await using var conn = SQLiteDatabase.OpenConnection();
             await using var cmd = conn.CreateCommand();
+
             cmd.CommandText = @"
 DELETE FROM HomeFeed
 WHERE PostId IN (
@@ -189,8 +202,11 @@ WHERE PostId IN (
     ORDER BY CreatedAtUtc DESC
     LIMIT -1 OFFSET $maxItems
 );";
+
             cmd.Parameters.AddWithValue("$maxItems", maxItems);
+
             var affected = await cmd.ExecuteNonQueryAsync(ct);
+
 #if DEBUG
             if (affected > 0)
                 Debug.WriteLine($"[HomeFeedCacheStore] TrimOldest removed={affected}");
