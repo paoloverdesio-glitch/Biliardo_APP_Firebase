@@ -434,6 +434,7 @@ namespace Biliardo.App.Pagine_Home
                                     return;
 
                                 MainThread.BeginInvokeOnMainThread(() => att.ThumbLocalPath = thumbLocal);
+                                _ = UpdateCacheForAttachmentAsync(att);
                             }
                             catch { }
                             finally
@@ -1001,6 +1002,7 @@ namespace Biliardo.App.Pagine_Home
                     Kind = item.Kind,
                     DisplayName = item.DisplayName,
                     LocalFilePath = item.LocalFilePath,
+                    MediaCacheKey = item.MediaCacheKey,
                     DurationMs = item.DurationMs,
                     SizeBytes = item.SizeBytes,
                     Latitude = item.Latitude,
@@ -1060,12 +1062,22 @@ namespace Biliardo.App.Pagine_Home
                 FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
             });
 
+            _ = ScrollHomeToTopWithRetryAsync();
             _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
         }
 
         private async Task SendHomePostOptimisticAsync(ComposerSendPayload payload, HomePostVm vm)
         {
             var attachments = new List<FirestoreHomeFeedService.HomeAttachment>();
+            var existingAttachments = vm.Attachments
+                .Where(att => att != null)
+                .Select(att => new
+                {
+                    Key = BuildAttachmentKey(att.Type, att.FileName, att.SizeBytes),
+                    att.LocalPath,
+                    att.ThumbLocalPath
+                })
+                .ToList();
 
             foreach (var item in vm.PendingItems)
             {
@@ -1087,7 +1099,17 @@ namespace Biliardo.App.Pagine_Home
                 vm.Deleted = false;
                 vm.Attachments.Clear();
                 foreach (var att in attachments)
-                    vm.AttachAttachment(HomeAttachmentVm.FromService(att));
+                {
+                    var rebuilt = HomeAttachmentVm.FromService(att);
+                    var key = BuildAttachmentKey(rebuilt.Type, rebuilt.FileName, rebuilt.SizeBytes);
+                    var match = existingAttachments.FirstOrDefault(x => x.Key == key);
+                    if (match != null)
+                    {
+                        rebuilt.LocalPath = match.LocalPath;
+                        rebuilt.ThumbLocalPath = match.ThumbLocalPath;
+                    }
+                    vm.AttachAttachment(rebuilt);
+                }
             });
 
             await _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
@@ -1677,6 +1699,7 @@ namespace Biliardo.App.Pagine_Home
                 }
 
                 att.LocalPath = local;
+                _ = UpdateCacheForAttachmentAsync(att);
                 return local;
             }
             catch (OperationCanceledException)
@@ -1708,6 +1731,46 @@ namespace Biliardo.App.Pagine_Home
                 MainThread.BeginInvokeOnMainThread(() => att.DownloadCountdownSeconds = 0);
                 MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = false);
             }
+        }
+
+        private async Task ScrollHomeToTopWithRetryAsync()
+        {
+            await Task.Delay(120);
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (Posts.Count == 0)
+                    return;
+                FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+            });
+        }
+
+        private static string BuildAttachmentKey(string? type, string? fileName, long sizeBytes)
+            => $"{type ?? ""}|{fileName ?? ""}|{sizeBytes}";
+
+        private Task UpdateCacheForAttachmentAsync(HomeAttachmentVm att)
+        {
+            if (att == null)
+                return Task.CompletedTask;
+
+            return MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                HomePostVm? owner = null;
+                foreach (var post in Posts)
+                {
+                    if (post.Attachments.Contains(att))
+                    {
+                        owner = post;
+                        break;
+                    }
+                }
+
+                if (owner == null)
+                    return Task.CompletedTask;
+
+                var cached = HomeFeedLocalCacheMapper.ToCached(owner);
+                HomeFeedMemoryCache.Instance.Set(Posts.Select(HomeFeedLocalCacheMapper.ToCached).ToList());
+                return _homeFeedCache.UpsertTop(cached);
+            });
         }
 
         private async Task<MediaCacheService.MediaRegistration> CopyToCacheAsync(FileResult fr, string prefix)
