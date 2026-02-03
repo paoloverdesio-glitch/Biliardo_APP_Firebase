@@ -413,6 +413,7 @@ namespace Biliardo.App.Pagine_Home
                                         return;
 
                                     MainThread.BeginInvokeOnMainThread(() => att.LocalPath = local);
+                                    _ = UpdateCacheForAttachmentAsync(att);
                                     return;
                                 }
 
@@ -983,8 +984,8 @@ namespace Biliardo.App.Pagine_Home
                 AuthorNickname = nickname ?? "",
                 AuthorFirstName = _myProfile?.FirstName ?? "",
                 AuthorLastName = _myProfile?.LastName ?? "",
-                AuthorAvatarPath = _myProfile?.PhotoUrl,
-                AuthorAvatarUrl = _myProfile?.PhotoUrl,
+                AuthorAvatarPath = _myProfile?.AvatarPath ?? _myProfile?.PhotoLocalPath ?? _myProfile?.PhotoUrl,
+                AuthorAvatarUrl = _myProfile?.AvatarUrl ?? _myProfile?.PhotoUrl,
                 CreatedAtUtc = DateTimeOffset.UtcNow,
                 Text = payload.Text ?? "",
                 SchemaVersion = HomePostValidatorV2.SchemaVersion,
@@ -1062,7 +1063,7 @@ namespace Biliardo.App.Pagine_Home
                 FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
             });
 
-            _ = ScrollHomeToTopWithRetryAsync();
+            _ = ScrollHomeToTopWithRetryAsync(considerKeyboard: true);
             _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
         }
 
@@ -1656,6 +1657,7 @@ namespace Biliardo.App.Pagine_Home
             if (!string.IsNullOrWhiteSpace(cached) && File.Exists(cached))
             {
                 att.LocalPath = cached;
+                _ = UpdateCacheForAttachmentAsync(att);
                 return cached;
             }
 
@@ -1733,15 +1735,22 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        private async Task ScrollHomeToTopWithRetryAsync()
+        private async Task ScrollHomeToTopWithRetryAsync(bool considerKeyboard)
         {
-            await Task.Delay(120);
-            await MainThread.InvokeOnMainThreadAsync(() =>
+            var delays = considerKeyboard
+                ? new[] { 120, 260, 520 }
+                : new[] { 120 };
+
+            foreach (var delay in delays)
             {
-                if (Posts.Count == 0)
-                    return;
-                FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
-            });
+                await Task.Delay(delay);
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    if (Posts.Count == 0)
+                        return;
+                    FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+                });
+            }
         }
 
         private static string BuildAttachmentKey(string? type, string? fileName, long sizeBytes)
@@ -2014,9 +2023,11 @@ namespace Biliardo.App.Pagine_Home
             var manufacturer = SafeValue(DeviceInfo.Current.Manufacturer);
             var model = SafeValue(DeviceInfo.Current.Model);
             var now = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var releaseVersion = SafeValue(AppReleaseInfo.Version);
 
             var messageBuilder = new StringBuilder()
                 .AppendLine($"{appName} v{version} (build {build})")
+                .AppendLine($"Versione release: {releaseVersion}")
                 .AppendLine($"Package: {packageName}")
                 .AppendLine($"Piattaforma: {platform} {osVersion}")
                 .AppendLine($"OS: {osDescription}")

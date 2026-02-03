@@ -29,7 +29,9 @@ namespace Biliardo.App.Cache_Locale.Profili
                 FirstName = row.FirstName ?? "",
                 LastName = row.LastName ?? "",
                 PhotoUrl = row.PhotoUrl ?? "",
-                PhotoLocalPath = row.PhotoLocalPath ?? ""
+                PhotoLocalPath = row.PhotoLocalPath ?? "",
+                AvatarUrl = row.PhotoUrl ?? "",
+                AvatarPath = ""
             };
         }
 

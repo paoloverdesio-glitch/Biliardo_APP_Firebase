@@ -283,7 +283,9 @@ public partial class Pagina_Registrazione : ContentPage
                         FirstName = nome ?? "",
                         LastName = cognome ?? "",
                         PhotoUrl = upload.DownloadUrl ?? "",
-                        PhotoLocalPath = localPath ?? ""
+                        PhotoLocalPath = localPath ?? "",
+                        AvatarUrl = upload.DownloadUrl ?? "",
+                        AvatarPath = upload.StoragePath
                     }, CancellationToken.None);
                 }
                 catch
