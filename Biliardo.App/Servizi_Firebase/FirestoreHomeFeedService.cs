@@ -93,8 +93,8 @@ namespace Biliardo.App.Servizi_Firebase
                 {
                     if (!string.IsNullOrWhiteSpace(profile.Nickname))
                         nickname = profile.Nickname;
-                    avatarPath = profile.PhotoUrl;
-                    avatarUrl = profile.PhotoUrl;
+                    avatarPath = !string.IsNullOrWhiteSpace(profile.AvatarPath) ? profile.AvatarPath : null;
+                    avatarUrl = !string.IsNullOrWhiteSpace(profile.AvatarUrl) ? profile.AvatarUrl : profile.PhotoUrl;
                     firstName = profile.FirstName;
                     lastName = profile.LastName;
                 }
@@ -417,12 +417,14 @@ namespace Biliardo.App.Servizi_Firebase
             var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "";
 
             string? avatarPath = null;
+            string? avatarUrl = null;
             try
             {
                 var profile = await FirestoreDirectoryService.GetUserPublicAsync(myUid, ct);
                 if (!string.IsNullOrWhiteSpace(profile?.Nickname))
                     nickname = profile.Nickname;
-                avatarPath = profile?.PhotoUrl;
+                avatarPath = !string.IsNullOrWhiteSpace(profile?.AvatarPath) ? profile?.AvatarPath : null;
+                avatarUrl = !string.IsNullOrWhiteSpace(profile?.AvatarUrl) ? profile?.AvatarUrl : profile?.PhotoUrl;
             }
             catch
             {
@@ -434,7 +436,7 @@ namespace Biliardo.App.Servizi_Firebase
                 ["authorUid"] = FirestoreRestClient.VString(myUid),
                 ["authorNickname"] = string.IsNullOrWhiteSpace(nickname) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(nickname),
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
-                ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
+                ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarUrl) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarUrl),
                 ["createdAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
                 ["text"] = FirestoreRestClient.VString(text ?? ""),
                 ["schemaVersion"] = FirestoreRestClient.VInt(HomePostValidatorV2.SchemaVersion),

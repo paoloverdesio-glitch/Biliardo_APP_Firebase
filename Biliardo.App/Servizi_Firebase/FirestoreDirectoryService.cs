@@ -27,6 +27,8 @@ namespace Biliardo.App.Servizi_Firebase
             public string LastName { get; set; } = "";
             public string PhotoUrl { get; set; } = "";
             public string PhotoLocalPath { get; set; } = "";
+            public string AvatarUrl { get; set; } = "";
+            public string AvatarPath { get; set; } = "";
 
             public string FullNameOrPlaceholder
             {
@@ -80,10 +82,13 @@ namespace Biliardo.App.Servizi_Firebase
                 ?? ReadStringField(fields, "cognome")
                 ?? "";
 
-            var photoUrl =
-                ReadStringField(fields, "photoUrl")
-                ?? ReadStringField(fields, "avatarUrl")
-                ?? ReadStringField(fields, "avatarPath")
+            var avatarUrl =
+                ReadStringField(fields, "avatarUrl")
+                ?? ReadStringField(fields, "photoUrl")
+                ?? "";
+
+            var avatarPath =
+                ReadStringField(fields, "avatarPath")
                 ?? "";
 
             return new UserPublicItem
@@ -93,7 +98,9 @@ namespace Biliardo.App.Servizi_Firebase
                 NicknameLower = nicknameLower,
                 FirstName = firstName,
                 LastName = lastName,
-                PhotoUrl = photoUrl
+                PhotoUrl = avatarUrl,
+                AvatarUrl = avatarUrl,
+                AvatarPath = avatarPath
             };
         }
 
@@ -244,10 +251,13 @@ namespace Biliardo.App.Servizi_Firebase
                     ?? ReadStringField(fieldsEl, "cognome")
                     ?? "";
 
-                var photoUrl =
-                    ReadStringField(fieldsEl, "photoUrl")
-                    ?? ReadStringField(fieldsEl, "avatarUrl")
-                    ?? ReadStringField(fieldsEl, "avatarPath")
+                var avatarUrl =
+                    ReadStringField(fieldsEl, "avatarUrl")
+                    ?? ReadStringField(fieldsEl, "photoUrl")
+                    ?? "";
+
+                var avatarPath =
+                    ReadStringField(fieldsEl, "avatarPath")
                     ?? "";
 
                 list.Add(new UserPublicItem
@@ -257,7 +267,9 @@ namespace Biliardo.App.Servizi_Firebase
                     NicknameLower = nicknameLower,
                     FirstName = firstName,
                     LastName = lastName,
-                    PhotoUrl = photoUrl
+                    PhotoUrl = avatarUrl,
+                    AvatarUrl = avatarUrl,
+                    AvatarPath = avatarPath
                 });
             }
 
