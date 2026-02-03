@@ -68,6 +68,7 @@ namespace Biliardo.App.Componenti_UI.Composer
                 OnPropertyChanged(nameof(HasPendingItems));
                 OnPropertyChanged(nameof(CanSend));
                 OnPropertyChanged(nameof(CanShowMic));
+                OnPropertyChanged(nameof(IsMicVisible));
             };
         }
 
@@ -85,6 +86,7 @@ namespace Biliardo.App.Componenti_UI.Composer
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(CanSend));
                 OnPropertyChanged(nameof(CanShowMic));
+                OnPropertyChanged(nameof(IsMicVisible));
             }
         }
 
@@ -97,9 +99,20 @@ namespace Biliardo.App.Componenti_UI.Composer
             !_isRecording &&
             !_micDisabled;
 
+        // Stati UI
         public bool IsVoiceHoldStripVisible => _isRecording && !_isLocked;
         public bool IsVoiceLockPanelVisible => _isRecording && _isLocked;
         public bool IsNormalComposerVisible => !_isRecording;
+
+        // FIX estetico:
+        // - la superficie del composer (con il mic) deve rimanere visibile durante hold recording
+        // - deve sparire solo quando si entra nel pannello di lock
+        public bool IsComposerSurfaceVisible => !_isLocked;
+
+        // FIX estetico:
+        // - il mic deve essere visibile anche quando IsVoiceHoldStripVisible è true
+        // - (così non “sparisce” mentre stai tenendo premuto)
+        public bool IsMicVisible => !_micDisabled && (CanShowMic || IsVoiceHoldStripVisible);
 
         public string VoiceTimeLabel
         {
@@ -448,6 +461,8 @@ namespace Biliardo.App.Componenti_UI.Composer
             OnPropertyChanged(nameof(IsVoiceHoldStripVisible));
             OnPropertyChanged(nameof(IsVoiceLockPanelVisible));
             OnPropertyChanged(nameof(IsNormalComposerVisible));
+            OnPropertyChanged(nameof(IsComposerSurfaceVisible));
+            OnPropertyChanged(nameof(IsMicVisible));
             OnPropertyChanged(nameof(VoicePauseResumeLabel));
             OnPropertyChanged(nameof(CanShowMic));
         }

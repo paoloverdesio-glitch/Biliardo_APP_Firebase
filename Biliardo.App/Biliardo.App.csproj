@@ -68,10 +68,14 @@
 	<!-- Pacchetti -->
 	<ItemGroup>
 		<!-- MAUI Controls esplicito, come richiesto dal warning MA002 -->
+		<PackageReference Include="CommunityToolkit.Maui" Version="9.0.3" />
+		<PackageReference Include="CommunityToolkit.Maui.MediaElement" Version="4.1.2" />
 		<PackageReference Include="Microsoft.Maui.Controls" Version="8.0.100" />
 
 		<!-- Logging debug: ALLINEATO a .NET 8 (non 9.x) -->
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.1" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.1" />
+		<PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.6" />
 
 		<!-- Firebase cross-platform core -->
 		<PackageReference Include="Plugin.Firebase.Core" Version="3.1.1" />
@@ -111,6 +115,12 @@
 		<MauiXaml Update="Componenti_UI\LocationPreviewView.xaml">
 		  <Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\Media\AudioWavePlayerView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Componenti_UI\Media\PdfAttachmentView.xaml">
+		  <Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\SelettoreUtenteAutocomplete.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
@@ -128,6 +138,9 @@
 		<MauiXaml Update="Pagine_Debug\DebugNotifichePage.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="Pagine_Debug\InfoCachePage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 
 		<MauiXaml Update="Pagine_Home\Pagina_Home.xaml">
 			<Generator>MSBuild:Compile</Generator>
@@ -135,11 +148,23 @@
 		<MauiXaml Update="Pagine_Home\PostDetailPage.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
+		<MauiXaml Update="Pagine_Media\PdfViewerPage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="Pagine_Media\VideoPlayerPage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
 
 		<MauiXaml Update="Pagine_Messaggi\Pagina_MessaggiLista.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Pagine_Messaggi\Pagina_MessaggiDettaglio.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="RiquadroDebugTrasferimentiFirebase\LogTrasferimentiPage.xaml">
+			<Generator>MSBuild:Compile</Generator>
+		</MauiXaml>
+		<MauiXaml Update="RiquadroDebugTrasferimentiFirebase\TransferDebugPanelView.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 

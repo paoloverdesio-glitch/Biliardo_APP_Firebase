@@ -8,6 +8,8 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
+
 namespace Biliardo.App.Servizi_Firebase
 {
     /// <summary>
@@ -24,10 +26,21 @@ namespace Biliardo.App.Servizi_Firebase
         // Quasi sempre è (default). Se hai creato un DB con ID diverso, si cambia qui.
         private const string DatabaseId = "(default)";
 
-        private static readonly HttpClient _http = new HttpClient
+        // HTTP client strumentato per generare i pallini (API transfers).
+        private static readonly HttpClient _http = CreateHttpClient();
+
+        private static HttpClient CreateHttpClient()
         {
-            Timeout = TimeSpan.FromSeconds(25)
-        };
+            // Label che comparirà nei log/pallini: "Firestore ..."
+            var handler = new TransferDebugHttpHandler("Firestore", FirebaseTransferDebugMonitor.Instance);
+
+            var http = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(25)
+            };
+
+            return http;
+        }
 
         private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
         {
@@ -192,48 +205,60 @@ namespace Biliardo.App.Servizi_Firebase
             });
         }
 
-        public static async Task CommitAsync(
-            string documentPath,
-            IReadOnlyList<FieldTransform> transforms,
+        public static FieldTransform TransformServerTimestamp(string fieldPath)
+        {
+            return new FieldTransform(fieldPath, new Dictionary<string, object>
+            {
+                ["setToServerValue"] = "REQUEST_TIME"
+            });
+        }
+
+        public static async Task CommitBatchAsync(
+            IEnumerable<(string documentPath, IReadOnlyList<FieldTransform> transforms)> writes,
             string idToken,
             CancellationToken ct = default)
         {
-            if (string.IsNullOrWhiteSpace(documentPath)) throw new ArgumentException("documentPath vuoto", nameof(documentPath));
-            if (transforms == null || transforms.Count == 0) throw new ArgumentException("transforms vuoti", nameof(transforms));
+            if (writes == null) throw new ArgumentException("writes vuoti", nameof(writes));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            // FIX CRITICO:
-            // Firestore commit API vuole un resource name del tipo:
-            // projects/{projectId}/databases/{databaseId}/documents/{path}
-            // NON un URL HTTPS.
-            var docName = BuildDocumentResourceName(documentPath);
-
-            var fieldTransforms = transforms.Select(t =>
+            var writeList = new List<object>();
+            foreach (var (documentPath, transforms) in writes)
             {
-                var dict = new Dictionary<string, object>
+                if (string.IsNullOrWhiteSpace(documentPath))
+                    continue;
+                if (transforms == null || transforms.Count == 0)
+                    continue;
+
+                var docName = BuildDocumentResourceName(documentPath);
+                var fieldTransforms = transforms.Select(t =>
                 {
-                    ["fieldPath"] = t.FieldPath
-                };
+                    var dict = new Dictionary<string, object>
+                    {
+                        ["fieldPath"] = t.FieldPath
+                    };
 
-                foreach (var kv in t.Transform)
-                    dict[kv.Key] = kv.Value;
+                    foreach (var kv in t.Transform)
+                        dict[kv.Key] = kv.Value;
 
-                return dict;
-            }).ToArray();
+                    return dict;
+                }).ToArray();
+
+                writeList.Add(new Dictionary<string, object>
+                {
+                    ["transform"] = new Dictionary<string, object>
+                    {
+                        ["document"] = docName,
+                        ["fieldTransforms"] = fieldTransforms
+                    }
+                });
+            }
+
+            if (writeList.Count == 0)
+                return;
 
             var payload = new Dictionary<string, object>
             {
-                ["writes"] = new object[]
-                {
-                    new Dictionary<string, object>
-                    {
-                        ["transform"] = new Dictionary<string, object>
-                        {
-                            ["document"] = docName,
-                            ["fieldTransforms"] = fieldTransforms
-                        }
-                    }
-                }
+                ["writes"] = writeList.ToArray()
             };
 
             using var req = new HttpRequestMessage(HttpMethod.Post, CommitUrl);
@@ -245,6 +270,22 @@ namespace Biliardo.App.Servizi_Firebase
 
             if (!resp.IsSuccessStatusCode)
                 throw new InvalidOperationException($"Firestore COMMIT failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
+        }
+
+        public static async Task CommitAsync(
+            string documentPath,
+            IReadOnlyList<FieldTransform> transforms,
+            string idToken,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(documentPath)) throw new ArgumentException("documentPath vuoto", nameof(documentPath));
+            if (transforms == null || transforms.Count == 0) throw new ArgumentException("transforms vuoti", nameof(transforms));
+            if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
+
+            await CommitBatchAsync(
+                new[] { (documentPath, transforms) },
+                idToken,
+                ct);
         }
 
         /// <summary>
@@ -272,7 +313,6 @@ namespace Biliardo.App.Servizi_Firebase
             if (structuredQuery == null) throw new ArgumentNullException(nameof(structuredQuery));
             if (string.IsNullOrWhiteSpace(idToken)) throw new ArgumentException("idToken vuoto", nameof(idToken));
 
-            // Regola API: parent è parte dell’URL: .../documents oppure .../documents/{document_path}
             var url = string.IsNullOrWhiteSpace(parentDocumentPath)
                 ? RunQueryUrlRoot
                 : $"{BaseDocumentsUrl}/{parentDocumentPath}:runQuery";
@@ -303,7 +343,6 @@ namespace Biliardo.App.Servizi_Firebase
 
         public static object VBool(bool value) => new Dictionary<string, object> { ["booleanValue"] = value };
 
-        // Firestore REST vuole integerValue come stringa
         public static object VInt(long value) => new Dictionary<string, object> { ["integerValue"] = value.ToString() };
 
         public static object VDouble(double value) => new Dictionary<string, object> { ["doubleValue"] = value };

@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
 
 namespace Biliardo.App.Servizi_Firebase
 {
@@ -29,7 +30,7 @@ namespace Biliardo.App.Servizi_Firebase
 
         private static readonly HttpClient _http = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(60)
+            Timeout = TimeSpan.FromMinutes(10)
         };
 
         private static string BaseUrl(string bucket) =>
@@ -78,52 +79,97 @@ namespace Biliardo.App.Servizi_Firebase
                 contentType = "application/octet-stream";
 
             var normalized = NormalizeObjectPath(storagePath);
+            var fileName = Path.GetFileName(normalized);
+            var totalBytes = content.CanSeek ? Math.Max(0, content.Length - content.Position) : -1;
 
-            var nameEncoded = Uri.EscapeDataString(normalized);
+            return await UploadAsyncInternal(
+                idToken,
+                bucket,
+                normalized,
+                content,
+                contentType,
+                fileName,
+                totalBytes,
+                ct);
+        }
+
+        private static async Task<UploadResult> UploadAsyncInternal(
+            string idToken,
+            string bucket,
+            string normalizedStoragePath,
+            Stream content,
+            string contentType,
+            string fileName,
+            long totalBytes,
+            CancellationToken ct)
+        {
+            var monitor = FirebaseTransferDebugMonitor.Instance;
+            StorageToken? token = null;
+
+            var nameEncoded = Uri.EscapeDataString(normalizedStoragePath);
             var url = $"{BaseUrl(bucket)}?uploadType=media&name={nameEncoded}";
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, url);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", idToken);
-
-            var sc = new StreamContent(content);
-            sc.Headers.ContentType = new MediaTypeHeaderValue(contentType);
-
-            if (content.CanSeek)
+            try
             {
-                var remaining = content.Length - content.Position;
-                if (remaining >= 0)
-                    sc.Headers.ContentLength = remaining;
+                token = monitor.BeginStorage(TransferDirection.Up, fileName, normalizedStoragePath, totalBytes);
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, url);
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", idToken);
+
+                var progressStream = new ProgressStream(content, bytes => monitor.ReportStorageProgress(token, bytes));
+                var sc = new StreamContent(progressStream);
+                sc.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+
+                if (content.CanSeek)
+                {
+                    var remaining = content.Length - content.Position;
+                    if (remaining >= 0)
+                        sc.Headers.ContentLength = remaining;
+                }
+
+                req.Content = sc;
+
+                using var resp = await _http.SendAsync(req, ct);
+                var body = await resp.Content.ReadAsStringAsync(ct);
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    monitor.EndStorage(token, false, TryParseGoogleApiError(body) ?? body);
+                    token = null;
+                    throw new InvalidOperationException(
+                        $"Storage UPLOAD failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
+                }
+
+                using var doc = JsonDocument.Parse(body);
+
+                var returnedName = ReadString(doc.RootElement, "name") ?? normalizedStoragePath;
+                var returnedContentType = ReadString(doc.RootElement, "contentType") ?? contentType;
+                var sizeBytes = ReadLongFromString(doc.RootElement, "size");
+
+                var tokens = ReadString(doc.RootElement, "downloadTokens");
+                var downloadToken = FirstToken(tokens);
+
+                string? downloadUrl = null;
+                if (!string.IsNullOrWhiteSpace(downloadToken))
+                    downloadUrl = BuildAnonDownloadUrl(bucket, returnedName, downloadToken);
+
+                monitor.EndStorage(token, true, null);
+                token = null;
+
+                return new UploadResult(
+                    StoragePath: returnedName,
+                    ContentType: returnedContentType,
+                    SizeBytes: sizeBytes,
+                    DownloadToken: downloadToken,
+                    DownloadUrl: downloadUrl
+                );
             }
-
-            req.Content = sc;
-
-            using var resp = await _http.SendAsync(req, ct);
-            var body = await resp.Content.ReadAsStringAsync(ct);
-
-            if (!resp.IsSuccessStatusCode)
-                throw new InvalidOperationException(
-                    $"Storage UPLOAD failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
-
-            using var doc = JsonDocument.Parse(body);
-
-            var returnedName = ReadString(doc.RootElement, "name") ?? normalized;
-            var returnedContentType = ReadString(doc.RootElement, "contentType") ?? contentType;
-            var sizeBytes = ReadLongFromString(doc.RootElement, "size");
-
-            var tokens = ReadString(doc.RootElement, "downloadTokens");
-            var token = FirstToken(tokens);
-
-            string? downloadUrl = null;
-            if (!string.IsNullOrWhiteSpace(token))
-                downloadUrl = BuildAnonDownloadUrl(bucket, returnedName, token);
-
-            return new UploadResult(
-                StoragePath: returnedName,
-                ContentType: returnedContentType,
-                SizeBytes: sizeBytes,
-                DownloadToken: token,
-                DownloadUrl: downloadUrl
-            );
+            catch (Exception ex)
+            {
+                if (token != null)
+                    monitor.EndStorage(token, false, ex.Message);
+                throw;
+            }
         }
 
         public static Task<UploadResult> UploadFileWithResultAsync(
@@ -150,17 +196,21 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new FileNotFoundException("File non trovato.", localFilePath);
 
             var normalized = NormalizeObjectPath(objectPath);
+            var fileName = Path.GetFileName(localFilePath);
+            var totalBytes = new FileInfo(localFilePath).Length;
 
             contentType ??= GuessContentTypeFromPath(normalized);
 
             await using var fs = File.OpenRead(localFilePath);
-            return await UploadAsync(
-                idToken: idToken,
-                bucket: bucket,
-                storagePath: normalized,
-                content: fs,
-                contentType: contentType,
-                ct: ct);
+            return await UploadAsyncInternal(
+                idToken,
+                bucket,
+                normalized,
+                fs,
+                contentType,
+                fileName,
+                totalBytes,
+                ct);
         }
 
         // =========================================================
@@ -215,21 +265,61 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new ArgumentNullException(nameof(destination));
 
             var normalized = NormalizeObjectPath(objectPath);
-            var url = BuildAuthDownloadUrl(bucket, normalized);
+            var fileName = Path.GetFileName(normalized);
+            await DownloadToStreamInternalAsync(idToken, bucket, normalized, fileName, destination, ct);
+        }
+
+        private static async Task DownloadToStreamInternalAsync(
+            string idToken,
+            string bucket,
+            string normalizedObjectPath,
+            string fileName,
+            Stream destination,
+            CancellationToken ct)
+        {
+            var url = BuildAuthDownloadUrl(bucket, normalizedObjectPath);
+            var monitor = FirebaseTransferDebugMonitor.Instance;
+            StorageToken? token = null;
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", idToken);
 
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!resp.IsSuccessStatusCode)
+            try
             {
-                var body = await resp.Content.ReadAsStringAsync(ct);
-                throw new InvalidOperationException(
-                    $"Storage DOWNLOAD failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
-            }
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    var body = await resp.Content.ReadAsStringAsync(ct);
+                    token = monitor.BeginStorage(TransferDirection.Down, fileName, normalizedObjectPath, -1);
+                    monitor.EndStorage(token, false, TryParseGoogleApiError(body) ?? body);
+                    token = null;
+                    throw new InvalidOperationException(
+                        $"Storage DOWNLOAD failed: {(int)resp.StatusCode}. {TryParseGoogleApiError(body) ?? body}");
+                }
 
-            await using var src = await resp.Content.ReadAsStreamAsync(ct);
-            await src.CopyToAsync(destination, 81920, ct);
+                var totalBytes = resp.Content.Headers.ContentLength ?? -1;
+                token = monitor.BeginStorage(TransferDirection.Down, fileName, normalizedObjectPath, totalBytes);
+
+                await using var src = await resp.Content.ReadAsStreamAsync(ct);
+                var buffer = new byte[81920];
+                long total = 0;
+                int read;
+                while ((read = await src.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+                {
+                    await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+                    total += read;
+                    monitor.ReportStorageProgress(token, total);
+                }
+
+                monitor.EndStorage(token, true, null);
+                token = null;
+            }
+            catch (Exception ex)
+            {
+                if (token != null)
+                    monitor.EndStorage(token, false, ex.Message);
+                throw;
+            }
         }
 
         public static Task<string> DownloadToFileAsync(
@@ -256,7 +346,8 @@ namespace Biliardo.App.Servizi_Firebase
                 Directory.CreateDirectory(dir);
 
             await using var fs = File.Open(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            await DownloadToStreamAsync(idToken, bucket, objectPath, fs, ct);
+            var fileName = Path.GetFileName(destinationPath);
+            await DownloadToStreamInternalAsync(idToken, bucket, NormalizeObjectPath(objectPath), fileName, fs, ct);
             return destinationPath;
         }
 
@@ -356,6 +447,77 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(tokens)) return null;
             var parts = tokens.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             return parts.Length > 0 ? parts[0] : null;
+        }
+
+        private sealed class ProgressStream : Stream
+        {
+            private readonly Stream _inner;
+            private readonly Action<long> _progress;
+            private long _totalRead;
+
+            public ProgressStream(Stream inner, Action<long> progress)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _progress = progress ?? throw new ArgumentNullException(nameof(progress));
+            }
+
+            public override bool CanRead => _inner.CanRead;
+            public override bool CanSeek => _inner.CanSeek;
+            public override bool CanWrite => _inner.CanWrite;
+            public override long Length => _inner.Length;
+
+            public override long Position
+            {
+                get => _inner.Position;
+                set => _inner.Position = value;
+            }
+
+            public override void Flush() => _inner.Flush();
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var read = _inner.Read(buffer, offset, count);
+                Report(read);
+                return read;
+            }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                var read = await _inner.ReadAsync(buffer, cancellationToken);
+                Report(read);
+                return read;
+            }
+
+            public override int ReadByte()
+            {
+                var b = _inner.ReadByte();
+                if (b >= 0)
+                    Report(1);
+                return b;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+
+            public override void SetLength(long value) => _inner.SetLength(value);
+
+            public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
+
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+                => _inner.WriteAsync(buffer, cancellationToken);
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    _inner.Dispose();
+                base.Dispose(disposing);
+            }
+
+            private void Report(int read)
+            {
+                if (read <= 0) return;
+                _totalRead += read;
+                _progress(_totalRead);
+            }
         }
     }
 }

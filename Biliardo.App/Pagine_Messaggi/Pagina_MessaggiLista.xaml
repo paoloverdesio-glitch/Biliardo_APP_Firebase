@@ -4,83 +4,93 @@
     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
     xmlns:ui="clr-namespace:Biliardo.App.Componenti_UI"
+    xmlns:dbg="clr-namespace:Biliardo.App.RiquadroDebugTrasferimentiFirebase"
     Title="Messaggi"
     BackgroundColor="#0B0B0B">
 
-    <VerticalStackLayout Spacing="8" Padding="12,8" BackgroundColor="#0B0B0B">
+    <Grid RowDefinitions="Auto,*" Padding="12,8" BackgroundColor="#0B0B0B">
+        <dbg:TransferDebugPanelView Grid.Row="0"
+                                    Margin="0,0,0,6"
+                                    HorizontalOptions="Fill" />
 
-        <HorizontalStackLayout Spacing="8">
-            <Button Text="Nuova chat" Clicked="OnNuovaChat" />
-        </HorizontalStackLayout>
+        <VerticalStackLayout Grid.Row="1" Spacing="8">
+            <HorizontalStackLayout Spacing="8">
+                <Button Text="Nuova chat" Clicked="OnNuovaChat" />
+            </HorizontalStackLayout>
 
-        <ui:SelettoreUtenteAutocomplete
-            x:Name="UserPicker"
-            MinChars="1"
-            PageTake="100"
-            MaxVisible="10"
-            IsVisible="False" />
+            <ui:SelettoreUtenteAutocomplete
+                x:Name="UserPicker"
+                MinChars="1"
+                PageTake="100"
+                MaxVisible="10"
+                IsVisible="False" />
 
-        <CollectionView x:Name="ListaChat"
-                        ItemsSource="{Binding ChatPreviews}"
-                        SelectionMode="Single"
-                        SelectionChanged="OnSelezioneChat"
-                        BackgroundColor="#0B0B0B"
-                        ItemsUpdatingScrollMode="KeepScrollOffset"
-                        ItemSizingStrategy="MeasureFirstItem">
-            <CollectionView.ItemsLayout>
-                <LinearItemsLayout Orientation="Vertical" ItemSpacing="8" />
-            </CollectionView.ItemsLayout>
+            <ActivityIndicator IsVisible="{Binding IsLoading}"
+                               IsRunning="{Binding IsLoading}"
+                               Color="White"
+                               HorizontalOptions="Center" />
 
-            <CollectionView.ItemTemplate>
-                <DataTemplate>
-                    <Grid Padding="0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
+            <CollectionView x:Name="ListaChat"
+                            ItemsSource="{Binding ChatPreviews}"
+                            SelectionMode="Single"
+                            SelectionChanged="OnSelezioneChat"
+                            BackgroundColor="#0B0B0B"
+                            ItemsUpdatingScrollMode="KeepScrollOffset"
+                            ItemSizingStrategy="MeasureFirstItem">
+                <CollectionView.ItemsLayout>
+                    <LinearItemsLayout Orientation="Vertical" ItemSpacing="8" />
+                </CollectionView.ItemsLayout>
 
-                        <ui:UserAvatarView Grid.Column="0"
-                                           AvatarUrl="{Binding AvatarUrl}"
-                                           AvatarPath="{Binding AvatarPath}"
-                                           DisplayName="{Binding DisplayTitle}"
-                                           Size="40"
-                                           VerticalOptions="Center" />
+                <CollectionView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Padding="0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
 
-                        <VerticalStackLayout Grid.Column="1" Spacing="2" Padding="10,0">
-                            <Label Text="{Binding DisplayTitle}"
-                                   FontAttributes="Bold"
-                                   TextColor="White"
-                                   LineBreakMode="TailTruncation"/>
-                            <Label Text="{Binding UltimoMessaggio}"
-                                   FontSize="12"
-                                   TextColor="#B0B0B0"
-                                   LineBreakMode="TailTruncation" />
-                        </VerticalStackLayout>
+                            <ui:UserAvatarView Grid.Column="0"
+                                               AvatarUrl="{Binding AvatarUrl}"
+                                               AvatarPath="{Binding AvatarPath}"
+                                               DisplayName="{Binding DisplayTitle}"
+                                               Size="42"
+                                               VerticalOptions="Center" />
 
-                        <VerticalStackLayout Grid.Column="2"
-                                             Spacing="4"
-                                             HorizontalOptions="End"
-                                             VerticalOptions="Center">
-                            <Label Text="{Binding OraBreve}"
-                                   FontSize="11"
-                                   TextColor="#9A9A9A"
-                                   HorizontalTextAlignment="End" />
-                            <Border IsVisible="{Binding NonLettiVisibile}"
-                                    BackgroundColor="#166534"
-                                    StrokeThickness="0"
-                                    Padding="6,2"
-                                    StrokeShape="RoundRectangle 10"
-                                    HorizontalOptions="End">
-                                <Label Text="{Binding NonLetti}"
+                            <VerticalStackLayout Grid.Column="1" Spacing="2" Padding="10,0">
+                                <Label Text="{Binding DisplayTitle}"
+                                       FontAttributes="Bold"
+                                       TextColor="White"
+                                       LineBreakMode="TailTruncation"/>
+                                <Label Text="{Binding UltimoMessaggio}"
+                                       FontSize="12"
+                                       TextColor="#B0B0B0"
+                                       LineBreakMode="TailTruncation" />
+                            </VerticalStackLayout>
+
+                            <VerticalStackLayout Grid.Column="2"
+                                                 Spacing="4"
+                                                 HorizontalOptions="End"
+                                                 VerticalOptions="Center">
+                                <Label Text="{Binding OraBreve}"
                                        FontSize="11"
-                                       TextColor="White" />
-                            </Border>
-                        </VerticalStackLayout>
-                    </Grid>
-                </DataTemplate>
-            </CollectionView.ItemTemplate>
-        </CollectionView>
-
-    </VerticalStackLayout>
+                                       TextColor="#9A9A9A"
+                                       HorizontalTextAlignment="End" />
+                                <Border IsVisible="{Binding NonLettiVisibile}"
+                                        BackgroundColor="#166534"
+                                        StrokeThickness="0"
+                                        Padding="6,2"
+                                        StrokeShape="RoundRectangle 10"
+                                        HorizontalOptions="End">
+                                    <Label Text="{Binding NonLetti}"
+                                           FontSize="11"
+                                           TextColor="White" />
+                                </Border>
+                            </VerticalStackLayout>
+                        </Grid>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+        </VerticalStackLayout>
+    </Grid>
 </ContentPage>

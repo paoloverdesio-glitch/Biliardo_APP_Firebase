@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:dbg="clr-namespace:Biliardo.App.RiquadroDebugTrasferimentiFirebase"
+             x:Class="Biliardo.App.Pagine_Media.PdfViewerPage"
+             Title="PDF">
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Padding="12" RowSpacing="12" BackgroundColor="#111111">
+        <dbg:TransferDebugPanelView Grid.Row="0"
+                                    HorizontalOptions="Fill"
+                                    Margin="0,0,0,4" />
+
+        <Label Grid.Row="1"
+               Text="{Binding FileName}"
+               TextColor="White"
+               FontAttributes="Bold"
+               LineBreakMode="TailTruncation" />
+
+        <Border Grid.Row="2" Stroke="#2B2B2B" StrokeThickness="1" BackgroundColor="#1A1A1A" Padding="6">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="10" />
+            </Border.StrokeShape>
+            <Image Source="{Binding PreviewSource}" Aspect="AspectFit" />
+        </Border>
+
+        <Button Grid.Row="3"
+                Text="Apri esternamente"
+                Clicked="OnOpenExternalClicked"
+                BackgroundColor="#2A2A2A"
+                TextColor="White" />
+    </Grid>
+</ContentPage>

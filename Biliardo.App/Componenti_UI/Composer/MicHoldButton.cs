@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
+using Microsoft.Maui.Controls.Shapes;
+
 
 #if ANDROID
 using Android.Views;
@@ -17,7 +19,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 {
     /// <summary>
     /// Pulsante microfono con eventi "hold" (Pressed/Move/Released/Cancel).
-    /// Implementazione DIRETTA su eventi nativi (Android/Windows) per evitare problemi di attach degli Effects in MAUI.
+    /// Implementazione DIRETTA su eventi nativi (Android/Windows).
     /// </summary>
     public sealed class MicHoldButton : ContentView
     {
@@ -35,10 +37,10 @@ namespace Biliardo.App.Componenti_UI.Composer
             set => SetValue(AccentColorProperty, value);
         }
 
-        /// <summary>Icona del microfono (default: "ic_mic.png").</summary>
+        /// <summary>Icona del microfono (default: "ic_mic.svg").</summary>
         public string IconSource
         {
-            get => _icon.Source is FileImageSource f ? (f.File ?? "ic_mic.png") : "ic_mic.png";
+            get => _icon.Source is FileImageSource f ? (f.File ?? "ic_mic.svg") : "ic_mic.svg";
             set => _icon.Source = value;
         }
 
@@ -47,7 +49,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         public event EventHandler<HoldEventArgs>? HoldEnded;
         public event EventHandler<HoldEventArgs>? HoldCanceled;
 
-        private readonly Frame _frame;
+        private readonly Border _border;
         private readonly Image _icon;
 
         private Point _startPoint;
@@ -64,15 +66,15 @@ namespace Biliardo.App.Componenti_UI.Composer
 
         public MicHoldButton()
         {
-            // Dimensioni default per mantenere il cerchio (evita “stiramento” verticale)
-            WidthRequest = 44;
-            HeightRequest = 44;
+            // Default coerente con i tasti tondi del composer (può essere sovrascritto in XAML).
+            WidthRequest = 46;
+            HeightRequest = 46;
             HorizontalOptions = LayoutOptions.Center;
             VerticalOptions = LayoutOptions.Center;
 
             _icon = new Image
             {
-                Source = "ic_mic.png",
+                Source = "ic_mic.svg",
                 WidthRequest = 22,
                 HeightRequest = 22,
                 HorizontalOptions = LayoutOptions.Center,
@@ -80,27 +82,26 @@ namespace Biliardo.App.Componenti_UI.Composer
                 InputTransparent = true, // NON deve intercettare il touch
             };
 
-            _frame = new Frame
+            _border = new Border
             {
+                StrokeThickness = 0,
                 Padding = 0,
-                Margin = 0,
-                HasShadow = false,
-                CornerRadius = 9999,
                 BackgroundColor = AccentColor,
-
-                WidthRequest = 44,
-                HeightRequest = 44,
                 HorizontalOptions = LayoutOptions.Center,
                 VerticalOptions = LayoutOptions.Center,
-
-                Content = _icon
+                Content = _icon,
+                StrokeShape = new RoundRectangle { CornerRadius = 9999 } // forzatura cerchio
             };
 
-            Content = _frame;
+            // Mantiene il Border sempre della stessa misura del controllo esterno (anche se cambiata da XAML)
+            _border.SetBinding(WidthRequestProperty, new Binding(nameof(WidthRequest), source: this));
+            _border.SetBinding(HeightRequestProperty, new Binding(nameof(HeightRequest), source: this));
+
+            Content = _border;
 
             // Aggancio nativo quando il controllo ottiene l’Handler (cioè quando diventa “reale” a runtime)
-            _frame.HandlerChanging += (_, __) => DetachNative();
-            _frame.HandlerChanged += (_, __) => AttachNative();
+            _border.HandlerChanging += (_, __) => DetachNative();
+            _border.HandlerChanged += (_, __) => AttachNative();
         }
 
         private static void OnAccentColorChanged(BindableObject bindable, object oldValue, object newValue)
@@ -109,7 +110,7 @@ namespace Biliardo.App.Componenti_UI.Composer
                 return;
 
             if (newValue is Color c)
-                b._frame.BackgroundColor = c;
+                b._border.BackgroundColor = c;
         }
 
         private void AttachNative()
@@ -119,7 +120,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 #if ANDROID
             try
             {
-                if (_frame.Handler?.PlatformView is AView v)
+                if (_border.Handler?.PlatformView is AView v)
                 {
                     _androidView = v;
                     _androidDensity = v.Context?.Resources?.DisplayMetrics?.Density ?? 1f;
@@ -146,7 +147,7 @@ namespace Biliardo.App.Componenti_UI.Composer
 #if WINDOWS
             try
             {
-                if (_frame.Handler?.PlatformView is FrameworkElement fe)
+                if (_border.Handler?.PlatformView is FrameworkElement fe)
                 {
                     _winView = fe;
                     fe.PointerPressed += OnWinPointerPressed;
@@ -223,7 +224,6 @@ namespace Biliardo.App.Componenti_UI.Composer
                         Android.Util.Log.Info("Biliardo.Mic", $"102 - Pressed @ ({x:0.0},{y:0.0})");
 #endif
                         HoldStarted?.Invoke(this, new HoldEventArgs(new Point(x, y), _startPoint));
-                        // blocca intercettazioni parent (scroll ecc.)
                         view.Parent?.RequestDisallowInterceptTouchEvent(true);
                         e.Handled = true;
                         return;

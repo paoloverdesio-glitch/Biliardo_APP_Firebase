@@ -7,6 +7,8 @@ using Microsoft.Maui.Controls.Hosting; // necessario per ConfigureEffects
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Effects;
+using Biliardo.App.Cache_Locale.SQLite;
+using CommunityToolkit.Maui;
 
 #if ANDROID
 using Plugin.Firebase.Core.Platforms.Android;
@@ -26,8 +28,13 @@ namespace Biliardo.App
         {
             var builder = MauiApp.CreateBuilder();
 
+            SQLiteBootstrap.Initialize();
+
+            // FIX MCTME001: UseMauiCommunityToolkitMediaElement() deve essere nella stessa catena di UseMauiApp<App>()
             builder
                 .UseMauiApp<App>()
+                .UseMauiCommunityToolkit()
+                .UseMauiCommunityToolkitMediaElement()
                 .ConfigureFonts(fonts =>
                 {
                     fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
@@ -38,9 +45,8 @@ namespace Biliardo.App
             builder.Logging.AddDebug();
 #endif
 
-            // === Servizi Firebase chat / delivered receipts ===
+            // === Servizi Firebase chat ===
             builder.Services.AddSingleton(_ => new FirestoreChatService("biliardoapp"));
-            builder.Services.AddSingleton<ForegroundDeliveredReceiptsService>();
 
             // Trace numerata (ordine garantito da contatore interno)
             TouchTrace.Log("MauiProgram.CreateMauiApp START");
@@ -78,8 +84,8 @@ namespace Biliardo.App
                         CrossFirebase.Initialize(activity);
                     });
 
-                    android.OnResume(activity => App.SetForegroundState(true));
-                    android.OnPause(activity => App.SetForegroundState(false));
+                    android.OnResume(activity => { });
+                    android.OnPause(activity => { });
                 });
 #elif IOS
                 events.AddiOS(ios =>
@@ -91,10 +97,10 @@ namespace Biliardo.App
                         return false;
                     });
 
-                    ios.OnActivated(app => App.SetForegroundState(true));
-                    ios.OnResignActivation(app => App.SetForegroundState(false));
-                    ios.DidEnterBackground(app => App.SetForegroundState(false));
-                    ios.WillEnterForeground(app => App.SetForegroundState(true));
+                    ios.OnActivated(app => { });
+                    ios.OnResignActivation(app => { });
+                    ios.DidEnterBackground(app => { });
+                    ios.WillEnterForeground(app => { });
                 });
 #endif
             });

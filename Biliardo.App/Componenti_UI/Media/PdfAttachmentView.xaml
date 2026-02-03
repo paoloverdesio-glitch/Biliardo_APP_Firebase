@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.Componenti_UI.Media.PdfAttachmentView"
+             x:Name="ThisView">
+    <Grid RowDefinitions="Auto,Auto" RowSpacing="6">
+        <Border Stroke="#2B2B2B"
+                StrokeThickness="1"
+                BackgroundColor="#1A1A1A"
+                Padding="6">
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="8" />
+            </Border.StrokeShape>
+            <Grid>
+                <Image x:Name="PreviewImage"
+                       Source="{Binding PreviewSource, Source={x:Reference ThisView}}"
+                       Aspect="AspectFill"
+                       HeightRequest="160"
+                       WidthRequest="240" />
+                <Grid BackgroundColor="#55000000"
+                      VerticalOptions="End"
+                      HeightRequest="32">
+                    <Label Text="PDF"
+                           TextColor="White"
+                           FontAttributes="Bold"
+                           VerticalOptions="Center"
+                           HorizontalOptions="Center" />
+                </Grid>
+            </Grid>
+        </Border>
+
+        <Label Grid.Row="1"
+               Text="{Binding FileName, Source={x:Reference ThisView}}"
+               TextColor="White"
+               LineBreakMode="TailTruncation" />
+    </Grid>
+</ContentView>

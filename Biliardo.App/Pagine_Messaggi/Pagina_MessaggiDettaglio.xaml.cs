@@ -1,6 +1,10 @@
 ﻿using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Utilita;
+using Biliardo.App.Infrastructure;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.Networking;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Biliardo.App.Pagine_Messaggi
@@ -20,12 +24,18 @@ namespace Biliardo.App.Pagine_Messaggi
             InitVoiceSubsystem();        // Vocale + waveform
             InitUiCollections();         // Emoji, eventi collezioni, binding state
             InitScrollTuning();          // Tuning scroll CollectionView
+            OpenPdfCommand = new Command<ChatMessageVm>(async vm => await OnOpenPdfAsync(vm));
+            RetrySendCommand = new Command<ChatMessageVm>(async vm => await RetrySendAsync(vm));
 
             // 1.2) Stato iniziale UI
             TitoloChat = "Chat";
             DisplayNomeCompleto = "";
 
             RefreshVoiceBindings();
+
+            _firstRenderGate = new FirstRenderGate(this, CvMessaggi);
+            ComposerBar.SizeChanged += OnLayoutSizeChanged;
+            SizeChanged += OnLayoutSizeChanged;
         }
 
         public Pagina_MessaggiDettaglio(string peerUserId, string peerNickname) : this()
@@ -47,10 +57,35 @@ namespace Biliardo.App.Pagine_Messaggi
             if (Messaggi.Count == 0)
                 IsLoadingMessages = true;
 
-            StartPolling();
+            _ = OnAppearingAsync();
             RefreshVoiceBindings();
+        }
 
-            _ = EnsurePeerProfileAsync();
+        private async Task OnAppearingAsync()
+        {
+            CancelPendingApply();
+            _appearanceCts?.Cancel();
+            _appearanceCts = new CancellationTokenSource();
+            var ct = _appearanceCts.Token;
+
+            await LoadFromCacheAndRenderImmediatelyAsync();
+            await LoadPeerProfileFromCacheAsync();
+            ScrollBottomImmediately(force: true);
+
+            await _firstRenderGate!.WaitAsync();
+            if (ct.IsCancellationRequested)
+                return;
+
+            _lastMyUid = FirebaseSessionePersistente.GetLocalId();
+            _lastPeerId = (_peerUserId ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(_lastPeerId))
+            {
+                _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, _lastPeerId);
+                await _chatStore.ResetUnreadAsync(_chatCacheKey, CancellationToken.None);
+            }
+
+            StartRealtimeUpdatesAfterFirstRender();
+            _ = SyncChatFromServerWithTimeoutAsync();
         }
 
         protected override void OnDisappearing()
@@ -58,18 +93,20 @@ namespace Biliardo.App.Pagine_Messaggi
             base.OnDisappearing();
 
             // 2.1) Caso “modal aperto” (foto fullscreen / bottom sheet allegati, ecc.)
-            if (_suppressStopPollingOnce)
+            if (_suppressStopRealtimeOnce)
             {
-                _suppressStopPollingOnce = false;
+                _suppressStopRealtimeOnce = false;
                 return;
             }
 
             // 2.2) Stop sottosistemi
-            StopPolling();
+            StopRealtimeUpdates();
             StopVoiceUiLoop();
             StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
+            CancelReceipts();
+            _appearanceCts?.Cancel();
 
             // 2.3) Sicurezza: se esco mentre registro, cancello in background
             _ = Task.Run(async () =>
@@ -108,6 +145,45 @@ namespace Biliardo.App.Pagine_Messaggi
                 var h = height * 0.20;
                 VoiceLockPanelHeight = Math.Max(160, h);
             }
+
+            HandleViewportResize(width, height);
+        }
+
+        private void HandleViewportResize(double width, double height)
+        {
+            if (width <= 0 || height <= 0)
+                return;
+
+            if (_lastViewportHeight <= 0 || _lastViewportWidth <= 0)
+            {
+                _lastViewportHeight = height;
+                _lastViewportWidth = width;
+                return;
+            }
+
+            var widthDelta = Math.Abs(_lastViewportWidth - width);
+            var heightDelta = _lastViewportHeight - height;
+
+            _lastViewportWidth = width;
+            _lastViewportHeight = height;
+
+            if (widthDelta > 40)
+                return;
+
+            const double keyboardThreshold = 80;
+
+            if (heightDelta > keyboardThreshold)
+            {
+                _keyboardVisible = true;
+                ScrollBottomImmediately(force: true);
+                return;
+            }
+
+            if (heightDelta < -keyboardThreshold && _keyboardVisible)
+            {
+                _keyboardVisible = false;
+                ScrollBottomImmediately(force: true);
+            }
         }
 
         // ============================================================
@@ -121,7 +197,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 5) PROFILO PEER (NOME COMPLETO SOTTO TITOLO CHAT)
         // ============================================================
-        private async Task EnsurePeerProfileAsync()
+        private async Task LoadPeerProfileFromCacheAsync()
         {
             if (_peerProfileLoaded)
                 return;
@@ -130,19 +206,17 @@ namespace Biliardo.App.Pagine_Messaggi
             if (string.IsNullOrWhiteSpace(peerId))
                 return;
 
+            var cached = await _userPublicCache.TryGetAsync(peerId, CancellationToken.None);
+            if (cached == null)
+                return;
+
+            DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
+            PeerAvatarUrl = cached.PhotoUrl ?? "";
+            PeerAvatarPath = cached.PhotoLocalPath ?? "";
             _peerProfileLoaded = true;
-
-            try
-            {
-                var profile = await FirestoreDirectoryService.GetUserPublicAsync(peerId);
-                if (profile == null)
-                    return;
-
-                var display = BuildDisplayNomeCompleto(profile.FirstName, profile.LastName);
-                DisplayNomeCompleto = display;
-            }
-            catch { }
         }
+
+        // Nessun fetch automatico profilo: si usa solo la cache locale.
 
         private static string BuildDisplayNomeCompleto(string? firstName, string? lastName)
         {
@@ -159,6 +233,42 @@ namespace Biliardo.App.Pagine_Messaggi
                 return fn;
 
             return $"{fn} {ln}".Trim();
+        }
+
+        private async Task SyncChatFromServerWithTimeoutAsync()
+        {
+            if (_serverSyncDone || Interlocked.Exchange(ref _serverSyncFlag, 1) == 1)
+                return;
+
+            try
+            {
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                {
+                    if (Messaggi.Count == 0)
+                        await DisplayAlert("Offline", "Contenuto non disponibile offline.", "OK");
+
+                    IsLoadingMessages = false;
+                    return;
+                }
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.ServerSyncTimeoutSeconds));
+                await SyncChatFromServerAsync(cts.Token);
+                _serverSyncDone = true;
+            }
+            catch (OperationCanceledException)
+            {
+                IsLoadingMessages = false;
+                await DisplayAlert("Errore rete", "Timeout aggiornamento chat.", "OK");
+            }
+            catch (Exception ex)
+            {
+                IsLoadingMessages = false;
+                await DisplayAlert("Errore", ex.Message, "OK");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _serverSyncFlag, 0);
+            }
         }
 
         // ============================================================

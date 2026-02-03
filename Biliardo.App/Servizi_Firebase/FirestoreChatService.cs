@@ -48,6 +48,16 @@ namespace Biliardo.App.Servizi_Firebase
             string? ContentType,
             long SizeBytes,
 
+            // preview
+            string? ThumbStoragePath,
+            string? LqipBase64,
+            int? ThumbWidth,
+            int? ThumbHeight,
+            string? PreviewType,
+
+            // audio waveform
+            IReadOnlyList<int>? Waveform,
+
             // location
             double? Latitude,
             double? Longitude,
@@ -55,7 +65,57 @@ namespace Biliardo.App.Servizi_Firebase
             // contact
             string? ContactName,
             string? ContactPhone
-        );
+        )
+        {
+            public MessageItem(
+                string MessageId,
+                string SenderId,
+                string Type,
+                string Text,
+                DateTimeOffset CreatedAtUtc,
+                IReadOnlyList<string> DeliveredTo,
+                IReadOnlyList<string> ReadBy,
+                bool DeletedForAll,
+                IReadOnlyList<string> DeletedFor,
+                DateTimeOffset? DeletedAtUtc,
+                string? StoragePath,
+                long DurationMs,
+                string? FileName,
+                string? ContentType,
+                long SizeBytes,
+                double? Latitude,
+                double? Longitude,
+                string? ContactName,
+                string? ContactPhone)
+                : this(
+                    MessageId,
+                    SenderId,
+                    Type,
+                    Text,
+                    CreatedAtUtc,
+                    DeliveredTo,
+                    ReadBy,
+                    DeletedForAll,
+                    DeletedFor,
+                    DeletedAtUtc,
+                    StoragePath,
+                    DurationMs,
+                    FileName,
+                    ContentType,
+                    SizeBytes,
+                    ThumbStoragePath: null,
+                    LqipBase64: null,
+                    ThumbWidth: null,
+                    ThumbHeight: null,
+                    PreviewType: null,
+                    Waveform: null,
+                    Latitude,
+                    Longitude,
+                    ContactName,
+                    ContactPhone)
+            {
+            }
+        }
 
         public static string GetDeterministicDmChatId(string uidA, string uidB)
         {
@@ -281,6 +341,14 @@ namespace Biliardo.App.Servizi_Firebase
                 var durationMs = ReadMapInt64(fields, "payload", "durationMs");
                 var sizeBytes = ReadMapInt64(fields, "payload", "sizeBytes");
 
+                var thumbStoragePath = ReadNestedMapString(fields, "payload", "preview", "thumbStoragePath");
+                var lqipBase64 = ReadNestedMapString(fields, "payload", "preview", "lqipBase64");
+                var thumbWidth = ReadNestedMapInt(fields, "payload", "preview", "thumbWidth");
+                var thumbHeight = ReadNestedMapInt(fields, "payload", "preview", "thumbHeight");
+                var previewType = ReadNestedMapString(fields, "payload", "preview", "previewType");
+
+                var waveform = ReadMapIntArray(fields, "payload", "waveform");
+
                 // location
                 var lat = ReadMapDouble(fields, "payload", "lat");
                 var lon = ReadMapDouble(fields, "payload", "lon");
@@ -305,6 +373,151 @@ namespace Biliardo.App.Servizi_Firebase
                     FileName: fileName,
                     ContentType: contentType,
                     SizeBytes: sizeBytes,
+                    ThumbStoragePath: thumbStoragePath,
+                    LqipBase64: lqipBase64,
+                    ThumbWidth: thumbWidth,
+                    ThumbHeight: thumbHeight,
+                    PreviewType: previewType,
+                    Waveform: waveform,
+                    Latitude: lat,
+                    Longitude: lon,
+                    ContactName: cn,
+                    ContactPhone: cp
+                ));
+            }
+
+            return outList;
+        }
+
+        public async Task<IReadOnlyList<MessageItem>> GetMessagesBeforeAsync(
+            string idToken,
+            string chatId,
+            DateTimeOffset beforeUtc,
+            int limit = 50,
+            CancellationToken ct = default)
+        {
+            if (limit <= 0) limit = 50;
+
+            var structuredQuery = new Dictionary<string, object>
+            {
+                ["from"] = new object[]
+                {
+                    new Dictionary<string, object> { ["collectionId"] = "messages" }
+                },
+                ["where"] = new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
+                        ["op"] = "LESS_THAN",
+                        ["value"] = FirestoreRestClient.VTimestamp(beforeUtc)
+                    }
+                },
+                ["orderBy"] = new object[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
+                        ["direction"] = "DESCENDING"
+                    }
+                },
+                ["limit"] = limit
+            };
+
+            using var doc = await FirestoreRestClient.RunQueryAsync(
+                structuredQuery,
+                idToken,
+                parentDocumentPath: $"chats/{chatId}",
+                ct: ct);
+
+            var outList = new List<MessageItem>();
+
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return outList;
+
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object) continue;
+                if (!el.TryGetProperty("document", out var d) || d.ValueKind != JsonValueKind.Object) continue;
+
+                var name = ReadString(d, "name");
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var messageId = ExtractLastPathSegment(name!);
+
+                if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                var senderId = ReadStringField(fields, "senderId");
+                var type = ReadStringField(fields, "type");
+                var createdAt = ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.MinValue;
+
+                var deliveredTo = ReadStringArray(fields, "deliveredTo");
+                var readBy = ReadStringArray(fields, "readBy");
+                var deletedForAll = ReadBoolField(fields, "deletedForAll") ?? false;
+                var deletedFor = ReadStringArray(fields, "deletedFor");
+                var deletedAt = ReadTimestampField(fields, "deletedAt");
+
+                string text = "";
+
+                var payloadText = ReadMapString(fields, "payload", "text");
+                if (!string.IsNullOrWhiteSpace(payloadText))
+                    text = payloadText;
+
+                if (string.IsNullOrWhiteSpace(senderId))
+                    senderId = ReadStringField(fields, "fromUid") ?? "";
+
+                if (string.IsNullOrWhiteSpace(text))
+                    text = ReadStringField(fields, "text") ?? "";
+
+                if (string.IsNullOrWhiteSpace(type))
+                    type = "text";
+
+                // media
+                var storagePath = ReadMapString(fields, "payload", "storagePath");
+                var fileName = ReadMapString(fields, "payload", "fileName");
+                var contentType = ReadMapString(fields, "payload", "contentType");
+                var durationMs = ReadMapInt64(fields, "payload", "durationMs");
+                var sizeBytes = ReadMapInt64(fields, "payload", "sizeBytes");
+
+                var thumbStoragePath = ReadNestedMapString(fields, "payload", "preview", "thumbStoragePath");
+                var lqipBase64 = ReadNestedMapString(fields, "payload", "preview", "lqipBase64");
+                var thumbWidth = ReadNestedMapInt(fields, "payload", "preview", "thumbWidth");
+                var thumbHeight = ReadNestedMapInt(fields, "payload", "preview", "thumbHeight");
+                var previewType = ReadNestedMapString(fields, "payload", "preview", "previewType");
+
+                var waveform = ReadMapIntArray(fields, "payload", "waveform");
+
+                // location
+                var lat = ReadMapDouble(fields, "payload", "lat");
+                var lon = ReadMapDouble(fields, "payload", "lon");
+
+                // contact
+                var cn = ReadMapString(fields, "payload", "contactName");
+                var cp = ReadMapString(fields, "payload", "contactPhone");
+
+                outList.Add(new MessageItem(
+                    MessageId: messageId,
+                    SenderId: senderId ?? "",
+                    Type: type ?? "text",
+                    Text: text ?? "",
+                    CreatedAtUtc: createdAt,
+                    DeliveredTo: deliveredTo,
+                    ReadBy: readBy,
+                    DeletedForAll: deletedForAll,
+                    DeletedFor: deletedFor,
+                    DeletedAtUtc: deletedAt,
+                    StoragePath: storagePath,
+                    DurationMs: durationMs,
+                    FileName: fileName,
+                    ContentType: contentType,
+                    SizeBytes: sizeBytes,
+                    ThumbStoragePath: thumbStoragePath,
+                    LqipBase64: lqipBase64,
+                    ThumbWidth: thumbWidth,
+                    ThumbHeight: thumbHeight,
+                    PreviewType: previewType,
+                    Waveform: waveform,
                     Latitude: lat,
                     Longitude: lon,
                     ContactName: cn,
@@ -379,6 +592,8 @@ namespace Biliardo.App.Servizi_Firebase
             long sizeBytes,
             string fileName,
             string contentType,
+            Dictionary<string, object>? previewMap = null,
+            IReadOnlyList<int>? waveform = null,
             CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(type)) type = "file";
@@ -387,14 +602,22 @@ namespace Biliardo.App.Servizi_Firebase
 
             var now = DateTimeOffset.UtcNow;
 
-            var payloadMap = FirestoreRestClient.VMap(new Dictionary<string, object>
+            var payloadFields = new Dictionary<string, object>
             {
                 ["storagePath"] = FirestoreRestClient.VString(storagePath),
                 ["durationMs"] = FirestoreRestClient.VInt(durationMs),
                 ["sizeBytes"] = FirestoreRestClient.VInt(sizeBytes),
                 ["fileName"] = FirestoreRestClient.VString(fileName ?? "file.bin"),
                 ["contentType"] = FirestoreRestClient.VString(string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType),
-            });
+            };
+
+            if (previewMap != null && previewMap.Count > 0)
+                payloadFields["preview"] = FirestoreRestClient.VMap(previewMap);
+
+            if (waveform != null && waveform.Count > 0)
+                payloadFields["waveform"] = FirestoreRestClient.VArray(waveform.Select(x => FirestoreRestClient.VInt(x)).ToArray());
+
+            var payloadMap = FirestoreRestClient.VMap(payloadFields);
 
             // (vedi nota sopra: niente "deletedAt" in CREATE)
             var msgFields = new Dictionary<string, object>
@@ -559,6 +782,62 @@ namespace Biliardo.App.Servizi_Firebase
                 },
                 idToken,
                 ct);
+        }
+
+        public async Task MarkDeliveredBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            var ids = messageIds?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList()
+                ?? new List<string>();
+            if (ids.Count == 0)
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var writes = ids.Select(messageId =>
+                (documentPath: $"chats/{chatId}/messages/{messageId}",
+                 transforms: (IReadOnlyList<FirestoreRestClient.FieldTransform>)new[]
+                 {
+                     FirestoreRestClient.TransformAppendMissingElements("deliveredTo", new object[]
+                     {
+                         FirestoreRestClient.VString(myUid)
+                     }),
+                     FirestoreRestClient.TransformServerTimestamp("updatedAt")
+                 })).ToList();
+
+            await FirestoreRestClient.CommitBatchAsync(writes, idToken, ct);
+        }
+
+        public async Task MarkReadBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            var ids = messageIds?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList()
+                ?? new List<string>();
+            if (ids.Count == 0)
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var writes = ids.Select(messageId =>
+                (documentPath: $"chats/{chatId}/messages/{messageId}",
+                 transforms: (IReadOnlyList<FirestoreRestClient.FieldTransform>)new[]
+                 {
+                     FirestoreRestClient.TransformAppendMissingElements("readBy", new object[]
+                     {
+                         FirestoreRestClient.VString(myUid)
+                     }),
+                     FirestoreRestClient.TransformServerTimestamp("updatedAt")
+                 })).ToList();
+
+            await FirestoreRestClient.CommitBatchAsync(writes, idToken, ct);
         }
 
         private static async Task PatchChatPreviewAsync(
@@ -833,6 +1112,115 @@ namespace Biliardo.App.Servizi_Firebase
             }
             catch { }
             return null;
+        }
+
+        private static string? ReadNestedMapString(JsonElement fields, string mapFieldName, string nestedMapName, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return null;
+            if (fields.ValueKind != JsonValueKind.Object) return null;
+            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!f.TryGetProperty(nestedMapName, out var nested) || nested.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!nested.TryGetProperty("mapValue", out var nmap) || nmap.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!nmap.TryGetProperty("fields", out var nf) || nf.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!nf.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (entry.TryGetProperty("stringValue", out var sv) && sv.ValueKind == JsonValueKind.String)
+                return sv.GetString();
+
+            return null;
+        }
+
+        private static int? ReadNestedMapInt(JsonElement fields, string mapFieldName, string nestedMapName, string key)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(key)) return null;
+                if (fields.ValueKind != JsonValueKind.Object) return null;
+                if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!f.TryGetProperty(nestedMapName, out var nested) || nested.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!nested.TryGetProperty("mapValue", out var nmap) || nmap.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!nmap.TryGetProperty("fields", out var nf) || nf.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (!nf.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
+                    return null;
+
+                if (entry.TryGetProperty("integerValue", out var iv))
+                {
+                    if (iv.ValueKind == JsonValueKind.String && int.TryParse(iv.GetString(), out var x))
+                        return x;
+                    if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt32(out var y))
+                        return y;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static IReadOnlyList<int>? ReadMapIntArray(JsonElement fields, string mapFieldName, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return null;
+            if (fields.ValueKind != JsonValueKind.Object) return null;
+            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!f.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!entry.TryGetProperty("arrayValue", out var av) || av.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!av.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var list = new List<int>();
+            foreach (var item in values.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (item.TryGetProperty("integerValue", out var iv))
+                {
+                    if (iv.ValueKind == JsonValueKind.String && int.TryParse(iv.GetString(), out var x))
+                        list.Add(x);
+                    else if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt32(out var y))
+                        list.Add(y);
+                }
+            }
+
+            return list.Count == 0 ? null : list;
         }
     }
 }

@@ -1,6 +1,12 @@
 ﻿using Biliardo.App.Componenti_UI;
+using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Cache;
+using Biliardo.App.Infrastructure.Media.Processing;
+using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
+using Biliardo.App.Cache_Locale.Profili;
+using Biliardo.App.Utilita;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using System;
@@ -8,6 +14,8 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Net.Mail;
 using System.Threading;
+using System.Threading.Tasks;
+
 // ============================================================
 // Alias coerenti (evita ambiguità e rende il codice uniforme)
 // ============================================================
@@ -48,15 +56,13 @@ namespace Biliardo.App.Pagine_Messaggi
         // 3) PERFORMANCE / SCROLL (anti-jank)
         // ============================================================
         private long _scrollBusyUntilUtcTicks;
-        private const int ScrollBusyHoldMs = 450;
-
-        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(320);
+        private static readonly TimeSpan ScrollIdleDelay = TimeSpan.FromMilliseconds(AppMediaOptions.ScrollIdleDelayMs);
 
         private bool IsScrollBusy()
             => DateTime.UtcNow.Ticks < Interlocked.Read(ref _scrollBusyUntilUtcTicks);
 
         private void MarkScrollBusy()
-            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(ScrollBusyHoldMs).Ticks);
+            => Interlocked.Exchange(ref _scrollBusyUntilUtcTicks, DateTime.UtcNow.AddMilliseconds(AppMediaOptions.ScrollBusyHoldMs).Ticks);
 
         // ============================================================
         // 4) DIMENSIONI (BOLLE / MEDIA PREVIEW) - BINDING XAML
@@ -95,6 +101,9 @@ namespace Biliardo.App.Pagine_Messaggi
         public ObservableCollection<ChatMessageVm> Messaggi { get; } = new();
         public ObservableCollection<AttachmentVm> AllegatiSelezionati { get; } = new();
         public ObservableCollection<string> EmojiItems { get; } = new();
+        public Command<ChatMessageVm> OpenPdfCommand { get; set; } = null!;
+        public Command<ChatMessageVm> RetrySendCommand { get; set; } = null!;
+        public Command<ChatMessageVm> SyncMessageCommand { get; set; } = null!;
 
         // ============================================================
         // 6) HEADER / TITOLI (BINDING XAML)
@@ -103,7 +112,12 @@ namespace Biliardo.App.Pagine_Messaggi
         public string TitoloChat
         {
             get => _titoloChat;
-            set { _titoloChat = value; OnPropertyChanged(); }
+            set
+            {
+                _titoloChat = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(AvatarDisplayName));
+            }
         }
 
         private string _displayNomeCompleto = "";
@@ -115,10 +129,26 @@ namespace Biliardo.App.Pagine_Messaggi
                 _displayNomeCompleto = value ?? "";
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasDisplayNomeCompleto));
+                OnPropertyChanged(nameof(AvatarDisplayName));
             }
         }
 
         public bool HasDisplayNomeCompleto => !string.IsNullOrWhiteSpace(DisplayNomeCompleto);
+        public string AvatarDisplayName => HasDisplayNomeCompleto ? DisplayNomeCompleto : TitoloChat;
+
+        private string _peerAvatarUrl = "";
+        public string PeerAvatarUrl
+        {
+            get => _peerAvatarUrl;
+            set { _peerAvatarUrl = value ?? ""; OnPropertyChanged(); }
+        }
+
+        private string _peerAvatarPath = "";
+        public string PeerAvatarPath
+        {
+            get => _peerAvatarPath;
+            set { _peerAvatarPath = value ?? ""; OnPropertyChanged(); }
+        }
 
         // ============================================================
         // 7) COMPOSER: TESTO / ALLEGATI / INVIO (BINDING XAML o VIEW)
@@ -200,28 +230,45 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private bool _peerProfileLoaded;
 
-        private string? _lastIdToken;
         private string? _lastMyUid;
         private string? _lastPeerId;
         private string? _lastChatId;
 
         private string? _chatIdCached;
+        private string? _chatCacheKey;
+        private bool _loadedFromCache;
+        private bool _loadedFromMemory;
 
         private bool _userNearBottom = true;
+        private bool _isLoadingOlder;
+        private CancellationTokenSource? _appearanceCts;
+        private bool _realtimeSubscribed;
+        private int _serverSyncFlag;
+        private bool _serverSyncDone;
 
-        // Modali: evita stop polling quando apro un modal (foto fullscreen, bottom sheet, ecc.)
-        private bool _suppressStopPollingOnce;
+        // Modali: evita stop aggiornamenti realtime quando apro un modal (foto fullscreen, bottom sheet, ecc.)
+        private bool _suppressStopRealtimeOnce;
 
         // ============================================================
         // 12) SERVIZI FIREBASE (chat)
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
+        private readonly MediaCacheService _mediaCache = new();
+        private readonly Cache_Locale.SQLite.ChatCacheStore _chatStore = new();
+
+        // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
+        private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
+        private readonly UserPublicLocalCache _userPublicCache = new();
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
+
+        private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
+
+        private readonly List<int> _recordingWaveform = new();
+        private long _lastWaveformSampleTicks;
 
         // ============================================================
-        // 13) POLLING / DIFF / PENDING APPLY (anti-jank)
+        // 13) REALTIME / DIFF / PENDING APPLY (anti-jank)
         // ============================================================
-        private CancellationTokenSource? _pollCts;
-        private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(1200);
         private string _lastUiSignature = "";
 
         private List<FirestoreChatService.MessageItem>? _pendingOrdered;
@@ -230,10 +277,23 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly object _pendingLock = new();
 
         // ============================================================
+        // 13.1) VIEWPORT TRACKING (tastiera / resize)
+        // ============================================================
+        private double _lastViewportWidth;
+        private double _lastViewportHeight;
+        private bool _keyboardVisible;
+
+        // ============================================================
         // 14) PREFETCH MEDIA (foto+video visibili + anticipo)
         // ============================================================
         private readonly HashSet<string> _prefetchMediaMessageIds = new(StringComparer.Ordinal);
         private CancellationTokenSource? _prefetchCts;
+
+        // ============================================================
+        // 14.1) GATE PRIMA RENDER + DEBOUNCE LAYOUT
+        // ============================================================
+        private FirstRenderGate? _firstRenderGate;
+        private readonly DebounceAsync _layoutScrollDebounce = new();
 
         // ============================================================
         // 15) VOICE (WhatsApp-like) - campi condivisi
@@ -273,6 +333,7 @@ namespace Biliardo.App.Pagine_Messaggi
         private IDispatcherTimer? _audioWaveTimer;
         private ChatMessageVm? _audioWaveCurrent;
         private double _audioWavePhase;
+        private int _audioWaveIndex;
 
         // ============================================================
         // 17) INIT: COLLEZIONI + EVENTI + EMOJI
@@ -311,5 +372,6 @@ namespace Biliardo.App.Pagine_Messaggi
             // Nota: CvMessaggi è definito in XAML, quindi disponibile qui.
             ChatScrollTuning.Apply(CvMessaggi);
         }
+
     }
 }

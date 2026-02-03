@@ -1,53 +1,52 @@
-﻿
 name: build
 
 on:
-  pull_request:
-    branches: [ "master" ]
+  pull_request: {}
   push:
-    branches: [ "master" ]
+    branches:
+      - master
+      - feat_toolkit
+      - verifiche_media_remoto
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   windows:
     name: Build Windows (MAUI)
     runs-on: windows-latest
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup .NET (from global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
       - name: Install MAUI workload (Windows)
         run: dotnet workload install maui-windows
 
-      - name: Restore
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFrameworks=net8.0-windows10.0.19041.0
+      - name: Restore (Windows)
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-windows10.0.19041.0
 
       - name: Build (Windows)
         run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-windows10.0.19041.0 --no-restore
 
-
   android:
     name: Build Android (MAUI)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup .NET (from global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
@@ -63,8 +62,8 @@ jobs:
       - name: Install MAUI workload (Android)
         run: dotnet workload install maui-android
 
-      - name: Restore
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj
+      - name: Restore (Android)
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-android34.0
 
       - name: Build (Android)
-        run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
+        run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android34.0 --no-restore

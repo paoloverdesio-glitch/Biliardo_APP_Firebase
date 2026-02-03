@@ -1,6 +1,8 @@
-﻿using System;
+﻿// File: Biliardo.App/App.xaml.cs
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Maui.ApplicationModel;
@@ -13,6 +15,8 @@ using Biliardo.App.Pagine_Home;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Realtime;
+using Biliardo.App.Infrastructure.Sync;
 using Plugin.Firebase.CloudMessaging.EventArgs;
 
 namespace Biliardo.App
@@ -24,23 +28,9 @@ namespace Biliardo.App
         // === Service locator minimale per lifecycle events (Android/iOS) ===
         public static IServiceProvider? RootServices { get; private set; }
 
-        internal static void SetForegroundState(bool isForeground)
-        {
-            try
-            {
-                var svc = RootServices?.GetService<ForegroundDeliveredReceiptsService>();
-                svc?.SetForeground(isForeground);
-            }
-            catch
-            {
-                // best-effort
-            }
-        }
-
         private readonly IPushNotificationService? _push;
         private Dictionary<string, string>? _pendingPushData;
-
-        private readonly ForegroundDeliveredReceiptsService? _deliveredSvc;
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
 
         public App(IServiceProvider services)
         {
@@ -84,9 +74,6 @@ namespace Biliardo.App
             }
 
             // Servizio foreground receipts (delivered) per ✓✓ grigie al mittente
-            _deliveredSvc = services.GetService<ForegroundDeliveredReceiptsService>();
-            _deliveredSvc?.SetForeground(false); // IMPORTANT: mai attivare prima di avere sessione valida
-
 #if DEBUG
             if (UsaPaginaDebugNotifiche)
             {
@@ -144,17 +131,12 @@ namespace Biliardo.App
                         Application.Current.MainPage = new NavigationPage(new Pagina_Home());
                         DiagLog.Step("Navigation", "AutoToHome");
 
-                        // Ora che siamo effettivamente in Home (utente autenticato), abilitiamo i servizi
-                        _deliveredSvc?.SetForeground(true);
-                        _ = Task.Run(RegisterPushTokenIfPossibleAsync);
-
                         await TryHandlePendingPushAsync();
                         return;
                     }
                 }
 
                 // Nessuna sessione (o biometria richiesta): stay/login e nessun accesso a Firestore
-                _deliveredSvc?.SetForeground(false);
                 Application.Current.MainPage = new NavigationPage(new Pagina_Login());
                 DiagLog.Step("Navigation", "ToLogin");
 
@@ -163,7 +145,6 @@ namespace Biliardo.App
             catch (Exception ex)
             {
                 DiagLog.Exception("Auth.BootstrapAndRoute", ex);
-                _deliveredSvc?.SetForeground(false);
                 Application.Current.MainPage = new NavigationPage(new Pagina_Login());
                 await TryHandlePendingPushAsync();
             }
@@ -179,7 +160,15 @@ namespace Biliardo.App
                 DiagLog.Note("Push.Body", n?.Body ?? "");
 
                 if (n?.Data != null && n.Data.Count > 0)
+                {
                     DiagLog.Note("Push.Data", string.Join(";", n.Data.Select(kv => $"{kv.Key}={kv.Value}")));
+
+                    // FIX CS1503: IDictionary<string,string> -> IReadOnlyDictionary<string,string>
+                    var ro = n.Data.ToDictionary(kv => kv.Key, kv => kv.Value);
+                    _ = Task.Run(() => PushCacheUpdater.UpdateAsync(ro, CancellationToken.None));
+                    _ = Task.Run(() => EnqueueMissingIfNeededAsync(ro));
+                    PublishRealtimeFromPush(ro);
+                }
             }
             catch (Exception ex)
             {
@@ -200,7 +189,11 @@ namespace Biliardo.App
                     .ToDictionary(k => k.Key, v => v.Value);
 
                 if (_pendingPushData.Count > 0)
+                {
                     DiagLog.Note("Push.Data", string.Join(";", _pendingPushData.Select(kv => $"{kv.Key}={kv.Value}")));
+                    _ = Task.Run(() => PushCacheUpdater.UpdateAsync(_pendingPushData, CancellationToken.None));
+                    _ = Task.Run(() => EnqueueMissingIfNeededAsync(_pendingPushData));
+                }
             }
             catch (Exception ex)
             {
@@ -236,13 +229,76 @@ namespace Biliardo.App
             try
             {
                 var kind = data.TryGetValue("kind", out var k) ? k : "";
-                if (!string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kind, "challenge", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kind, "broadcast", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(kind, "home_post", StringComparison.OrdinalIgnoreCase))
                 {
+                    await NavigateToHomePostAsync(nav, data);
                     return;
                 }
 
+                if (string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase))
+                {
+                    await NavigateToChatAsync(nav, data);
+                    return;
+                }
+
+                if (string.Equals(kind, "document", StringComparison.OrdinalIgnoreCase))
+                {
+                    await NavigateToHomeAsync(nav);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Exception("Push.Navigation", ex);
+            }
+        }
+
+        private async Task EnqueueMissingIfNeededAsync(IReadOnlyDictionary<string, string> data)
+        {
+            if (!PushPayloadValidator.IsPayloadComplete(data, out var kind, out var contentId))
+            {
+                if (!PushPayloadValidator.TryGetContentId(data, out contentId))
+                    return;
+
+                await _fetchMissing.EnqueueAsync(contentId, string.IsNullOrWhiteSpace(kind) ? "unknown" : kind, data, priority: 10, CancellationToken.None);
+            }
+        }
+
+        private static async Task NavigateToHomeAsync(NavigationPage nav)
+        {
+            var pageType = typeof(App).Assembly.GetType("Biliardo.App.Pagine_Home.Pagina_Home");
+            if (pageType == null)
+                return;
+
+            if (nav.CurrentPage?.GetType() == pageType)
+                return;
+
+            var pageObj = Activator.CreateInstance(pageType) as Page;
+            if (pageObj == null)
+                return;
+
+            await nav.PushAsync(pageObj);
+        }
+
+        private static async Task NavigateToHomePostAsync(NavigationPage nav, IReadOnlyDictionary<string, string> data)
+        {
+            await NavigateToHomeAsync(nav);
+
+            if (!PushPayloadValidator.TryGetContentId(data, out var contentId))
+                return;
+
+            if (nav.CurrentPage is Pagina_Home home)
+                await home.ScrollToPostIdAsync(contentId);
+        }
+
+        private static async Task NavigateToChatAsync(NavigationPage nav, IReadOnlyDictionary<string, string> data)
+        {
+            var peerUid = data.TryGetValue("peerUid", out var peer) ? peer : null;
+            if (string.IsNullOrWhiteSpace(peerUid) && data.TryGetValue("fromUid", out var fromUid))
+                peerUid = fromUid;
+
+            if (string.IsNullOrWhiteSpace(peerUid))
+            {
                 var pageType = typeof(App).Assembly.GetType("Biliardo.App.Pagine_Messaggi.Pagina_MessaggiLista");
                 if (pageType == null)
                     return;
@@ -252,69 +308,47 @@ namespace Biliardo.App
                     return;
 
                 await nav.PushAsync(pageObj);
-                DiagLog.Step("Navigation", "FromPushToMessagesList");
+                return;
             }
-            catch (Exception ex)
-            {
-                DiagLog.Exception("Push.Navigation", ex);
-            }
-        }
 
-        private async Task RegisterPushTokenIfPossibleAsync()
-        {
-            if (_push == null)
+            // FIX CS0246: evitare riferimento diretto a "Pagina_Messaggi" (namespace/classe non presente)
+            var chatType = typeof(App).Assembly.GetType("Biliardo.App.Pagine_Messaggi.Pagina_MessaggiDettaglio");
+            if (chatType == null)
                 return;
 
             try
             {
-                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-                var uid = FirebaseSessionePersistente.GetLocalId();
-
-                if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(uid))
+                var pageObj = Activator.CreateInstance(chatType, peerUid, peerUid) as Page;
+                if (pageObj == null)
                     return;
 
-                var fcm = await _push.GetTokenAsync();
-                if (string.IsNullOrWhiteSpace(fcm))
-                    return;
-
-                var platform = DeviceInfo.Platform.ToString().ToLowerInvariant();
-                var device = $"{DeviceInfo.Manufacturer} {DeviceInfo.Model} (OS {DeviceInfo.VersionString})";
-                var now = DateTimeOffset.UtcNow;
-
-                var fields = new Dictionary<string, object>
-                {
-                    ["fcmToken"] = FirestoreRestClient.VString(fcm),
-                    ["fcmPlatform"] = FirestoreRestClient.VString(platform),
-                    ["fcmDevice"] = FirestoreRestClient.VString(device),
-                    ["fcmUpdatedAt"] = FirestoreRestClient.VTimestamp(now)
-                };
-
-                // ALLINEATO alle rules: /users/{uid}
-                try
-                {
-                    await FirestoreRestClient.PatchDocumentAsync(
-                        documentPath: $"users/{uid}",
-                        fields: fields,
-                        updateMaskFieldPaths: new[] { "fcmToken", "fcmPlatform", "fcmDevice", "fcmUpdatedAt" },
-                        idToken: idToken,
-                        ct: default);
-                }
-                catch
-                {
-                    await FirestoreRestClient.CreateDocumentAsync(
-                        collectionPath: "users",
-                        documentId: uid,
-                        fields: fields,
-                        idToken: idToken,
-                        ct: default);
-                }
-
-                DiagLog.Note("Push.Register", "OK(Firestore users/{uid})");
+                await nav.PushAsync(pageObj);
             }
             catch (Exception ex)
             {
-                DiagLog.Exception("Push.Register", ex);
+                DiagLog.Exception("Push.NavigateToChat", ex);
             }
+        }
+
+        private static void PublishRealtimeFromPush(IReadOnlyDictionary<string, string> data)
+        {
+            if (data == null || data.Count == 0)
+                return;
+
+            var kind = data.TryGetValue("kind", out var k) ? k : "";
+            if (string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase))
+            {
+                BusEventiRealtime.Instance.PublishChatMessage(data);
+                return;
+            }
+
+            if (string.Equals(kind, "home_post", StringComparison.OrdinalIgnoreCase))
+            {
+                BusEventiRealtime.Instance.PublishHomePost(data);
+                return;
+            }
+
+            // fallback: se non conosco il tipo, non pubblico
         }
     }
 }

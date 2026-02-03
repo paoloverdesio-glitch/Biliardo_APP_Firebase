@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Biliardo.App.RiquadroDebugTrasferimentiFirebase.LogTrasferimentiPage"
+             Title="LOG"
+             BackgroundColor="#0B0B0B">
+    <VerticalStackLayout Padding="16" Spacing="16">
+        <HorizontalStackLayout Spacing="8">
+            <CheckBox IsChecked="{Binding ShowOverlay, Mode=TwoWay}" />
+            <Label Text="visualizza trasferimenti in app"
+                   TextColor="White"
+                   VerticalOptions="Center" />
+        </HorizontalStackLayout>
+
+        <VerticalStackLayout Spacing="12"
+                             BindableLayout.ItemsSource="{Binding LogFiles}">
+            <BindableLayout.ItemTemplate>
+                <DataTemplate>
+                    <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto"
+                          Padding="10"
+                          BackgroundColor="#151515">
+                        <Label Text="{Binding Name}"
+                               TextColor="White"
+                               VerticalOptions="Center" />
+                        <Label Grid.Column="1"
+                               Text="{Binding SizeLabel}"
+                               TextColor="#B0B0B0"
+                               VerticalOptions="Center"
+                               Margin="8,0" />
+                        <Button Grid.Column="2"
+                                Text="APRI"
+                                Clicked="OnOpenClicked"
+                                CommandParameter="{Binding .}" />
+                        <Button Grid.Column="3"
+                                Text="DEL"
+                                Clicked="OnDeleteClicked"
+                                CommandParameter="{Binding .}" />
+                        <Button Grid.Column="4"
+                                Text="INOLTRA"
+                                Clicked="OnShareClicked"
+                                CommandParameter="{Binding .}" />
+                    </Grid>
+                </DataTemplate>
+            </BindableLayout.ItemTemplate>
+        </VerticalStackLayout>
+    </VerticalStackLayout>
+</ContentPage>

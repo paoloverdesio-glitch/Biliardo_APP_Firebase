@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit"
+             xmlns:dbg="clr-namespace:Biliardo.App.RiquadroDebugTrasferimentiFirebase"
+             x:Class="Biliardo.App.Pagine_Media.VideoPlayerPage"
+             Title="Video">
+    <Grid RowDefinitions="Auto,*" BackgroundColor="#000000">
+        <dbg:TransferDebugPanelView Grid.Row="0"
+                                    HorizontalOptions="Fill"
+                                    Margin="12,12,12,6" />
+
+        <Grid Grid.Row="1" BackgroundColor="#000000">
+            <Image Source="{Binding PosterSource}"
+                   Aspect="AspectFill"
+                   Opacity="0.6" />
+            <ActivityIndicator IsRunning="{Binding IsBuffering}"
+                               IsVisible="{Binding IsBuffering}"
+                               Color="White"
+                               WidthRequest="40"
+                               HeightRequest="40"
+                               HorizontalOptions="Center"
+                               VerticalOptions="Center" />
+            <toolkit:MediaElement x:Name="Player"
+                                  Source="{Binding MediaSource}"
+                                  ShouldAutoPlay="True"
+                                  ShouldShowPlaybackControls="True" 
+                                  Aspect="AspectFit"
+                                  MediaOpened="OnMediaOpened"
+                                  MediaFailed="OnMediaFailed" />
+        </Grid>
+    </Grid>
+</ContentPage>

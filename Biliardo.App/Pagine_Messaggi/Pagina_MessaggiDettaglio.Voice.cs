@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,6 +9,7 @@ using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.Storage;
 
+using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 
@@ -80,6 +82,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 await _voice.StartAsync(_voiceFilePath);
 
                 _voiceWave?.Reset();
+                _recordingWaveform.Clear();
+                _lastWaveformSampleTicks = 0;
 
                 StartVoiceUiLoop();
                 RefreshVoiceBindings();
@@ -304,6 +308,19 @@ namespace Biliardo.App.Pagine_Messaggi
 
                         var level = _voice.TryGetLevel01();
                         var ms = _voice.GetElapsedMs();
+                        var nowTicks = DateTime.UtcNow.Ticks;
+
+                        if (nowTicks - _lastWaveformSampleTicks >= TimeSpan.FromMilliseconds(AppMediaOptions.AudioWaveformSampleIntervalMs).Ticks)
+                        {
+                            _lastWaveformSampleTicks = nowTicks;
+                            var sample = (int)Math.Clamp(level * 100, 0, 100);
+                            lock (_recordingWaveform)
+                            {
+                                if (_recordingWaveform.Count >= AppMediaOptions.AudioWaveformMaxSamples)
+                                    _recordingWaveform.RemoveAt(0);
+                                _recordingWaveform.Add(sample);
+                            }
+                        }
 
                         MainThread.BeginInvokeOnMainThread(() =>
                         {
@@ -439,7 +456,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 LocalPath = filePath,
                 ContentType = "audio/mp4",
                 SizeBytes = new FileInfo(filePath).Length,
-                DurationMs = durationMs > 0 ? durationMs : MediaMetadataHelper.TryGetDurationMs(filePath)
+                DurationMs = durationMs > 0 ? durationMs : MediaMetadataHelper.TryGetDurationMs(filePath),
+                Waveform = GetRecordingWaveformSnapshot()
             };
 
             await SendAttachmentAsync(idToken!, myUid!, peerId, chatId, a);
@@ -452,6 +470,63 @@ namespace Biliardo.App.Pagine_Messaggi
             OnPropertyChanged(nameof(IsVoiceLockPanelVisible));
             OnPropertyChanged(nameof(VoicePauseResumeLabel));
             OnPropertyChanged(nameof(IsNormalComposerVisible));
+        }
+
+        private IReadOnlyList<int>? GetRecordingWaveformSnapshot()
+        {
+            lock (_recordingWaveform)
+            {
+                if (_recordingWaveform.Count == 0)
+                    return null;
+
+                return _recordingWaveform.ToArray();
+            }
+        }
+
+        // ============================================================
+        // 5.1) COMPAT: REFRESH CHAT DOPO INVIO (fix CS0103)
+        // ============================================================
+        private async Task LoadOnceAsync(CancellationToken ct)
+        {
+            // Dopo i refactor, i metodi di refresh possono essere stati rinominati.
+            // Questo wrapper mantiene la funzionalità "refresh dopo invio" senza imporre un nome specifico.
+            var task =
+                TryInvokeRefreshTask("LoadOnceFromCacheAsync", ct) ??
+                TryInvokeRefreshTask("LoadCachedMessagesAsync", ct) ??
+                TryInvokeRefreshTask("LoadFromCacheAndRenderImmediatelyAsync", ct) ??
+                TryInvokeRefreshTask("SyncChatFromServerAsync", ct);
+
+            if (task != null)
+                await task.ConfigureAwait(false);
+        }
+
+        private Task? TryInvokeRefreshTask(string methodName, CancellationToken ct)
+        {
+            // evita ricorsione accidentale
+            if (string.Equals(methodName, nameof(LoadOnceAsync), StringComparison.Ordinal))
+                return null;
+
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            // prova firma (CancellationToken)
+            var mi = GetType().GetMethod(methodName, flags, binder: null, types: new[] { typeof(CancellationToken) }, modifiers: null);
+            if (mi != null)
+            {
+                if (mi.Invoke(this, new object[] { ct }) is Task t1)
+                    return t1;
+                return null;
+            }
+
+            // prova firma ()
+            mi = GetType().GetMethod(methodName, flags, binder: null, types: Type.EmptyTypes, modifiers: null);
+            if (mi != null)
+            {
+                if (mi.Invoke(this, null) is Task t2)
+                    return t2;
+                return null;
+            }
+
+            return null;
         }
 
         // ============================================================

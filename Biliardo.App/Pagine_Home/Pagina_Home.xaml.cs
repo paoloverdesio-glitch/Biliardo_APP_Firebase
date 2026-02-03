@@ -1,4 +1,5 @@
-﻿// ========================= 1) NOME FILE E SCOPO =========================
+﻿// File: Biliardo.App/Pagine_Home/Pagina_Home.xaml.cs
+// ========================= 1) NOME FILE E SCOPO =========================
 // Pagine_Home/Pagina_Home.xaml.cs
 // Code-behind della Home. Implementa:
 //  - Barra icone (menu laterale, mercatino, sfida, chat, menu account).
@@ -10,18 +11,41 @@
 // =======================================================================
 
 using Biliardo.App.Componenti_UI.Composer;
+using Biliardo.App.Infrastructure.Media;
+using Biliardo.App.Infrastructure.Media.Cache;
+using Biliardo.App.Infrastructure.Media.Home;
+using Biliardo.App.Infrastructure.Media.Processing;
+using Biliardo.App.Infrastructure.Home;
 using Biliardo.App.Pagine_Autenticazione;
+using Biliardo.App.Pagine_Debug;
+using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
+using Biliardo.App.Pagine_Media;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
+using Biliardo.App.Infrastructure.Sync;
+using Biliardo.App.Cache_Locale.Home;
+using Biliardo.App.Cache_Locale.Profili;
+using Biliardo.App.Realtime;
+using Biliardo.App.Utilita;
 using Microsoft.Maui.Graphics;
+using Microsoft.Maui.ApplicationModel;
+using Microsoft.Maui.Networking;
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using System.Threading;
+using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
+
+
 
 #if WINDOWS
-using Windows.Media.Core;
+using WindowsMediaSource = Windows.Media.Core.MediaSource;
 using Windows.Media.Playback;
 #endif
 
@@ -34,9 +58,24 @@ namespace Biliardo.App.Pagine_Home
         private bool _logoutMenuAperto = false;
 
         private readonly FirestoreHomeFeedService _homeFeed = new();
+        private readonly HomeFeedLocalCache _homeFeedCache = new();
+        private readonly HomeLikesLocalCache _homeLikesCache = new();
+        private readonly FetchMissingContentUseCase _fetchMissing = new();
         private readonly IAudioPlayback _audioPlayback;
+        private readonly MediaCacheService _mediaCache = new();
+        private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
+        private readonly HomeMediaPipeline _homeMediaPipeline;
+        private readonly UserPublicLocalCache _userPublicCache = new();
+        public Command<HomeAttachmentVm> OpenPdfCommand { get; }
+        public Command<HomePostVm> RetryHomePostCommand { get; }
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
+        private bool _isHomeLoading;
+        private HashSet<string> _likedPostIds = new(StringComparer.Ordinal);
+        private string _currentUid = "";
+        private FirestoreDirectoryService.UserPublicItem? _myProfile;
+        private readonly HashSet<string> _prefetchMediaKeys = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _pendingPreviewEnsures = new(StringComparer.Ordinal);
 
         // Popup personalizzato
         private TaskCompletionSource<bool>? _popupTcs;
@@ -44,6 +83,26 @@ namespace Biliardo.App.Pagine_Home
         // Tuning scroll (Android: disabilita change animations, cache, fixed size)
         private readonly ScrollWorkCoordinator _feedCoordinator = new();
         private CollectionViewNativeScrollStateTracker? _feedTracker;
+        private bool _realtimeSubscribed;
+        private bool _isLoadingMore;
+        private bool _noMoreHomePosts;
+        private string? _homeFeedCursor;
+        private FirstRenderGate? _firstRenderGate;
+        private CancellationTokenSource? _appearanceCts;
+        private readonly SemaphoreSlim _syncHomeLock = new(1, 1);
+        private bool _loadedFromMemory;
+        private bool _homeSyncDone;
+
+        public bool IsHomeLoading
+        {
+            get => _isHomeLoading;
+            private set
+            {
+                if (_isHomeLoading == value) return;
+                _isHomeLoading = value;
+                OnPropertyChanged();
+            }
+        }
 
         // ===================== 3) COSTRUTTORE ============================
         public Pagina_Home()
@@ -55,21 +114,41 @@ namespace Biliardo.App.Pagine_Home
             NavigationPage.SetHasNavigationBar(this, false);
 
             _audioPlayback = AudioPlaybackFactory.Create();
+            _homeMediaPipeline = new HomeMediaPipeline(_previewGenerator);
+            OpenPdfCommand = new Command<HomeAttachmentVm>(async att => await OnOpenPdfFromHome(att));
+            RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
 
             ApplyHomeFeedScrollTuning();
+            _firstRenderGate = new FirstRenderGate(this, FeedCollection);
         }
         // =================================================================
 
-        protected override async void OnAppearing()
+        protected override void OnAppearing()
         {
             base.OnAppearing();
+            _ = OnAppearingAsync();
+        }
+
+        private async Task OnAppearingAsync()
+        {
+            _appearanceCts?.Cancel();
+            _appearanceCts = new CancellationTokenSource();
+            var ct = _appearanceCts.Token;
+
+            _homeSyncDone = false;
+            ApplyHomeFeedScrollTuning();
+            await LoadFromCacheAndRenderImmediatelyAsync();
+
+            await _firstRenderGate!.WaitAsync();
+            if (ct.IsCancellationRequested)
+                return;
 
             if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                 return;
 
-            ApplyHomeFeedScrollTuning();
-
-            await LoadFeedAsync();
+            _ = LoadMyProfileAsync(ct);
+            StartRealtimeUpdatesAfterFirstRender();
+            _ = SyncHomeFromServerWithTimeoutAsync();
         }
 
         protected override void OnDisappearing()
@@ -82,6 +161,9 @@ namespace Biliardo.App.Pagine_Home
                 _feedTracker = null;
             }
             catch { }
+
+            StopRealtimeUpdates();
+            _appearanceCts?.Cancel();
         }
 
         private void ApplyHomeFeedScrollTuning()
@@ -138,6 +220,31 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
+        private async Task LoadMyProfileAsync(CancellationToken ct)
+        {
+            try
+            {
+                var uid = FirebaseSessionePersistente.GetLocalId() ?? "";
+                if (string.IsNullOrWhiteSpace(uid))
+                    return;
+
+                var cached = await _userPublicCache.TryGetAsync(uid, ct);
+                if (cached != null)
+                    _myProfile = cached;
+
+                var remote = await FirestoreDirectoryService.GetUserPublicAsync(uid, ct);
+                if (remote != null)
+                {
+                    _myProfile = remote;
+                    await _userPublicCache.UpsertAsync(uid, remote, ct);
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
         private static Exception UnwrapException(Exception ex)
         {
             if (ex is TargetInvocationException tie && tie.InnerException != null)
@@ -165,20 +272,659 @@ namespace Biliardo.App.Pagine_Home
             return msg;
         }
 
-        private async Task LoadFeedAsync()
+        private async Task LoadFromCacheAndRenderImmediatelyAsync()
         {
             try
             {
-                var res = await _homeFeed.ListPostsAsync(20, null);
+                _currentUid = FirebaseSessionePersistente.GetLocalId() ?? "";
+                _likedPostIds = await _homeLikesCache.LoadAsync(_currentUid);
 
+                IsHomeLoading = true;
+
+                if (!_loadedFromMemory && HomeFeedMemoryCache.Instance.TryGet(out var memory))
+                {
+                    _loadedFromMemory = true;
+                    var visible = new List<HomePostVm>();
+                    var pending = new List<HomePostVm>();
+                    foreach (var cachedPost in memory.OrderByDescending(x => x.CreatedAtUtc))
+                    {
+                        var vm = HomePostVm.FromCached(cachedPost);
+                        vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                        vm.RetryCommand = RetryHomePostCommand;
+                        vm.SyncCommand = null;
+
+                        var contract = BuildContractFromVm(vm);
+                        if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                            visible.Add(vm);
+                        else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                            pending.Add(vm);
+                    }
+
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        Posts.Clear();
+                        foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                            Posts.Add(vm);
+                    });
+
+                    foreach (var pendingPost in pending)
+                        QueueEnsurePreviewAvailable(pendingPost);
+                }
+
+                var cached = await _homeFeedCache.LoadAsync();
+                var ordered = cached
+                    .OrderByDescending(x => x.CreatedAtUtc)
+                    .ToList();
+
+                await ApplyHomeSnapshotAsync(ordered);
+
+                _noMoreHomePosts = false;
+                _homeFeedCursor = null;
+
+                HomeFeedMemoryCache.Instance.Set(ordered);
+                _ = PrefetchHomeMediaAsync(0, Math.Min(Posts.Count - 1, 5), _appearanceCts?.Token ?? CancellationToken.None);
+            }
+            catch
+            {
+                // cache best-effort
+            }
+            finally
+            {
+                IsHomeLoading = false;
+            }
+        }
+
+        public async Task ScrollToPostIdAsync(string postId)
+        {
+            if (string.IsNullOrWhiteSpace(postId))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var target = Posts.FirstOrDefault(x => x.PostId == postId);
+                if (target == null)
+                    return;
+
+                FeedCollection.ScrollTo(target, position: ScrollToPosition.Start, animate: false);
+            });
+        }
+
+        private async void OnHomeFeedScrolled(object sender, ItemsViewScrolledEventArgs e)
+        {
+            if (Posts.Count == 0)
+                return;
+
+            _ = PrefetchHomeMediaAsync(e.FirstVisibleItemIndex, e.LastVisibleItemIndex, _appearanceCts?.Token ?? CancellationToken.None);
+
+            if (_noMoreHomePosts)
+                return;
+
+            if (e.LastVisibleItemIndex < Posts.Count - 4)
+                return;
+
+            await LoadMoreHomePostsAsync();
+        }
+
+        private Task PrefetchHomeMediaAsync(int firstIndex, int lastIndex, CancellationToken ct)
+        {
+            if (firstIndex < 0 || lastIndex < 0 || Posts.Count == 0 || lastIndex < firstIndex)
+                return Task.CompletedTask;
+
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+                    if (string.IsNullOrWhiteSpace(idToken))
+                        return;
+
+                    var targets = new List<HomeAttachmentVm>();
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        var start = Math.Max(0, firstIndex);
+                        var end = Math.Min(lastIndex, Posts.Count - 1);
+                        for (var i = start; i <= end; i++)
+                        {
+                            var post = Posts[i];
+                            foreach (var att in post.Attachments)
+                            {
+                                if (!att.IsImage && !att.IsVideo && !att.IsPdf)
+                                    continue;
+                                targets.Add(att);
+                            }
+                        }
+                    });
+
+                    if (targets.Count == 0)
+                        return;
+
+                    using var sem = new SemaphoreSlim(AppMediaOptions.DownloadConcurrency, AppMediaOptions.DownloadConcurrency);
+                    var tasks = new List<Task>();
+
+                    foreach (var att in targets)
+                    {
+                        if (ct.IsCancellationRequested)
+                            break;
+
+                        tasks.Add(Task.Run(async () =>
+                        {
+                            await sem.WaitAsync(ct);
+                            try
+                            {
+                                if (ct.IsCancellationRequested)
+                                    return;
+
+                                var previewRemotePath = att.GetPreviewRemotePath();
+                                if (string.IsNullOrWhiteSpace(previewRemotePath))
+                                    return;
+
+                                if (!string.IsNullOrWhiteSpace(att.ThumbLocalPath) && File.Exists(att.ThumbLocalPath))
+                                    return;
+
+                                lock (_prefetchMediaKeys)
+                                {
+                                    if (!_prefetchMediaKeys.Add(previewRemotePath))
+                                        return;
+                                }
+
+                                MainThread.BeginInvokeOnMainThread(() => att.IsPreviewDownloading = true);
+                                var thumbLocal = await _mediaCache.GetOrDownloadAsync(idToken!, previewRemotePath!, att.FileName ?? "thumb.jpg", isThumb: true, ct);
+                                if (string.IsNullOrWhiteSpace(thumbLocal))
+                                    return;
+
+                                MainThread.BeginInvokeOnMainThread(() => att.ThumbLocalPath = thumbLocal);
+                                _ = UpdateCacheForAttachmentAsync(att);
+                            }
+                            catch { }
+                            finally
+                            {
+                                MainThread.BeginInvokeOnMainThread(() => att.IsPreviewDownloading = false);
+                                try { sem.Release(); } catch { }
+                            }
+                        }, ct));
+                    }
+
+                    await Task.WhenAll(tasks);
+                }
+                catch { }
+            }, ct);
+        }
+
+        private async Task LoadMoreHomePostsAsync()
+        {
+            if (_isLoadingMore || _noMoreHomePosts)
+                return;
+
+            _isLoadingMore = true;
+            try
+            {
+                var oldest = Posts.LastOrDefault();
+                if (oldest == null)
+                    return;
+
+                var cacheBatch = await _homeFeedCache.LoadBeforeAsync(oldest.CreatedAtUtc, limit: 20, CancellationToken.None);
+                if (cacheBatch.Count > 0)
+                {
+                    var cachedVms = new List<HomePostVm>();
+                    foreach (var cached in cacheBatch)
+                    {
+                        var vm = HomePostVm.FromCached(cached);
+                        vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                        vm.RetryCommand = RetryHomePostCommand;
+                        vm.SyncCommand = null;
+                        cachedVms.Add(vm);
+                    }
+
+                    await AppendOlderPostsAsync(cachedVms);
+                    return;
+                }
+
+                await FetchOlderFromServerAsync(oldest.CreatedAtUtc);
+            }
+            finally
+            {
+                _isLoadingMore = false;
+            }
+        }
+
+        private async Task FetchOlderFromServerAsync(DateTimeOffset oldestCreatedAtUtc)
+        {
+            var cursor = _homeFeedCursor;
+            if (string.IsNullOrWhiteSpace(cursor))
+                cursor = FirestoreHomeFeedService.BuildCursorFrom(oldestCreatedAtUtc);
+
+            var res = await _homeFeed.ListPostsAsync(20, cursor, CancellationToken.None);
+            _homeFeedCursor = res.NextCursor;
+
+            if (res.Items.Count == 0)
+            {
+                _noMoreHomePosts = true;
+                return;
+            }
+
+            var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
+            var newPosts = new List<HomePostVm>();
+
+            foreach (var post in res.Items)
+            {
+                var vm = HomePostVm.FromService(post);
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = null;
+                newPosts.Add(vm);
+                cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
+            }
+
+            await AppendOlderPostsAsync(newPosts);
+            await _homeFeedCache.MergeNewTop(cachedToMerge, CancellationToken.None);
+
+            if (string.IsNullOrWhiteSpace(_homeFeedCursor))
+                _noMoreHomePosts = true;
+        }
+
+        private async Task AppendOlderPostsAsync(IReadOnlyList<HomePostVm> newPosts)
+        {
+            if (newPosts == null || newPosts.Count == 0)
+                return;
+
+            var visible = new List<HomePostVm>();
+            var pending = new List<HomePostVm>();
+            SplitHomePostsByVisibility(newPosts, visible, pending);
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                    InsertSortedByCreatedAtDesc(Posts, vm);
+            });
+
+            var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
+            foreach (var vm in Posts)
+                snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
+            HomeFeedMemoryCache.Instance.Set(snapshot);
+
+            foreach (var pendingPost in pending)
+                QueueEnsurePreviewAvailable(pendingPost);
+        }
+
+        private static void InsertSortedByCreatedAtDesc(ObservableCollection<HomePostVm> posts, HomePostVm item)
+        {
+            if (posts == null || item == null)
+                return;
+
+            var existing = posts.FirstOrDefault(x => x.PostId == item.PostId);
+            if (existing != null)
+            {
+                var index = posts.IndexOf(existing);
+                if (index >= 0)
+                    posts.RemoveAt(index);
+            }
+
+            var insertIndex = 0;
+            while (insertIndex < posts.Count && posts[insertIndex].CreatedAtUtc > item.CreatedAtUtc)
+                insertIndex++;
+
+            posts.Insert(insertIndex, item);
+        }
+
+        private void SplitHomePostsByVisibility(IEnumerable<HomePostVm> source, List<HomePostVm> visible, List<HomePostVm> pending)
+        {
+            foreach (var vm in source)
+            {
+                if (vm == null)
+                    continue;
+
+                if (vm.IsPendingUpload || vm.HasSendError)
+                {
+                    visible.Add(vm);
+                    continue;
+                }
+
+                var contract = BuildContractFromVm(vm);
+                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                {
+                    visible.Add(vm);
+                }
+                else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                {
+                    pending.Add(vm);
+                }
+            }
+        }
+
+        private void QueueEnsurePreviewAvailable(HomePostVm vm)
+        {
+            if (vm == null || string.IsNullOrWhiteSpace(vm.PostId))
+                return;
+
+            lock (_pendingPreviewEnsures)
+            {
+                if (!_pendingPreviewEnsures.Add(vm.PostId))
+                    return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await EnsurePreviewAvailableAsync(vm);
+                }
+                finally
+                {
+                    lock (_pendingPreviewEnsures)
+                    {
+                        _pendingPreviewEnsures.Remove(vm.PostId);
+                    }
+                }
+            });
+        }
+
+        private async Task ApplyHomeSnapshotAsync(IReadOnlyList<HomeFeedLocalCache.CachedHomePost> ordered)
+        {
+            var visible = new List<HomePostVm>();
+            var pending = new List<HomePostVm>();
+
+            foreach (var cached in ordered)
+            {
+                var vm = HomePostVm.FromCached(cached);
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = null;
+
+                var contract = BuildContractFromVm(vm);
+                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                {
+                    visible.Add(vm);
+                }
+                else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                {
+                    pending.Add(vm);
+                }
+            }
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
                 Posts.Clear();
+                foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                    Posts.Add(vm);
+            });
+
+            foreach (var pendingPost in pending)
+                QueueEnsurePreviewAvailable(pendingPost);
+        }
+
+        private void StartRealtimeUpdatesAfterFirstRender()
+        {
+            if (_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = true;
+            BusEventiRealtime.Instance.NewHomePostNotification += OnRealtimeHomePost;
+        }
+
+        private void StopRealtimeUpdates()
+        {
+            if (!_realtimeSubscribed)
+                return;
+
+            _realtimeSubscribed = false;
+            BusEventiRealtime.Instance.NewHomePostNotification -= OnRealtimeHomePost;
+        }
+
+        private void OnRealtimeHomePost(object? sender, RealtimeEventPayload e)
+        {
+            if (e.Data == null || e.Data.Count == 0)
+                return;
+            _ = HandleHomePushAsync(e.Data);
+        }
+
+        private async Task HandleHomePushAsync(IReadOnlyDictionary<string, string> data)
+        {
+            if (!TryBuildHomeFromPayload(data, out var postId, out var cached, out var requiresSync))
+                return;
+
+            if (cached == null)
+            {
+                if (requiresSync)
+                    await _fetchMissing.EnqueueAsync(postId, "home_post", data, priority: 5, CancellationToken.None);
+                return;
+            }
+
+            await _homeFeedCache.UpsertTop(cached);
+            if (requiresSync)
+                await _fetchMissing.EnqueueAsync(cached.PostId, "home_post", data, priority: 5, CancellationToken.None);
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var existing = Posts.FirstOrDefault(x => x.PostId == cached.PostId);
+                var vm = HomePostVm.FromCached(cached);
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = null;
+                vm.RequiresSync = requiresSync;
+
+                var contract = BuildContractFromVm(vm);
+                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                {
+                    if (existing != null)
+                    {
+                        var index = Posts.IndexOf(existing);
+                        if (index >= 0)
+                            Posts.RemoveAt(index);
+                    }
+
+                    InsertSortedByCreatedAtDesc(Posts, vm);
+                }
+                else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                {
+                    QueueEnsurePreviewAvailable(vm);
+                }
+            });
+
+            var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
+            foreach (var vm in Posts)
+                snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
+            HomeFeedMemoryCache.Instance.Set(snapshot);
+        }
+
+        private static bool TryBuildHomeFromPayload(
+            IReadOnlyDictionary<string, string> data,
+            out string postId,
+            out HomeFeedLocalCache.CachedHomePost? cached,
+            out bool requiresSync)
+        {
+            cached = null;
+            requiresSync = false;
+
+            postId = data.TryGetValue("postId", out var postIdValue) ? postIdValue : "";
+            if (string.IsNullOrWhiteSpace(postId))
+                return false;
+
+            var authorName = data.TryGetValue("authorName", out var author) ? author : null;
+            if (string.IsNullOrWhiteSpace(authorName) && data.TryGetValue("authorNickname", out var authorNick))
+                authorName = authorNick;
+
+            var authorFirst = data.TryGetValue("authorFirstName", out var first) ? first : null;
+            var authorLast = data.TryGetValue("authorLastName", out var last) ? last : null;
+
+            var text = data.TryGetValue("text", out var t) ? t : null;
+            var thumbKey = data.TryGetValue("thumbKey", out var thumb) ? thumb : null;
+            if (string.IsNullOrWhiteSpace(thumbKey) && data.TryGetValue("thumbStoragePath", out var thumbPath))
+                thumbKey = thumbPath;
+
+            if (!TryParseTimestamp(data, out var createdAt))
+                createdAt = DateTimeOffset.UtcNow;
+
+            requiresSync = string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(thumbKey);
+            var schemaVersion = data.TryGetValue("schemaVersion", out var schemaValue) && int.TryParse(schemaValue, out var schemaParsed)
+                ? schemaParsed
+                : 0;
+            var ready = data.TryGetValue("ready", out var readyValue) && bool.TryParse(readyValue, out var readyParsed) && readyParsed;
+
+            var draft = new HomeFeedLocalCache.CachedHomePost(
+                PostId: postId,
+                AuthorUid: data.TryGetValue("authorUid", out var authorUid) ? authorUid : "",
+                AuthorNickname: authorName ?? "",
+                AuthorFirstName: authorFirst,
+                AuthorLastName: authorLast,
+                AuthorAvatarPath: data.TryGetValue("authorAvatarPath", out var avatarPath) ? avatarPath : null,
+                AuthorAvatarUrl: data.TryGetValue("authorAvatarUrl", out var avatarUrl) ? avatarUrl : null,
+                Text: text ?? "",
+                ThumbKey: thumbKey,
+                CreatedAtUtc: createdAt,
+                Attachments: Array.Empty<HomeAttachmentContractV2>(),
+                LikeCount: data.TryGetValue("likeCount", out var likeValue) && int.TryParse(likeValue, out var likeParsed) ? likeParsed : 0,
+                CommentCount: data.TryGetValue("commentCount", out var commentValue) && int.TryParse(commentValue, out var commentParsed) ? commentParsed : 0,
+                ShareCount: data.TryGetValue("shareCount", out var shareValue) && int.TryParse(shareValue, out var shareParsed) ? shareParsed : 0,
+                Deleted: false,
+                DeletedAtUtc: null,
+                RepostOfPostId: data.TryGetValue("repostOfPostId", out var repostValue) ? repostValue : null,
+                ClientNonce: data.TryGetValue("clientNonce", out var nonceValue) ? nonceValue : null,
+                SchemaVersion: schemaVersion,
+                Ready: ready);
+
+            if (HomePostValidatorV2.IsCacheSafe(BuildContractFromCached(draft), out _))
+                cached = draft;
+
+            return true;
+        }
+
+        private static bool TryParseTimestamp(IReadOnlyDictionary<string, string> data, out DateTimeOffset timestamp)
+        {
+            timestamp = DateTimeOffset.UtcNow;
+
+            if (data.TryGetValue("createdAtUtc", out var createdAtUtc)
+                && DateTimeOffset.TryParse(createdAtUtc, out var dto))
+            {
+                timestamp = dto;
+                return true;
+            }
+
+            if (data.TryGetValue("createdAt", out var createdAt)
+                && DateTimeOffset.TryParse(createdAt, out var dto2))
+            {
+                timestamp = dto2;
+                return true;
+            }
+
+            if (data.TryGetValue("createdAtMs", out var msString)
+                && long.TryParse(msString, out var ms))
+            {
+                timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ms);
+                return true;
+            }
+
+            return false;
+        }
+
+        private async Task SyncHomeFromServerAsync(string? focusPostId, CancellationToken ct = default)
+        {
+            if (!await _syncHomeLock.WaitAsync(0))
+                return;
+
+            try
+            {
+                var res = await _homeFeed.ListPostsAsync(20, null, ct);
+                if (res.Items.Count == 0)
+                    return;
+
+                _homeFeedCursor = res.NextCursor;
+
+                var cachedToMerge = new List<HomeFeedLocalCache.CachedHomePost>();
+                var newPosts = new List<HomePostVm>();
+
                 foreach (var post in res.Items)
-                    Posts.Add(HomePostVm.FromService(post));
+                {
+                    var vm = HomePostVm.FromService(post);
+                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                    vm.RetryCommand = RetryHomePostCommand;
+                    vm.SyncCommand = null;
+                    newPosts.Add(vm);
+                    cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
+                }
+
+                var visible = new List<HomePostVm>();
+                var pending = new List<HomePostVm>();
+                SplitHomePostsByVisibility(newPosts, visible, pending);
+
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                        InsertSortedByCreatedAtDesc(Posts, vm);
+                });
+
+                foreach (var pendingPost in pending)
+                    QueueEnsurePreviewAvailable(pendingPost);
+
+                await _homeFeedCache.MergeNewTop(cachedToMerge, ct);
+                var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
+                foreach (var vm in Posts)
+                    snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
+                HomeFeedMemoryCache.Instance.Set(snapshot);
+                _ = PrefetchHomeMediaAsync(0, Math.Min(Posts.Count - 1, 5), ct);
+            }
+            finally
+            {
+                _syncHomeLock.Release();
+            }
+        }
+
+        private async Task SyncHomeFromServerWithTimeoutAsync()
+        {
+            if (_homeSyncDone)
+                return;
+
+            try
+            {
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                    return;
+
+                IsHomeLoading = true;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.ServerSyncTimeoutSeconds));
+                await SyncHomeFromServerAsync(null, cts.Token);
+                _homeSyncDone = true;
+            }
+            catch (OperationCanceledException)
+            {
+                if (Posts.Count == 0)
+                    await ShowPopupAsync("Timeout aggiornamento Home.", "Errore rete");
             }
             catch (Exception ex)
             {
-                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore feed");
+                if (Posts.Count == 0)
+                    await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore");
             }
+            finally
+            {
+                IsHomeLoading = false;
+            }
+        }
+
+        private void ApplyServerPostToPending(HomePostVm pending, FirestoreHomeFeedService.HomePostItem post)
+        {
+            pending.PostId = post.PostId;
+            pending.IsPendingUpload = false;
+            pending.HasSendError = false;
+            pending.RequiresSync = false;
+            pending.HasFullData = true;
+            pending.CreatedAtUtc = post.CreatedAtUtc;
+            pending.Text = post.Text ?? "";
+            pending.AuthorUid = post.AuthorUid;
+            pending.AuthorNickname = post.AuthorNickname;
+            pending.AuthorFirstName = post.AuthorFirstName;
+            pending.AuthorLastName = post.AuthorLastName;
+            pending.AuthorAvatarPath = post.AuthorAvatarPath;
+            pending.AuthorAvatarUrl = post.AuthorAvatarUrl;
+            pending.LikeCount = post.LikeCount;
+            pending.CommentCount = post.CommentCount;
+            pending.ShareCount = post.ShareCount;
+            pending.SchemaVersion = post.SchemaVersion;
+            pending.Ready = post.Ready;
+            pending.Deleted = post.Deleted;
+            pending.DeletedAtUtc = post.DeletedAtUtc;
+            pending.RepostOfPostId = post.RepostOfPostId;
+            pending.Attachments.Clear();
+            foreach (var att in post.Attachments)
+                pending.AttachAttachment(HomeAttachmentVm.FromService(att));
         }
 
         private async void OnHomeComposerAttachmentRequested(object sender, EventArgs e)
@@ -243,106 +989,112 @@ namespace Biliardo.App.Pagine_Home
 
         private void OnHomeComposerPendingItemRemoved(object sender, PendingItemVm item)
         {
-            if (!string.IsNullOrWhiteSpace(item.LocalFilePath))
-            {
-                try { if (File.Exists(item.LocalFilePath)) File.Delete(item.LocalFilePath); } catch { }
-            }
+            // Nessuna cancellazione: i file restano in cache persistente (LRU).
         }
 
         private async Task SendHomePostAsync(ComposerSendPayload payload, string? sentSingleLocalId)
         {
-            try
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            if (string.IsNullOrWhiteSpace(payload.Text) && !payload.PendingItems.Any())
+                return;
+
+            var optimistic = CreateOptimisticPost(payload);
+            optimistic.RetryCommand = RetryHomePostCommand;
+            AddOptimisticPost(optimistic);
+
+            if (sentSingleLocalId != null)
             {
-                if (!await EnsureFirebaseSessionOrBackToLoginAsync())
-                    return;
-
-                if (string.IsNullOrWhiteSpace(payload.Text) && !payload.PendingItems.Any())
-                    return;
-
-                var attachments = new List<FirestoreHomeFeedService.HomeAttachment>();
-
-                foreach (var item in payload.PendingItems)
-                {
-                    var att = await BuildHomeAttachmentAsync(item);
-                    if (att != null)
-                        attachments.Add(att);
-                }
-
-                await _homeFeed.CreatePostAsync(payload.Text ?? "", attachments);
-
-                if (sentSingleLocalId != null)
-                {
-                    var pending = HomeComposer.PendingItems.FirstOrDefault(x => x.LocalId == sentSingleLocalId);
-                    if (pending != null)
-                        HomeComposer.PendingItems.Remove(pending);
-                }
-                else
-                {
-                    HomeComposer.ClearComposer();
-                }
-
-                await LoadFeedAsync();
+                var pending = HomeComposer.PendingItems.FirstOrDefault(x => x.LocalId == sentSingleLocalId);
+                if (pending != null)
+                    HomeComposer.PendingItems.Remove(pending);
             }
-            catch (Exception ex)
+            else
             {
-                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore invio");
+                HomeComposer.ClearComposer();
             }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await SendHomePostOptimisticAsync(payload, optimistic);
+                }
+                catch (Exception ex)
+                {
+                    MarkHomePostFailed(optimistic, ex);
+                }
+            });
         }
 
         private async Task<FirestoreHomeFeedService.HomeAttachment?> BuildHomeAttachmentAsync(PendingItemVm item)
         {
             if (item == null) return null;
 
-            if (item.Kind == PendingKind.Location)
-            {
-                var extra = new Dictionary<string, object>
-                {
-                    ["lat"] = FirestoreRestClient.VDouble(item.Latitude ?? 0),
-                    ["lon"] = FirestoreRestClient.VDouble(item.Longitude ?? 0),
-                    ["address"] = FirestoreRestClient.VString(item.Address ?? "")
-                };
-
-                return new FirestoreHomeFeedService.HomeAttachment("location", null, null, null, null, 0, 0, extra);
-            }
-
-            if (item.Kind == PendingKind.Contact)
-            {
-                var extra = new Dictionary<string, object>
-                {
-                    ["name"] = FirestoreRestClient.VString(item.ContactName ?? item.DisplayName),
-                    ["phone"] = FirestoreRestClient.VString(item.ContactPhone ?? "")
-                };
-
-                return new FirestoreHomeFeedService.HomeAttachment("contact", null, null, null, null, 0, 0, extra);
-            }
-
-            if (item.Kind == PendingKind.Poll)
-                return new FirestoreHomeFeedService.HomeAttachment("poll", null, null, null, null, 0, 0, null);
-
-            if (item.Kind == PendingKind.Event)
-                return new FirestoreHomeFeedService.HomeAttachment("event", null, null, null, null, 0, 0, null);
-
-            if (string.IsNullOrWhiteSpace(item.LocalFilePath) || !File.Exists(item.LocalFilePath))
-                return null;
-
             var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+            return await _homeMediaPipeline.BuildAttachmentAsync(item, idToken, default);
+        }
 
-            var fileName = Path.GetFileName(item.LocalFilePath);
-            var objectPath = $"home_posts/media/{Guid.NewGuid():N}/{fileName}";
+        private HomePostVm CreateOptimisticPost(ComposerSendPayload payload)
+        {
+            var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
+            var nickname = _myProfile?.Nickname;
+            if (string.IsNullOrWhiteSpace(nickname))
+                nickname = FirebaseSessionePersistente.GetDisplayName();
+            var clientNonce = Guid.NewGuid().ToString("N");
 
-            var upload = await FirebaseStorageRestClient.UploadFileWithResultAsync(
-                idToken: idToken,
-                objectPath: objectPath,
-                localFilePath: item.LocalFilePath,
-                contentType: FirebaseStorageRestClient.GuessContentTypeFromPath(item.LocalFilePath),
-                ct: default);
-
-            if (item.Kind == PendingKind.AudioDraft)
+            var vm = new HomePostVm
             {
-                try { File.Delete(item.LocalFilePath); } catch { }
+                PostId = $"local-{clientNonce}",
+                ClientNonce = clientNonce,
+                AuthorUid = myUid,
+                AuthorNickname = nickname ?? "",
+                AuthorFirstName = _myProfile?.FirstName ?? "",
+                AuthorLastName = _myProfile?.LastName ?? "",
+                AuthorAvatarPath = _myProfile?.AvatarPath ?? _myProfile?.PhotoLocalPath ?? _myProfile?.PhotoUrl,
+                AuthorAvatarUrl = _myProfile?.AvatarUrl ?? _myProfile?.PhotoUrl,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                Text = payload.Text ?? "",
+                SchemaVersion = HomePostValidatorV2.SchemaVersion,
+                Ready = true,
+                Deleted = false,
+                IsPendingUpload = true,
+                HasSendError = false,
+                PendingText = payload.Text ?? ""
+            };
+
+            foreach (var item in payload.PendingItems ?? Array.Empty<PendingItemVm>())
+            {
+                vm.PendingItems.Add(new PendingItemVm
+                {
+                    Kind = item.Kind,
+                    DisplayName = item.DisplayName,
+                    LocalFilePath = item.LocalFilePath,
+                    MediaCacheKey = item.MediaCacheKey,
+                    DurationMs = item.DurationMs,
+                    SizeBytes = item.SizeBytes,
+                    Latitude = item.Latitude,
+                    Longitude = item.Longitude,
+                    Address = item.Address,
+                    ContactName = item.ContactName,
+                    ContactPhone = item.ContactPhone
+                });
+
+                var attVm = CreateOptimisticAttachment(item);
+                if (attVm != null)
+                    vm.AttachAttachment(attVm);
             }
+
+            return vm;
+        }
+
+        private static HomeAttachmentVm? CreateOptimisticAttachment(PendingItemVm item)
+        {
+            if (item == null)
+                return null;
 
             var type = item.Kind switch
             {
@@ -350,18 +1102,136 @@ namespace Biliardo.App.Pagine_Home
                 PendingKind.Video => "video",
                 PendingKind.AudioDraft => "audio",
                 PendingKind.File => "file",
+                PendingKind.Location => "location",
+                PendingKind.Contact => "contact",
+                PendingKind.Poll => "poll",
+                PendingKind.Event => "event",
                 _ => "file"
             };
 
-            return new FirestoreHomeFeedService.HomeAttachment(
-                type,
-                upload.StoragePath,
-                upload.DownloadUrl,
-                fileName,
-                upload.ContentType,
-                upload.SizeBytes,
-                item.DurationMs,
-                null);
+            var vm = new HomeAttachmentVm
+            {
+                Type = type,
+                FileName = item.DisplayName,
+                LocalPath = item.LocalFilePath,
+                SizeBytes = item.SizeBytes,
+                DurationMs = item.DurationMs,
+                Latitude = item.Latitude,
+                Longitude = item.Longitude,
+                Address = item.Address
+            };
+
+            return vm;
+        }
+
+        private void AddOptimisticPost(HomePostVm vm)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.RetryCommand = RetryHomePostCommand;
+                InsertSortedByCreatedAtDesc(Posts, vm);
+                FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+            });
+
+            _ = ScrollHomeToTopWithRetryAsync(considerKeyboard: true);
+            _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
+        }
+
+        private async Task SendHomePostOptimisticAsync(ComposerSendPayload payload, HomePostVm vm)
+        {
+            var attachments = new List<FirestoreHomeFeedService.HomeAttachment>();
+            var existingAttachments = vm.Attachments
+                .Where(att => att != null)
+                .Select(att => new
+                {
+                    Key = BuildAttachmentKey(att.Type, att.FileName, att.SizeBytes),
+                    att.LocalPath,
+                    att.ThumbLocalPath
+                })
+                .ToList();
+
+            foreach (var item in vm.PendingItems)
+            {
+                var att = await BuildHomeAttachmentAsync(item);
+                if (att == null)
+                    throw new InvalidOperationException("Allegato non disponibile.");
+
+                attachments.Add(att);
+            }
+
+            var postId = await _homeFeed.CreatePostAsync(vm.PendingText ?? "", attachments, clientNonce: vm.ClientNonce);
+            var localByFullRemote = new Dictionary<string, string>(StringComparer.Ordinal);
+            var localByPreviewRemote = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var att in attachments)
+            {
+                var key = BuildAttachmentKey(att.Type, att.FileName, att.SizeBytes);
+                var match = existingAttachments.FirstOrDefault(x => x.Key == key);
+                if (match == null)
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(att.StoragePath) && !string.IsNullOrWhiteSpace(match.LocalPath))
+                    localByFullRemote[att.StoragePath] = match.LocalPath;
+
+                var previewRemotePath = att.GetPreviewRemotePath();
+                if (!string.IsNullOrWhiteSpace(previewRemotePath) && !string.IsNullOrWhiteSpace(match.ThumbLocalPath))
+                    localByPreviewRemote[previewRemotePath] = match.ThumbLocalPath;
+            }
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.PostId = postId;
+                vm.IsPendingUpload = false;
+                vm.HasSendError = false;
+                vm.HasFullData = true;
+                vm.SchemaVersion = HomePostValidatorV2.SchemaVersion;
+                vm.Ready = true;
+                vm.Deleted = false;
+                vm.Attachments.Clear();
+                foreach (var att in attachments)
+                {
+                    var rebuilt = HomeAttachmentVm.FromService(att);
+                    if (!string.IsNullOrWhiteSpace(rebuilt.StoragePath) && localByFullRemote.TryGetValue(rebuilt.StoragePath, out var fullLocal))
+                        rebuilt.LocalPath = fullLocal;
+
+                    var previewRemotePath = rebuilt.GetPreviewRemotePath();
+                    if (!string.IsNullOrWhiteSpace(previewRemotePath) && localByPreviewRemote.TryGetValue(previewRemotePath, out var previewLocal))
+                        rebuilt.ThumbLocalPath = previewLocal;
+
+                    vm.AttachAttachment(rebuilt);
+                }
+            });
+
+            await _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
+        }
+
+        private void MarkHomePostFailed(HomePostVm vm, Exception ex)
+        {
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                vm.IsPendingUpload = false;
+                vm.HasSendError = true;
+            });
+
+            _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
+            MainThread.BeginInvokeOnMainThread(() => _ = ShowPopupAsync(FormatExceptionForPopup(ex), "Errore invio post"));
+        }
+
+        private async Task RetryHomePostAsync(HomePostVm? vm)
+        {
+            if (vm == null)
+                return;
+
+            try
+            {
+                vm.HasSendError = false;
+                vm.IsPendingUpload = true;
+                await SendHomePostOptimisticAsync(new ComposerSendPayload(vm.PendingText, vm.PendingItems), vm);
+            }
+            catch (Exception ex)
+            {
+                MarkHomePostFailed(vm, ex);
+            }
         }
 
         private async Task PickHomeFromGalleryAsync()
@@ -371,12 +1241,14 @@ namespace Biliardo.App.Pagine_Home
             {
                 var fr = await MediaPicker.Default.PickPhotoAsync();
                 if (fr == null) return;
-                var local = await CopyToCacheAsync(fr, "home_photo");
+                var registration = await CopyToCacheAsync(fr, "home_photo");
+                var local = registration.LocalPath;
                 HomeComposer.TryAddPendingItem(new PendingItemVm
                 {
                     Kind = PendingKind.Image,
                     DisplayName = Path.GetFileName(local),
                     LocalFilePath = local,
+                    MediaCacheKey = registration.CacheKey,
                     SizeBytes = new FileInfo(local).Length
                 }, 10);
             }
@@ -384,12 +1256,14 @@ namespace Biliardo.App.Pagine_Home
             {
                 var fr = await MediaPicker.Default.PickVideoAsync();
                 if (fr == null) return;
-                var local = await CopyToCacheAsync(fr, "home_video");
+                var registration = await CopyToCacheAsync(fr, "home_video");
+                var local = registration.LocalPath;
                 HomeComposer.TryAddPendingItem(new PendingItemVm
                 {
                     Kind = PendingKind.Video,
                     DisplayName = Path.GetFileName(local),
                     LocalFilePath = local,
+                    MediaCacheKey = registration.CacheKey,
                     SizeBytes = new FileInfo(local).Length,
                     DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
                 }, 10);
@@ -407,12 +1281,14 @@ namespace Biliardo.App.Pagine_Home
 
             var fr = await MediaPicker.Default.CapturePhotoAsync();
             if (fr == null) return;
-            var local = await CopyToCacheAsync(fr, "home_camera_photo");
+            var registration = await CopyToCacheAsync(fr, "home_camera_photo");
+            var local = registration.LocalPath;
             HomeComposer.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.Image,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length
             }, 10);
         }
@@ -428,12 +1304,14 @@ namespace Biliardo.App.Pagine_Home
 
             var fr = await MediaPicker.Default.CaptureVideoAsync();
             if (fr == null) return;
-            var local = await CopyToCacheAsync(fr, "home_camera_video");
+            var registration = await CopyToCacheAsync(fr, "home_camera_video");
+            var local = registration.LocalPath;
             HomeComposer.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.Video,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length,
                 DurationMs = MediaMetadataHelper.TryGetDurationMs(local)
             }, 10);
@@ -443,12 +1321,14 @@ namespace Biliardo.App.Pagine_Home
         {
             var res = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Seleziona documento" });
             if (res == null) return;
-            var local = await CopyToCacheAsync(res, "home_doc");
+            var registration = await CopyToCacheAsync(res, "home_doc");
+            var local = registration.LocalPath;
             HomeComposer.TryAddPendingItem(new PendingItemVm
             {
                 Kind = PendingKind.File,
                 DisplayName = Path.GetFileName(local),
                 LocalFilePath = local,
+                MediaCacheKey = registration.CacheKey,
                 SizeBytes = new FileInfo(local).Length
             }, 10);
         }
@@ -517,19 +1397,48 @@ namespace Biliardo.App.Pagine_Home
             if (e?.Parameter is not HomePostVm post)
                 return;
 
+            var wasLiked = _likedPostIds.Contains(post.PostId);
+            var before = post.LikeCount;
+
             try
             {
                 if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                     return;
 
-                var res = await _homeFeed.ToggleLikeWithResultAsync(post.PostId);
+                post.IsLiked = !wasLiked;
+                post.LikeCount = Math.Max(0, before + (wasLiked ? -1 : 1));
+                post.NotifyCounters();
+
+                if (post.IsLiked)
+                    _likedPostIds.Add(post.PostId);
+                else
+                    _likedPostIds.Remove(post.PostId);
+
+                _ = _homeLikesCache.SetLiked(_currentUid, post.PostId, post.IsLiked);
+
+                var res = await _homeFeed.ToggleLikeOptimisticAsync(post.PostId, wasLiked, before);
 
                 post.IsLiked = res.IsLikedNow;
                 post.LikeCount = Math.Max(0, res.LikeCount);
                 post.NotifyCounters();
+
+                if (res.IsLikedNow)
+                    _likedPostIds.Add(post.PostId);
+                else
+                    _likedPostIds.Remove(post.PostId);
+
+                _ = _homeLikesCache.SetLiked(_currentUid, post.PostId, res.IsLikedNow);
             }
             catch (Exception ex)
             {
+                post.IsLiked = wasLiked;
+                post.LikeCount = Math.Max(0, before);
+                post.NotifyCounters();
+                if (wasLiked)
+                    _likedPostIds.Add(post.PostId);
+                else
+                    _likedPostIds.Remove(post.PostId);
+                _ = _homeLikesCache.SetLiked(_currentUid, post.PostId, wasLiked);
                 await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore like");
             }
         }
@@ -618,6 +1527,173 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
+        private async void OnOpenVideoTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not HomeAttachmentVm att)
+                    return;
+
+                await OpenVideoFromHomeAsync(att);
+            }
+            catch (Exception ex)
+            {
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore video");
+            }
+        }
+
+        private async void OnOpenImageTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not HomeAttachmentVm att)
+                    return;
+
+                await OpenImageFromHomeAsync(att);
+            }
+            catch (Exception ex)
+            {
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore immagine");
+            }
+        }
+
+        private async void OnOpenFileTapped(object sender, TappedEventArgs e)
+        {
+            try
+            {
+                if (sender is not BindableObject bo || bo.BindingContext is not HomeAttachmentVm att)
+                    return;
+
+                await OpenFileFromHomeAsync(att);
+            }
+            catch (Exception ex)
+            {
+                await ShowPopupAsync(FormatExceptionForPopup(ex), "Errore file");
+            }
+        }
+
+        private async Task OpenVideoFromHomeAsync(HomeAttachmentVm att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
+            {
+                await Navigation.PushAsync(new VideoPlayerPage(att.LocalPath!, att.DisplayPreviewSource));
+
+                return;
+            }
+
+            if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+            {
+                await ShowPopupAsync("Contenuto non disponibile offline.", "Offline");
+                return;
+            }
+
+            var local = await EnsureHomeMediaDownloadedAsync(att, att.FileName ?? "video.mp4", showErrors: true);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+                return;
+
+            await Navigation.PushAsync(new VideoPlayerPage(local, att.DisplayPreviewSource));
+        }
+
+        private async Task OpenImageFromHomeAsync(HomeAttachmentVm att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            var local = await EnsureHomeMediaDownloadedAsync(att, att.FileName ?? "image.jpg", showErrors: true);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+                return;
+
+            var img = new Image
+            {
+                Source = local,
+                Aspect = Aspect.AspectFit,
+                Opacity = 0,
+                Scale = 0.95
+            };
+
+            var close = new Button
+            {
+                Text = "✕",
+                BackgroundColor = Colors.Transparent,
+                TextColor = Colors.White,
+                WidthRequest = 44,
+                HeightRequest = 44,
+                FontSize = 18,
+                HorizontalOptions = LayoutOptions.Start,
+                VerticalOptions = LayoutOptions.Start,
+                Margin = new Thickness(10)
+            };
+
+            var container = new Grid
+            {
+                BackgroundColor = Colors.Black,
+                Children = { img, close }
+            };
+
+            var page = new ContentPage { BackgroundColor = Colors.Black, Content = container };
+            close.Clicked += async (_, __) => await Navigation.PopModalAsync();
+
+            var tapToClose = new TapGestureRecognizer();
+            tapToClose.Tapped += async (_, __) => await Navigation.PopModalAsync();
+            container.GestureRecognizers.Add(tapToClose);
+
+            await Navigation.PushModalAsync(page);
+            try
+            {
+                await Task.WhenAll(
+                    img.FadeTo(1, 160, Easing.CubicOut),
+                    img.ScaleTo(1, 160, Easing.CubicOut));
+            }
+            catch { }
+        }
+
+        private async Task OpenFileFromHomeAsync(HomeAttachmentVm att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (att.IsPdf)
+            {
+                await OnOpenPdfFromHome(att);
+                return;
+            }
+
+            if (att.IsVideo)
+            {
+                await OpenVideoFromHomeAsync(att);
+                return;
+            }
+
+            if (att.IsImage)
+            {
+                await OpenImageFromHomeAsync(att);
+                return;
+            }
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            var fileName = att.FileName ?? "file.bin";
+            var local = await EnsureHomeMediaDownloadedAsync(att, fileName, showErrors: true);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+                return;
+
+            att.LocalPath = local;
+            await Launcher.Default.OpenAsync(new OpenFileRequest
+            {
+                File = new ReadOnlyFile(local)
+            });
+        }
+
         private async Task<string?> EnsureHomeAudioDownloadedAsync(HomeAttachmentVm att)
         {
             if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
@@ -626,31 +1702,287 @@ namespace Biliardo.App.Pagine_Home
             if (string.IsNullOrWhiteSpace(att.StoragePath))
                 return null;
 
-            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
-            if (string.IsNullOrWhiteSpace(idToken))
+            var local = await EnsureHomeMediaDownloadedAsync(att, att.FileName ?? "audio.m4a", showErrors: false);
+            if (string.IsNullOrWhiteSpace(local))
                 return null;
 
-            var ext = Path.GetExtension(att.FileName ?? "");
-            if (string.IsNullOrWhiteSpace(ext)) ext = ".m4a";
-            var local = Path.Combine(FileSystem.CacheDirectory, $"home_audio_{Guid.NewGuid():N}{ext}");
-
-            await FirebaseStorageRestClient.DownloadToFileAsync(idToken, att.StoragePath, local);
             att.LocalPath = local;
             return local;
         }
 
-        private static async Task<string> CopyToCacheAsync(FileResult fr, string prefix)
+        private async Task OnOpenPdfFromHome(HomeAttachmentVm? att)
+        {
+            if (att == null || string.IsNullOrWhiteSpace(att.StoragePath))
+                return;
+
+            if (!await EnsureFirebaseSessionOrBackToLoginAsync())
+                return;
+
+            var fileName = att.FileName ?? "document.pdf";
+            if (!string.Equals(Path.GetExtension(fileName), ".pdf", StringComparison.OrdinalIgnoreCase))
+                fileName = $"{Path.GetFileNameWithoutExtension(fileName)}.pdf";
+
+            var local = await EnsureHomeMediaDownloadedAsync(att, fileName, showErrors: true);
+            if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+            {
+                await ShowPopupAsync("PDF non disponibile.", "Info");
+                return;
+            }
+
+            await Navigation.PushAsync(new PdfViewerPage(local, fileName));
+        }
+
+        private async Task<string?> EnsureHomeMediaDownloadedAsync(HomeAttachmentVm att, string fileName, bool showErrors)
+        {
+            if (att == null)
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
+                return att.LocalPath;
+
+            if (string.IsNullOrWhiteSpace(att.StoragePath))
+                return null;
+
+            var cached = await _mediaCache.TryGetCachedPathAsync(att.StoragePath, isThumb: false);
+            if (!string.IsNullOrWhiteSpace(cached) && File.Exists(cached))
+            {
+                att.LocalPath = cached;
+                _ = UpdateCacheForAttachmentAsync(att);
+                return cached;
+            }
+
+            if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+            {
+                if (showErrors)
+                    await ShowPopupAsync("Contenuto non disponibile offline.", "Offline");
+                return null;
+            }
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+            if (string.IsNullOrWhiteSpace(idToken))
+                return null;
+
+            CancellationTokenSource? cts = null;
+            CancellationTokenSource? countdownCts = null;
+            Task? countdownTask = null;
+            try
+            {
+                MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = true);
+                cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.MediaDownloadTimeoutSeconds));
+                countdownCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                countdownTask = Task.Run(async () =>
+                {
+                    var remaining = AppCacheOptions.MediaDownloadTimeoutSeconds;
+                    while (remaining >= 0 && !countdownCts.IsCancellationRequested)
+                    {
+                        MainThread.BeginInvokeOnMainThread(() => att.DownloadCountdownSeconds = remaining);
+                        await Task.Delay(1000, countdownCts.Token);
+                        remaining--;
+                    }
+                }, countdownCts.Token);
+
+                var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, fileName, isThumb: false, cts.Token);
+                countdownCts.Cancel();
+                if (string.IsNullOrWhiteSpace(local) || !File.Exists(local))
+                {
+                    if (showErrors)
+                        await ShowPopupAsync("Impossibile scaricare il contenuto.", "Errore");
+                    return null;
+                }
+
+                att.LocalPath = local;
+                _ = UpdateCacheForAttachmentAsync(att);
+                return local;
+            }
+            catch (OperationCanceledException)
+            {
+                if (showErrors)
+                    await ShowPopupAsync("Timeout download contenuto.", "Errore");
+                return null;
+            }
+            catch
+            {
+                if (showErrors)
+                    await ShowPopupAsync("Impossibile aprire il contenuto.", "Errore");
+                return null;
+            }
+            finally
+            {
+                if (countdownCts != null)
+                {
+                    try { countdownCts.Cancel(); } catch { }
+                }
+                if (countdownTask != null)
+                {
+                    try { await countdownTask; } catch { }
+                }
+                if (countdownCts != null)
+                    countdownCts.Dispose();
+                if (cts != null)
+                    cts.Dispose();
+                MainThread.BeginInvokeOnMainThread(() => att.DownloadCountdownSeconds = 0);
+                MainThread.BeginInvokeOnMainThread(() => att.IsDownloading = false);
+            }
+        }
+
+        private async Task ScrollHomeToTopWithRetryAsync(bool considerKeyboard)
+        {
+            var delays = considerKeyboard
+                ? new[] { 120, 260, 520 }
+                : new[] { 120 };
+
+            foreach (var delay in delays)
+            {
+                await Task.Delay(delay);
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    if (Posts.Count == 0)
+                        return;
+                    FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+                });
+            }
+        }
+
+        private static string BuildAttachmentKey(string? type, string? fileName, long sizeBytes)
+            => $"{type ?? ""}|{fileName ?? ""}|{sizeBytes}";
+
+        private Task UpdateCacheForAttachmentAsync(HomeAttachmentVm att)
+        {
+            if (att == null)
+                return Task.CompletedTask;
+
+            return MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                HomePostVm? owner = null;
+                foreach (var post in Posts)
+                {
+                    if (post.Attachments.Contains(att))
+                    {
+                        owner = post;
+                        break;
+                    }
+                }
+
+                if (owner == null)
+                    return Task.CompletedTask;
+
+                var cached = HomeFeedLocalCacheMapper.ToCached(owner);
+                HomeFeedMemoryCache.Instance.Set(Posts.Select(HomeFeedLocalCacheMapper.ToCached).ToList());
+                return _homeFeedCache.UpsertTop(cached);
+            });
+        }
+
+        private Task UpdateCacheForPostAsync(HomePostVm post)
+        {
+            if (post == null)
+                return Task.CompletedTask;
+
+            var cached = HomeFeedLocalCacheMapper.ToCached(post);
+            return _homeFeedCache.UpsertTop(cached);
+        }
+
+        private async Task EnsurePreviewAvailableAsync(HomePostVm post)
+        {
+            if (post == null)
+                return;
+
+            var contract = BuildContractFromVm(post);
+            if (!HomePostValidatorV2.IsServerReady(contract, out _))
+                return;
+
+            var requiresAnyPreview = post.Attachments.Any(att => att.RequiresPreview);
+            if (!requiresAnyPreview)
+                return;
+
+            var updated = false;
+            foreach (var att in post.Attachments)
+            {
+                if (!att.RequiresPreview)
+                    continue;
+
+                var previewRemotePath = att.GetPreviewRemotePath();
+                if (string.IsNullOrWhiteSpace(previewRemotePath))
+                {
+                    post.Ready = false;
+                    await UpdateCacheForPostAsync(post);
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(att.ThumbLocalPath) && File.Exists(att.ThumbLocalPath))
+                    continue;
+
+                var cached = await _mediaCache.TryGetCachedPathAsync(previewRemotePath, isThumb: true);
+                if (!string.IsNullOrWhiteSpace(cached) && File.Exists(cached))
+                {
+                    await MainThread.InvokeOnMainThreadAsync(() => att.ThumbLocalPath = cached);
+                    updated = true;
+                    continue;
+                }
+
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                    return;
+
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                if (string.IsNullOrWhiteSpace(idToken))
+                    return;
+
+                var thumbLocal = await _mediaCache.GetOrDownloadAsync(idToken!, previewRemotePath, att.FileName ?? "thumb.jpg", isThumb: true, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(thumbLocal) || !File.Exists(thumbLocal))
+                {
+                    post.Ready = false;
+                    await UpdateCacheForPostAsync(post);
+                    return;
+                }
+
+                await MainThread.InvokeOnMainThreadAsync(() => att.ThumbLocalPath = thumbLocal);
+                updated = true;
+            }
+
+            if (updated)
+                await UpdateCacheForPostAsync(post);
+
+            var refreshed = BuildContractFromVm(post);
+            if (!HomePostValidatorV2.IsHomeVisible(refreshed, out _))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                post.RetryCommand ??= RetryHomePostCommand;
+                InsertSortedByCreatedAtDesc(Posts, post);
+            });
+
+            var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
+            foreach (var vm in Posts)
+                snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
+            HomeFeedMemoryCache.Instance.Set(snapshot);
+        }
+
+        private async Task<MediaCacheService.MediaRegistration> CopyToCacheAsync(FileResult fr, string prefix)
         {
             var ext = Path.GetExtension(fr.FileName);
             if (string.IsNullOrWhiteSpace(ext)) ext = ".bin";
 
             var dest = Path.Combine(FileSystem.CacheDirectory, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{ext}");
 
-            await using var src = await fr.OpenReadAsync();
-            await using var dst = File.Create(dest);
-            await src.CopyToAsync(dst);
+            // FIX: gli "await using var" tenevano il file aperto (lock) fino a fine metodo.
+            // Qui chiudiamo davvero src/dst prima di registrare il file nella cache persistente.
+            await using (var src = await fr.OpenReadAsync())
+            {
+                await using (var dst = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.Read))
+                {
+                    await src.CopyToAsync(dst);
+                    await dst.FlushAsync();
+                }
+            }
 
-            return dest;
+            var contentType = FirebaseStorageRestClient.GuessContentTypeFromPath(fr.FileName);
+            var kind = HomeMediaPipeline.GetMediaKind(contentType, fr.FileName).ToString().ToLowerInvariant();
+            var registration = await _mediaCache.RegisterLocalFileAsync(dest, kind, CancellationToken.None);
+            if (registration == null)
+                throw new InvalidOperationException("Registrazione cache locale fallita.");
+
+            try { if (File.Exists(dest)) File.Delete(dest); } catch { }
+            return registration;
         }
 
         // ===================== 4) MENU LATERALE SINISTRO =================
@@ -799,6 +2131,26 @@ namespace Biliardo.App.Pagine_Home
             await ShowInfoBiliardoAppAsync();
         }
 
+        private async void OnInfoCacheClicked(object? sender, EventArgs e)
+        {
+            if (_logoutMenuAperto)
+            {
+                await ToggleLogoutMenuAsync();
+            }
+
+            await Navigation.PushAsync(new InfoCachePage());
+        }
+
+        private async void OnLogoutLogClicked(object? sender, EventArgs e)
+        {
+            if (_logoutMenuAperto)
+            {
+                await ToggleLogoutMenuAsync();
+            }
+
+            await Navigation.PushAsync(new LogTrasferimentiPage());
+        }
+
         private async void OnLogoutExitClicked(object? sender, EventArgs e)
         {
             if (_logoutMenuAperto)
@@ -846,9 +2198,11 @@ namespace Biliardo.App.Pagine_Home
             var manufacturer = SafeValue(DeviceInfo.Current.Manufacturer);
             var model = SafeValue(DeviceInfo.Current.Model);
             var now = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var releaseVersion = SafeValue(AppReleaseInfo.Version);
 
             var messageBuilder = new StringBuilder()
                 .AppendLine($"{appName} v{version} (build {build})")
+                .AppendLine($"Versione release: {releaseVersion}")
                 .AppendLine($"Package: {packageName}")
                 .AppendLine($"Piattaforma: {platform} {osVersion}")
                 .AppendLine($"OS: {osDescription}")
@@ -906,9 +2260,19 @@ namespace Biliardo.App.Pagine_Home
 
         public sealed class HomePostVm : BindableObject
         {
+            private bool _isPendingUpload;
+            private bool _hasSendError;
+            private bool _requiresSync;
+            private Command<HomePostVm>? _syncCommand;
+            private bool _hasFullData;
+            private bool _isReadyForDisplay;
+
             public string PostId { get; set; } = "";
+            public string? ClientNonce { get; set; }
             public string AuthorUid { get; set; } = "";
             public string AuthorNickname { get; set; } = "";
+            public string AuthorFirstName { get; set; } = "";
+            public string AuthorLastName { get; set; } = "";
             public string? AuthorAvatarPath { get; set; }
             public string? AuthorAvatarUrl { get; set; }
             public DateTimeOffset CreatedAtUtc { get; set; }
@@ -917,6 +2281,11 @@ namespace Biliardo.App.Pagine_Home
             public int LikeCount { get; set; }
             public int CommentCount { get; set; }
             public int ShareCount { get; set; }
+            public int SchemaVersion { get; set; } = HomePostValidatorV2.SchemaVersion;
+            public bool Ready { get; set; }
+            public bool Deleted { get; set; }
+            public DateTimeOffset? DeletedAtUtc { get; set; }
+            public string? RepostOfPostId { get; set; }
             public string LikeHeartGlyph => LikeCount > 0 ? "❤️" : "🤍";
 
 
@@ -928,8 +2297,71 @@ namespace Biliardo.App.Pagine_Home
             // Mantengo IsLiked (può servire in futuro), ma NON guida più il colore.
             public bool IsLiked { get; set; }
 
+            public bool IsPendingUpload
+            {
+                get => _isPendingUpload;
+                set
+                {
+                    _isPendingUpload = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(StatusLabel));
+                    OnPropertyChanged(nameof(HasStatus));
+                    OnPropertyChanged(nameof(StatusColor));
+                }
+            }
+
+            public bool HasSendError
+            {
+                get => _hasSendError;
+                set
+                {
+                    _hasSendError = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(StatusLabel));
+                    OnPropertyChanged(nameof(HasStatus));
+                    OnPropertyChanged(nameof(StatusColor));
+                }
+            }
+
+            public bool HasStatus => IsPendingUpload || HasSendError;
+            public string StatusLabel => HasSendError ? "Errore invio" : IsPendingUpload ? "In invio" : "";
+            public Color StatusColor => HasSendError ? Colors.OrangeRed : Colors.LightGray;
+
+            public Command<HomePostVm>? RetryCommand { get; set; }
+            public Command<HomePostVm>? SyncCommand
+            {
+                get => _syncCommand;
+                set
+                {
+                    _syncCommand = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasSyncAction));
+                }
+            }
+            public string PendingText { get; set; } = "";
+            public List<PendingItemVm> PendingItems { get; } = new();
+
             public bool HasText => !string.IsNullOrWhiteSpace(Text);
+            public string AuthorFullName => $"{AuthorFirstName} {AuthorLastName}".Trim();
+            public bool HasAuthorFullName => !string.IsNullOrWhiteSpace(AuthorFullName);
+            public string AuthorFullNameDisplay => HasAuthorFullName ? $"({AuthorFullName})" : "";
+            public string AuthorDisplayName => AuthorNickname;
+            public string AuthorAvatarDisplayName => HasAuthorFullName ? AuthorFullName : AuthorNickname;
+
+            public Color AuthorNicknameColor => GetNicknameColor(PostId);
             public bool HasAttachments => Attachments != null && Attachments.Count > 0;
+            public bool HasSyncAction => RequiresSync && SyncCommand != null;
+
+            public bool RequiresSync
+            {
+                get => _requiresSync;
+                set
+                {
+                    _requiresSync = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasSyncAction));
+                }
+            }
 
             public string CreatedAtLabel => CreatedAtUtc.ToLocalTime().ToString("g");
 
@@ -938,6 +2370,29 @@ namespace Biliardo.App.Pagine_Home
             public string LikeLabel => $"♥ {LikeCount}";
             public string CommentLabel => $"💬 {CommentCount}";
             public string ShareLabel => $"↗ {ShareCount}";
+            public bool HasFullData
+            {
+                get => _hasFullData;
+                set
+                {
+                    if (_hasFullData == value)
+                        return;
+                    _hasFullData = value;
+                    UpdateReadyState();
+                }
+            }
+
+            public bool IsReadyForDisplay
+            {
+                get => _isReadyForDisplay;
+                private set
+                {
+                    if (_isReadyForDisplay == value)
+                        return;
+                    _isReadyForDisplay = value;
+                    OnPropertyChanged();
+                }
+            }
 
             public void NotifyCounters()
             {
@@ -957,13 +2412,26 @@ namespace Biliardo.App.Pagine_Home
                 OnPropertyChanged(nameof(LikeHeartColor));
             }
 
+            public void AttachAttachment(HomeAttachmentVm attachment)
+            {
+                if (attachment == null)
+                    return;
+
+                attachment.PreviewSourceChanged += (_, __) => UpdateReadyState();
+                Attachments.Add(attachment);
+                UpdateReadyState();
+            }
+
             public static HomePostVm FromService(FirestoreHomeFeedService.HomePostItem post)
             {
                 var vm = new HomePostVm
                 {
                     PostId = post.PostId,
+                    ClientNonce = post.ClientNonce,
                     AuthorUid = post.AuthorUid,
                     AuthorNickname = post.AuthorNickname,
+                    AuthorFirstName = post.AuthorFirstName,
+                    AuthorLastName = post.AuthorLastName,
                     AuthorAvatarPath = post.AuthorAvatarPath,
                     AuthorAvatarUrl = post.AuthorAvatarUrl,
                     CreatedAtUtc = post.CreatedAtUtc,
@@ -971,26 +2439,317 @@ namespace Biliardo.App.Pagine_Home
                     LikeCount = post.LikeCount,
                     CommentCount = post.CommentCount,
                     ShareCount = post.ShareCount,
-                    IsLiked = post.IsLiked
+                    SchemaVersion = post.SchemaVersion,
+                    Ready = post.Ready,
+                    Deleted = post.Deleted,
+                    DeletedAtUtc = post.DeletedAtUtc,
+                    RepostOfPostId = post.RepostOfPostId,
+                    IsLiked = post.IsLiked,
+                    IsPendingUpload = false,
+                    HasSendError = false,
+                    RequiresSync = false,
+                    HasFullData = true
                 };
 
                 foreach (var att in post.Attachments)
-                    vm.Attachments.Add(HomeAttachmentVm.FromService(att));
+                    vm.AttachAttachment(HomeAttachmentVm.FromService(att));
+
+                vm.UpdateReadyState();
 
                 return vm;
             }
+
+            public static HomePostVm FromCached(HomeFeedLocalCache.CachedHomePost post)
+            {
+                var requiresSync = string.IsNullOrWhiteSpace(post.Text) && (post.Attachments == null || post.Attachments.Count == 0);
+                var vm = new HomePostVm
+                {
+                    PostId = post.PostId,
+                    AuthorUid = post.AuthorUid,
+                    AuthorNickname = post.AuthorNickname,
+                    AuthorFirstName = post.AuthorFirstName ?? "",
+                    AuthorLastName = post.AuthorLastName ?? "",
+                    AuthorAvatarPath = post.AuthorAvatarPath,
+                    AuthorAvatarUrl = post.AuthorAvatarUrl,
+                    CreatedAtUtc = post.CreatedAtUtc,
+                    Text = post.Text ?? "",
+                    LikeCount = post.LikeCount,
+                    CommentCount = post.CommentCount,
+                    ShareCount = post.ShareCount,
+                    SchemaVersion = post.SchemaVersion,
+                    Ready = post.Ready,
+                    Deleted = post.Deleted,
+                    DeletedAtUtc = post.DeletedAtUtc,
+                    RepostOfPostId = post.RepostOfPostId,
+                    IsLiked = false,
+                    IsPendingUpload = false,
+                    HasSendError = false,
+                    PendingText = post.Text ?? "",
+                    RequiresSync = requiresSync
+                };
+
+                foreach (var att in post.Attachments ?? Array.Empty<HomeAttachmentContractV2>())
+                    vm.AttachAttachment(HomeAttachmentVm.FromContract(att));
+
+                vm.UpdateReadyState();
+
+                return vm;
+            }
+
+            private void UpdateReadyState()
+            {
+                if (IsPendingUpload || HasSendError)
+                {
+                    IsReadyForDisplay = true;
+                    return;
+                }
+
+                var contract = BuildContractFromVm(this);
+                IsReadyForDisplay = HomePostValidatorV2.IsHomeVisible(contract, out _);
+            }
+
+            private static readonly Color[] NicknamePalette = new[]
+            {
+                Color.FromArgb("#FFD54F"),
+                Color.FromArgb("#4FC3F7"),
+                Color.FromArgb("#FF8A65"),
+                Color.FromArgb("#81C784"),
+                Color.FromArgb("#BA68C8"),
+                Color.FromArgb("#F06292"),
+                Color.FromArgb("#A1887F"),
+                Color.FromArgb("#90A4AE")
+            };
+
+            private static Color GetNicknameColor(string seed)
+            {
+                if (NicknamePalette.Length == 0)
+                    return Colors.White;
+
+                var hash = seed?.GetHashCode() ?? 0;
+                var idx = Math.Abs(hash) % NicknamePalette.Length;
+                return NicknamePalette[idx];
+            }
+        }
+
+        private static class HomeFeedLocalCacheMapper
+        {
+            public static HomeFeedLocalCache.CachedHomePost ToCached(HomePostVm vm)
+            {
+                var thumbKey = vm.Attachments.FirstOrDefault()?.GetPreviewRemotePath()
+                    ?? vm.Attachments.FirstOrDefault()?.StoragePath;
+
+                return new HomeFeedLocalCache.CachedHomePost(
+                    PostId: vm.PostId,
+                    AuthorUid: vm.AuthorUid,
+                    AuthorNickname: vm.AuthorNickname,
+                    AuthorFirstName: vm.AuthorFirstName,
+                    AuthorLastName: vm.AuthorLastName,
+                    AuthorAvatarPath: vm.AuthorAvatarPath,
+                    AuthorAvatarUrl: vm.AuthorAvatarUrl,
+                    Text: vm.Text ?? "",
+                    ThumbKey: thumbKey,
+                    CreatedAtUtc: vm.CreatedAtUtc,
+                    Attachments: vm.Attachments.Select(Pagina_Home.ToContract).ToArray(),
+                    LikeCount: vm.LikeCount,
+                    CommentCount: vm.CommentCount,
+                    ShareCount: vm.ShareCount,
+                    Deleted: vm.Deleted,
+                    DeletedAtUtc: vm.DeletedAtUtc,
+                    RepostOfPostId: vm.RepostOfPostId,
+                    ClientNonce: vm.ClientNonce,
+                    SchemaVersion: vm.SchemaVersion,
+                    Ready: vm.Ready);
+            }
+
+            public static HomeFeedLocalCache.CachedHomePost ToCached(FirestoreHomeFeedService.HomePostItem post)
+            {
+                var thumbKey = post.Attachments.FirstOrDefault()?.GetPreviewRemotePath()
+                    ?? post.Attachments.FirstOrDefault()?.StoragePath;
+
+                return new HomeFeedLocalCache.CachedHomePost(
+                    PostId: post.PostId,
+                    AuthorUid: post.AuthorUid,
+                    AuthorNickname: post.AuthorNickname,
+                    AuthorFirstName: post.AuthorFirstName,
+                    AuthorLastName: post.AuthorLastName,
+                    AuthorAvatarPath: post.AuthorAvatarPath,
+                    AuthorAvatarUrl: post.AuthorAvatarUrl,
+                    Text: post.Text ?? "",
+                    ThumbKey: thumbKey,
+                    CreatedAtUtc: post.CreatedAtUtc,
+                    Attachments: post.Attachments.Select(Pagina_Home.ToContract).ToArray(),
+                    LikeCount: post.LikeCount,
+                    CommentCount: post.CommentCount,
+                    ShareCount: post.ShareCount,
+                    Deleted: post.Deleted,
+                    DeletedAtUtc: post.DeletedAtUtc,
+                    RepostOfPostId: post.RepostOfPostId,
+                    ClientNonce: post.ClientNonce,
+                    SchemaVersion: post.SchemaVersion,
+                    Ready: post.Ready);
+            }
+
+        }
+
+        private static HomePostContractV2 BuildContractFromVm(HomePostVm vm)
+        {
+            return new HomePostContractV2(
+                PostId: vm.PostId,
+                CreatedAtUtc: vm.CreatedAtUtc,
+                AuthorUid: vm.AuthorUid,
+                AuthorNickname: vm.AuthorNickname,
+                AuthorFirstName: vm.AuthorFirstName,
+                AuthorLastName: vm.AuthorLastName,
+                AuthorAvatarPath: vm.AuthorAvatarPath,
+                AuthorAvatarUrl: vm.AuthorAvatarUrl,
+                Text: vm.Text ?? "",
+                Attachments: vm.Attachments.Select(ToContract).ToArray(),
+                Deleted: vm.Deleted,
+                DeletedAtUtc: vm.DeletedAtUtc,
+                RepostOfPostId: vm.RepostOfPostId,
+                ClientNonce: vm.ClientNonce,
+                LikeCount: vm.LikeCount,
+                CommentCount: vm.CommentCount,
+                ShareCount: vm.ShareCount,
+                SchemaVersion: vm.SchemaVersion,
+                Ready: vm.Ready);
+        }
+
+        private static HomePostContractV2 BuildContractFromCached(HomeFeedLocalCache.CachedHomePost post)
+        {
+            return new HomePostContractV2(
+                PostId: post.PostId,
+                CreatedAtUtc: post.CreatedAtUtc,
+                AuthorUid: post.AuthorUid,
+                AuthorNickname: post.AuthorNickname,
+                AuthorFirstName: post.AuthorFirstName,
+                AuthorLastName: post.AuthorLastName,
+                AuthorAvatarPath: post.AuthorAvatarPath,
+                AuthorAvatarUrl: post.AuthorAvatarUrl,
+                Text: post.Text ?? "",
+                Attachments: post.Attachments ?? Array.Empty<HomeAttachmentContractV2>(),
+                Deleted: post.Deleted,
+                DeletedAtUtc: post.DeletedAtUtc,
+                RepostOfPostId: post.RepostOfPostId,
+                ClientNonce: post.ClientNonce,
+                LikeCount: post.LikeCount,
+                CommentCount: post.CommentCount,
+                ShareCount: post.ShareCount,
+                SchemaVersion: post.SchemaVersion,
+                Ready: post.Ready);
+        }
+
+        private static HomeAttachmentContractV2 ToContract(HomeAttachmentVm att)
+        {
+            return new HomeAttachmentContractV2(
+                Type: att.Type ?? "",
+                FileName: att.FileName,
+                ContentType: att.ContentType,
+                SizeBytes: att.SizeBytes,
+                DurationMs: att.DurationMs,
+                Extra: BuildAttachmentExtra(att),
+                PreviewStoragePath: att.GetPreviewRemotePath(),
+                FullStoragePath: att.StoragePath,
+                DownloadUrl: att.DownloadUrl,
+                PreviewLocalPath: att.ThumbLocalPath,
+                FullLocalPath: att.LocalPath,
+                LqipBase64: att.LqipBase64,
+                PreviewType: att.PreviewType,
+                PreviewWidth: att.ThumbWidth,
+                PreviewHeight: att.ThumbHeight,
+                Waveform: att.Waveform);
+        }
+
+        private static HomeAttachmentContractV2 ToContract(FirestoreHomeFeedService.HomeAttachment att)
+        {
+            return new HomeAttachmentContractV2(
+                Type: att.Type ?? "",
+                FileName: att.FileName,
+                ContentType: att.ContentType,
+                SizeBytes: att.SizeBytes,
+                DurationMs: att.DurationMs,
+                Extra: att.Extra,
+                PreviewStoragePath: att.GetPreviewRemotePath(),
+                FullStoragePath: att.StoragePath,
+                DownloadUrl: att.DownloadUrl,
+                PreviewLocalPath: null,
+                FullLocalPath: null,
+                LqipBase64: att.LqipBase64,
+                PreviewType: att.PreviewType,
+                PreviewWidth: att.ThumbWidth,
+                PreviewHeight: att.ThumbHeight,
+                Waveform: att.Waveform);
+        }
+
+        private static Dictionary<string, object>? BuildAttachmentExtra(HomeAttachmentVm att)
+        {
+            if (att == null)
+                return null;
+
+            if (att.IsLocation)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["lat"] = att.Latitude ?? 0,
+                    ["lon"] = att.Longitude ?? 0,
+                    ["address"] = att.Address ?? ""
+                };
+            }
+
+            return null;
         }
 
         public sealed class HomeAttachmentVm : BindableObject
         {
             private bool _isPlaying;
+            private bool _isDownloading;
+            private bool _isPreviewDownloading;
+            private int _downloadCountdownSeconds;
 
             public string Type { get; set; } = "";
             public string? StoragePath { get; set; }
             public string? DownloadUrl { get; set; }
             public string? FileName { get; set; }
+            public string? ContentType { get; set; }
+            public long SizeBytes { get; set; }
             public long DurationMs { get; set; }
-            public string? LocalPath { get; set; }
+            private string? _localPath;
+            public string? LocalPath
+            {
+                get => _localPath;
+                set
+                {
+                    if (_localPath == value)
+                        return;
+                    _localPath = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(DisplayPreviewSource));
+                    OnPropertyChanged(nameof(HasPreviewSource));
+                    PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+            public string? ThumbStoragePath { get; set; }
+            public string? LqipBase64 { get; set; }
+            public string? PreviewType { get; set; }
+            public int? ThumbWidth { get; set; }
+            public int? ThumbHeight { get; set; }
+            public IReadOnlyList<int>? Waveform { get; set; }
+
+            private string? _thumbLocalPath;
+            public string? ThumbLocalPath
+            {
+                get => _thumbLocalPath;
+                set
+                {
+                    if (_thumbLocalPath == value)
+                        return;
+                    _thumbLocalPath = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(DisplayPreviewSource));
+                    OnPropertyChanged(nameof(HasPreviewSource));
+                    PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
 
             public double? Latitude { get; set; }
             public double? Longitude { get; set; }
@@ -1000,12 +2759,20 @@ namespace Biliardo.App.Pagine_Home
             public bool IsAudio => Type == "audio";
             public bool IsFile => Type == "file";
             public bool IsVideo => Type == "video";
-            public bool IsFileOrVideo => IsFile || IsVideo;
+            public bool IsPdf => IsFile && (string.Equals(ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(Path.GetExtension(FileName ?? string.Empty), ".pdf", StringComparison.OrdinalIgnoreCase));
+            public bool IsFileOrVideo => IsFile && !IsPdf;
             public bool IsLocation => Type == "location";
             public bool IsContact => Type == "contact";
             public bool IsPoll => Type == "poll";
             public bool IsEvent => Type == "event";
             public string AddressLabel => !string.IsNullOrWhiteSpace(Address) ? Address! : $"{Latitude:0.0000}, {Longitude:0.0000}";
+            public bool RequiresPreview => HomeAttachmentPreviewRules.RequiresPreview(Type, ContentType, FileName);
+            public bool HasPreviewSource => !RequiresPreview || DisplayPreviewSource != null;
+
+            public string? GetPreviewRemotePath() => ThumbStoragePath;
+
+            public event EventHandler? PreviewSourceChanged;
 
             public bool IsPlaying
             {
@@ -1015,6 +2782,68 @@ namespace Biliardo.App.Pagine_Home
 
             public string AudioPlayLabel => IsPlaying ? "Stop" : "Play";
 
+            public bool IsDownloading
+            {
+                get => _isDownloading;
+                set
+                {
+                    if (_isDownloading == value)
+                        return;
+                    _isDownloading = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsBusy));
+                    OnPropertyChanged(nameof(DownloadCountdownLabel));
+                }
+            }
+
+            public bool IsPreviewDownloading
+            {
+                get => _isPreviewDownloading;
+                set
+                {
+                    if (_isPreviewDownloading == value)
+                        return;
+                    _isPreviewDownloading = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsBusy));
+                }
+            }
+
+            public int DownloadCountdownSeconds
+            {
+                get => _downloadCountdownSeconds;
+                set
+                {
+                    if (_downloadCountdownSeconds == value)
+                        return;
+                    _downloadCountdownSeconds = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(DownloadCountdownLabel));
+                }
+            }
+
+            public string DownloadCountdownLabel => IsDownloading ? $"Download {DownloadCountdownSeconds}s" : "";
+
+            public bool IsBusy => IsDownloading || IsPreviewDownloading;
+
+            public ImageSource? DisplayPreviewSource
+            {
+                get
+                {
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(LocalPath) && File.Exists(LocalPath))
+                            return ImageSource.FromFile(LocalPath);
+
+                        if (!string.IsNullOrWhiteSpace(ThumbLocalPath) && File.Exists(ThumbLocalPath))
+                            return ImageSource.FromFile(ThumbLocalPath);
+                    }
+                    catch { }
+
+                    return null;
+                }
+            }
+
             public static HomeAttachmentVm FromService(FirestoreHomeFeedService.HomeAttachment att)
             {
                 var vm = new HomeAttachmentVm
@@ -1023,7 +2852,49 @@ namespace Biliardo.App.Pagine_Home
                     StoragePath = att.StoragePath,
                     DownloadUrl = att.DownloadUrl,
                     FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
-                    DurationMs = att.DurationMs
+                    ContentType = att.ContentType,
+                    SizeBytes = att.SizeBytes,
+                    DurationMs = att.DurationMs,
+                    ThumbStoragePath = att.ThumbStoragePath,
+                    LqipBase64 = att.LqipBase64,
+                    PreviewType = att.PreviewType,
+                    ThumbWidth = att.ThumbWidth,
+                    ThumbHeight = att.ThumbHeight,
+                    Waveform = att.Waveform
+                };
+
+                if (att.Extra != null)
+                {
+                    if (att.Extra.TryGetValue("lat", out var lat))
+                        vm.Latitude = ReadDoubleExtra(lat);
+                    if (att.Extra.TryGetValue("lon", out var lon))
+                        vm.Longitude = ReadDoubleExtra(lon);
+                    if (att.Extra.TryGetValue("address", out var addr))
+                        vm.Address = ReadStringExtra(addr);
+                }
+
+                return vm;
+            }
+
+            public static HomeAttachmentVm FromContract(HomeAttachmentContractV2 att)
+            {
+                var vm = new HomeAttachmentVm
+                {
+                    Type = att.Type ?? "",
+                    StoragePath = att.FullStoragePath,
+                    DownloadUrl = att.DownloadUrl,
+                    FileName = att.FileName ?? (att.Type == "audio" ? "Audio" : att.Type == "video" ? "Video" : "File"),
+                    ContentType = att.ContentType,
+                    SizeBytes = att.SizeBytes,
+                    DurationMs = att.DurationMs,
+                    ThumbStoragePath = att.PreviewStoragePath,
+                    LqipBase64 = att.LqipBase64,
+                    PreviewType = att.PreviewType,
+                    ThumbWidth = att.PreviewWidth,
+                    ThumbHeight = att.PreviewHeight,
+                    Waveform = att.Waveform,
+                    LocalPath = att.FullLocalPath,
+                    ThumbLocalPath = att.PreviewLocalPath
                 };
 
                 if (att.Extra != null)
@@ -1037,6 +2908,30 @@ namespace Biliardo.App.Pagine_Home
                 }
 
                 return vm;
+            }
+
+            private static double? ReadDoubleExtra(object? value)
+            {
+                if (value is double d)
+                    return d;
+                if (value is float f)
+                    return f;
+                if (value is long l)
+                    return l;
+                if (value is int i)
+                    return i;
+                if (value is JsonElement el && el.ValueKind == JsonValueKind.Number && el.TryGetDouble(out var d2))
+                    return d2;
+                return null;
+            }
+
+            private static string? ReadStringExtra(object? value)
+            {
+                if (value is string s)
+                    return s;
+                if (value is JsonElement el && el.ValueKind == JsonValueKind.String)
+                    return el.GetString();
+                return null;
             }
         }
 
@@ -1107,7 +3002,7 @@ namespace Biliardo.App.Pagine_Home
             {
                 StopPlaybackSafe();
                 _player = new MediaPlayer();
-                _player.Source = MediaSource.CreateFromUri(new Uri(filePath));
+                _player.Source = WindowsMediaSource.CreateFromUri(new Uri(filePath));
                 _player.MediaEnded += (_, __) => StopPlaybackSafe();
                 _player.Play();
                 return Task.CompletedTask;
