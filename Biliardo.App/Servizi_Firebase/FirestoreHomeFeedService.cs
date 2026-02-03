@@ -25,7 +25,10 @@ namespace Biliardo.App.Servizi_Firebase
             string? PreviewType = null,
             int? ThumbWidth = null,
             int? ThumbHeight = null,
-            IReadOnlyList<int>? Waveform = null);
+            IReadOnlyList<int>? Waveform = null)
+        {
+            public string? GetPreviewRemotePath() => ThumbStoragePath;
+        }
 
         public sealed record HomePostItem(
             string PostId,
@@ -133,7 +136,8 @@ namespace Biliardo.App.Servizi_Firebase
                 SchemaVersion: HomePostValidatorV2.SchemaVersion,
                 Ready: false);
 
-            var isReady = HomePostValidatorV2.IsServerReady(draft);
+            var readyCandidate = draft with { Ready = true };
+            var isReady = HomePostValidatorV2.IsServerReady(readyCandidate);
 
             var fields = new Dictionary<string, object>
             {
@@ -573,7 +577,7 @@ namespace Biliardo.App.Servizi_Firebase
                 SizeBytes: attachment.SizeBytes,
                 DurationMs: attachment.DurationMs,
                 Extra: attachment.Extra,
-                PreviewStoragePath: attachment.ThumbStoragePath,
+                PreviewStoragePath: attachment.GetPreviewRemotePath(),
                 FullStoragePath: attachment.StoragePath,
                 DownloadUrl: attachment.DownloadUrl,
                 PreviewLocalPath: null,
