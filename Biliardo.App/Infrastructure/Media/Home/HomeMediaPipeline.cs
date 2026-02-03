@@ -82,7 +82,8 @@ namespace Biliardo.App.Infrastructure.Media.Home
             }
 
             MediaPreviewResult? preview = null;
-            if (kind is MediaKind.Image or MediaKind.Video or MediaKind.Pdf)
+            var requiresPreview = kind is MediaKind.Image or MediaKind.Video or MediaKind.Pdf;
+            if (requiresPreview)
             {
                 preview = await _previewGenerator.GenerateAsync(
                     new MediaPreviewRequest(item.LocalFilePath, kind, contentType, fileName, "home", null, null),
@@ -102,8 +103,11 @@ namespace Biliardo.App.Infrastructure.Media.Home
             if (!string.IsNullOrWhiteSpace(item.MediaCacheKey))
                 await _mediaCache.RegisterAliasAsync(upload.StoragePath, item.MediaCacheKey, ct);
 
+            if (requiresPreview && (preview == null || string.IsNullOrWhiteSpace(preview.ThumbLocalPath) || !File.Exists(preview.ThumbLocalPath)))
+                throw new InvalidOperationException("Preview non disponibile.");
+
             string? thumbStoragePath = null;
-            if (preview != null && AppMediaOptions.StoreThumbInStorage && File.Exists(preview.ThumbLocalPath))
+            if (preview != null && File.Exists(preview.ThumbLocalPath))
             {
                 var baseName = Path.GetFileNameWithoutExtension(fileName);
                 thumbStoragePath = $"home_posts/media/{attachmentId}/thumb_{baseName}.jpg";

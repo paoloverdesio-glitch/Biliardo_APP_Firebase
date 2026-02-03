@@ -75,6 +75,7 @@ namespace Biliardo.App.Pagine_Home
         private string _currentUid = "";
         private FirestoreDirectoryService.UserPublicItem? _myProfile;
         private readonly HashSet<string> _prefetchMediaKeys = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _pendingPreviewEnsures = new(StringComparer.Ordinal);
 
         // Popup personalizzato
         private TaskCompletionSource<bool>? _popupTcs;
@@ -283,18 +284,31 @@ namespace Biliardo.App.Pagine_Home
                 if (!_loadedFromMemory && HomeFeedMemoryCache.Instance.TryGet(out var memory))
                 {
                     _loadedFromMemory = true;
+                    var visible = new List<HomePostVm>();
+                    var pending = new List<HomePostVm>();
+                    foreach (var cachedPost in memory.OrderByDescending(x => x.CreatedAtUtc))
+                    {
+                        var vm = HomePostVm.FromCached(cachedPost);
+                        vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                        vm.RetryCommand = RetryHomePostCommand;
+                        vm.SyncCommand = null;
+
+                        var contract = BuildContractFromVm(vm);
+                        if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                            visible.Add(vm);
+                        else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                            pending.Add(vm);
+                    }
+
                     await MainThread.InvokeOnMainThreadAsync(() =>
                     {
                         Posts.Clear();
-                        foreach (var cachedPost in memory.OrderByDescending(x => x.CreatedAtUtc))
-                        {
-                            var vm = HomePostVm.FromCached(cachedPost);
-                            vm.IsLiked = _likedPostIds.Contains(vm.PostId);
-                            vm.RetryCommand = RetryHomePostCommand;
-                            vm.SyncCommand = null;
+                        foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                             Posts.Add(vm);
-                        }
                     });
+
+                    foreach (var pendingPost in pending)
+                        QueueEnsurePreviewAvailable(pendingPost);
                 }
 
                 var cached = await _homeFeedCache.LoadAsync();
@@ -400,24 +414,8 @@ namespace Biliardo.App.Pagine_Home
                                 if (ct.IsCancellationRequested)
                                     return;
 
-                                if (AppMediaOptions.DownloadOriginalOnScroll && att.IsImage)
-                                {
-                                    if (!string.IsNullOrWhiteSpace(att.LocalPath) && File.Exists(att.LocalPath))
-                                        return;
-
-                                    if (string.IsNullOrWhiteSpace(att.StoragePath))
-                                        return;
-
-                                    var local = await _mediaCache.GetOrDownloadAsync(idToken!, att.StoragePath!, att.FileName ?? "image.jpg", isThumb: false, ct);
-                                    if (string.IsNullOrWhiteSpace(local))
-                                        return;
-
-                                    MainThread.BeginInvokeOnMainThread(() => att.LocalPath = local);
-                                    _ = UpdateCacheForAttachmentAsync(att);
-                                    return;
-                                }
-
-                                if (string.IsNullOrWhiteSpace(att.ThumbStoragePath))
+                                var previewRemotePath = att.GetPreviewRemotePath();
+                                if (string.IsNullOrWhiteSpace(previewRemotePath))
                                     return;
 
                                 if (!string.IsNullOrWhiteSpace(att.ThumbLocalPath) && File.Exists(att.ThumbLocalPath))
@@ -425,12 +423,12 @@ namespace Biliardo.App.Pagine_Home
 
                                 lock (_prefetchMediaKeys)
                                 {
-                                    if (!_prefetchMediaKeys.Add(att.ThumbStoragePath))
+                                    if (!_prefetchMediaKeys.Add(previewRemotePath))
                                         return;
                                 }
 
                                 MainThread.BeginInvokeOnMainThread(() => att.IsPreviewDownloading = true);
-                                var thumbLocal = await _mediaCache.GetOrDownloadAsync(idToken!, att.ThumbStoragePath!, att.FileName ?? "thumb.jpg", isThumb: true, ct);
+                                var thumbLocal = await _mediaCache.GetOrDownloadAsync(idToken!, previewRemotePath!, att.FileName ?? "thumb.jpg", isThumb: true, ct);
                                 if (string.IsNullOrWhiteSpace(thumbLocal))
                                     return;
 
@@ -529,58 +527,129 @@ namespace Biliardo.App.Pagine_Home
             if (newPosts == null || newPosts.Count == 0)
                 return;
 
+            var visible = new List<HomePostVm>();
+            var pending = new List<HomePostVm>();
+            SplitHomePostsByVisibility(newPosts, visible, pending);
+
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                foreach (var vm in newPosts.OrderByDescending(x => x.CreatedAtUtc))
-                {
-                    var existing = Posts.FirstOrDefault(x => x.PostId == vm.PostId);
-                    if (existing != null)
-                        continue;
-
-                    Posts.Add(vm);
-                }
+                foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                    InsertSortedByCreatedAtDesc(Posts, vm);
             });
 
             var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
             foreach (var vm in Posts)
                 snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
             HomeFeedMemoryCache.Instance.Set(snapshot);
+
+            foreach (var pendingPost in pending)
+                QueueEnsurePreviewAvailable(pendingPost);
+        }
+
+        private static void InsertSortedByCreatedAtDesc(ObservableCollection<HomePostVm> posts, HomePostVm item)
+        {
+            if (posts == null || item == null)
+                return;
+
+            var existing = posts.FirstOrDefault(x => x.PostId == item.PostId);
+            if (existing != null)
+            {
+                var index = posts.IndexOf(existing);
+                if (index >= 0)
+                    posts.RemoveAt(index);
+            }
+
+            var insertIndex = 0;
+            while (insertIndex < posts.Count && posts[insertIndex].CreatedAtUtc > item.CreatedAtUtc)
+                insertIndex++;
+
+            posts.Insert(insertIndex, item);
+        }
+
+        private void SplitHomePostsByVisibility(IEnumerable<HomePostVm> source, List<HomePostVm> visible, List<HomePostVm> pending)
+        {
+            foreach (var vm in source)
+            {
+                if (vm == null)
+                    continue;
+
+                if (vm.IsPendingUpload || vm.HasSendError)
+                {
+                    visible.Add(vm);
+                    continue;
+                }
+
+                var contract = BuildContractFromVm(vm);
+                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                {
+                    visible.Add(vm);
+                }
+                else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                {
+                    pending.Add(vm);
+                }
+            }
+        }
+
+        private void QueueEnsurePreviewAvailable(HomePostVm vm)
+        {
+            if (vm == null || string.IsNullOrWhiteSpace(vm.PostId))
+                return;
+
+            lock (_pendingPreviewEnsures)
+            {
+                if (!_pendingPreviewEnsures.Add(vm.PostId))
+                    return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await EnsurePreviewAvailableAsync(vm);
+                }
+                finally
+                {
+                    lock (_pendingPreviewEnsures)
+                    {
+                        _pendingPreviewEnsures.Remove(vm.PostId);
+                    }
+                }
+            });
         }
 
         private async Task ApplyHomeSnapshotAsync(IReadOnlyList<HomeFeedLocalCache.CachedHomePost> ordered)
         {
+            var visible = new List<HomePostVm>();
+            var pending = new List<HomePostVm>();
+
+            foreach (var cached in ordered)
+            {
+                var vm = HomePostVm.FromCached(cached);
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = null;
+
+                var contract = BuildContractFromVm(vm);
+                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                {
+                    visible.Add(vm);
+                }
+                else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                {
+                    pending.Add(vm);
+                }
+            }
+
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                var incomingIds = new HashSet<string>(ordered.Select(x => x.PostId), StringComparer.Ordinal);
-
-                for (var i = Posts.Count - 1; i >= 0; i--)
-                {
-                    if (!incomingIds.Contains(Posts[i].PostId))
-                        Posts.RemoveAt(i);
-                }
-
-                for (var i = 0; i < ordered.Count; i++)
-                {
-                    var cached = ordered[i];
-                    var vm = HomePostVm.FromCached(cached);
-                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
-                    vm.RetryCommand = RetryHomePostCommand;
-                    vm.SyncCommand = null;
-
-                    var existing = Posts.FirstOrDefault(x => x.PostId == vm.PostId);
-                    if (existing == null)
-                    {
-                        Posts.Insert(Math.Min(i, Posts.Count), vm);
-                    }
-                    else
-                    {
-                        var index = Posts.IndexOf(existing);
-                        if (index >= 0 && index != i)
-                            Posts.Move(index, i);
-                        Posts[i] = vm;
-                    }
-                }
+                Posts.Clear();
+                foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                    Posts.Add(vm);
             });
+
+            foreach (var pendingPost in pending)
+                QueueEnsurePreviewAvailable(pendingPost);
         }
 
         private void StartRealtimeUpdatesAfterFirstRender()
@@ -633,15 +702,21 @@ namespace Biliardo.App.Pagine_Home
                 vm.SyncCommand = null;
                 vm.RequiresSync = requiresSync;
 
-            if (existing != null)
-            {
-                var index = Posts.IndexOf(existing);
-                if (index >= 0)
-                    Posts[index] = vm;
-            }
-                else
+                var contract = BuildContractFromVm(vm);
+                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
                 {
-                    Posts.Insert(0, vm);
+                    if (existing != null)
+                    {
+                        var index = Posts.IndexOf(existing);
+                        if (index >= 0)
+                            Posts.RemoveAt(index);
+                    }
+
+                    InsertSortedByCreatedAtDesc(Posts, vm);
+                }
+                else if (HomePostValidatorV2.IsServerReady(contract, out _))
+                {
+                    QueueEnsurePreviewAvailable(vm);
                 }
             });
 
@@ -767,23 +842,18 @@ namespace Biliardo.App.Pagine_Home
                     cachedToMerge.Add(HomeFeedLocalCacheMapper.ToCached(post));
                 }
 
+                var visible = new List<HomePostVm>();
+                var pending = new List<HomePostVm>();
+                SplitHomePostsByVisibility(newPosts, visible, pending);
+
                 await MainThread.InvokeOnMainThreadAsync(() =>
                 {
-                    foreach (var vm in newPosts.OrderByDescending(x => x.CreatedAtUtc))
-                    {
-                        var existing = Posts.FirstOrDefault(x => x.PostId == vm.PostId);
-                        if (existing != null)
-                        {
-                            var index = Posts.IndexOf(existing);
-                            if (index >= 0)
-                                Posts[index] = vm;
-                        }
-                        else
-                        {
-                            Posts.Insert(0, vm);
-                        }
-                    }
+                    foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                        InsertSortedByCreatedAtDesc(Posts, vm);
                 });
+
+                foreach (var pendingPost in pending)
+                    QueueEnsurePreviewAvailable(pendingPost);
 
                 await _homeFeedCache.MergeNewTop(cachedToMerge, ct);
                 var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
@@ -1059,7 +1129,7 @@ namespace Biliardo.App.Pagine_Home
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 vm.RetryCommand = RetryHomePostCommand;
-                Posts.Insert(0, vm);
+                InsertSortedByCreatedAtDesc(Posts, vm);
                 FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
             });
 
@@ -1083,11 +1153,30 @@ namespace Biliardo.App.Pagine_Home
             foreach (var item in vm.PendingItems)
             {
                 var att = await BuildHomeAttachmentAsync(item);
-                if (att != null)
-                    attachments.Add(att);
+                if (att == null)
+                    throw new InvalidOperationException("Allegato non disponibile.");
+
+                attachments.Add(att);
             }
 
             var postId = await _homeFeed.CreatePostAsync(vm.PendingText ?? "", attachments, clientNonce: vm.ClientNonce);
+            var localByFullRemote = new Dictionary<string, string>(StringComparer.Ordinal);
+            var localByPreviewRemote = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var att in attachments)
+            {
+                var key = BuildAttachmentKey(att.Type, att.FileName, att.SizeBytes);
+                var match = existingAttachments.FirstOrDefault(x => x.Key == key);
+                if (match == null)
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(att.StoragePath) && !string.IsNullOrWhiteSpace(match.LocalPath))
+                    localByFullRemote[att.StoragePath] = match.LocalPath;
+
+                var previewRemotePath = att.GetPreviewRemotePath();
+                if (!string.IsNullOrWhiteSpace(previewRemotePath) && !string.IsNullOrWhiteSpace(match.ThumbLocalPath))
+                    localByPreviewRemote[previewRemotePath] = match.ThumbLocalPath;
+            }
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
@@ -1102,13 +1191,13 @@ namespace Biliardo.App.Pagine_Home
                 foreach (var att in attachments)
                 {
                     var rebuilt = HomeAttachmentVm.FromService(att);
-                    var key = BuildAttachmentKey(rebuilt.Type, rebuilt.FileName, rebuilt.SizeBytes);
-                    var match = existingAttachments.FirstOrDefault(x => x.Key == key);
-                    if (match != null)
-                    {
-                        rebuilt.LocalPath = match.LocalPath;
-                        rebuilt.ThumbLocalPath = match.ThumbLocalPath;
-                    }
+                    if (!string.IsNullOrWhiteSpace(rebuilt.StoragePath) && localByFullRemote.TryGetValue(rebuilt.StoragePath, out var fullLocal))
+                        rebuilt.LocalPath = fullLocal;
+
+                    var previewRemotePath = rebuilt.GetPreviewRemotePath();
+                    if (!string.IsNullOrWhiteSpace(previewRemotePath) && localByPreviewRemote.TryGetValue(previewRemotePath, out var previewLocal))
+                        rebuilt.ThumbLocalPath = previewLocal;
+
                     vm.AttachAttachment(rebuilt);
                 }
             });
@@ -1125,6 +1214,7 @@ namespace Biliardo.App.Pagine_Home
             });
 
             _ = _homeFeedCache.UpsertTop(HomeFeedLocalCacheMapper.ToCached(vm));
+            MainThread.BeginInvokeOnMainThread(() => _ = ShowPopupAsync(FormatExceptionForPopup(ex), "Errore invio post"));
         }
 
         private async Task RetryHomePostAsync(HomePostVm? vm)
@@ -1782,6 +1872,91 @@ namespace Biliardo.App.Pagine_Home
             });
         }
 
+        private Task UpdateCacheForPostAsync(HomePostVm post)
+        {
+            if (post == null)
+                return Task.CompletedTask;
+
+            var cached = HomeFeedLocalCacheMapper.ToCached(post);
+            return _homeFeedCache.UpsertTop(cached);
+        }
+
+        private async Task EnsurePreviewAvailableAsync(HomePostVm post)
+        {
+            if (post == null)
+                return;
+
+            var contract = BuildContractFromVm(post);
+            if (!HomePostValidatorV2.IsServerReady(contract, out _))
+                return;
+
+            var requiresAnyPreview = post.Attachments.Any(att => att.RequiresPreview);
+            if (!requiresAnyPreview)
+                return;
+
+            var updated = false;
+            foreach (var att in post.Attachments)
+            {
+                if (!att.RequiresPreview)
+                    continue;
+
+                var previewRemotePath = att.GetPreviewRemotePath();
+                if (string.IsNullOrWhiteSpace(previewRemotePath))
+                {
+                    post.Ready = false;
+                    await UpdateCacheForPostAsync(post);
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(att.ThumbLocalPath) && File.Exists(att.ThumbLocalPath))
+                    continue;
+
+                var cached = await _mediaCache.TryGetCachedPathAsync(previewRemotePath, isThumb: true);
+                if (!string.IsNullOrWhiteSpace(cached) && File.Exists(cached))
+                {
+                    await MainThread.InvokeOnMainThreadAsync(() => att.ThumbLocalPath = cached);
+                    updated = true;
+                    continue;
+                }
+
+                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+                    return;
+
+                var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync();
+                if (string.IsNullOrWhiteSpace(idToken))
+                    return;
+
+                var thumbLocal = await _mediaCache.GetOrDownloadAsync(idToken!, previewRemotePath, att.FileName ?? "thumb.jpg", isThumb: true, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(thumbLocal) || !File.Exists(thumbLocal))
+                {
+                    post.Ready = false;
+                    await UpdateCacheForPostAsync(post);
+                    return;
+                }
+
+                await MainThread.InvokeOnMainThreadAsync(() => att.ThumbLocalPath = thumbLocal);
+                updated = true;
+            }
+
+            if (updated)
+                await UpdateCacheForPostAsync(post);
+
+            var refreshed = BuildContractFromVm(post);
+            if (!HomePostValidatorV2.IsHomeVisible(refreshed, out _))
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                post.RetryCommand ??= RetryHomePostCommand;
+                InsertSortedByCreatedAtDesc(Posts, post);
+            });
+
+            var snapshot = new List<HomeFeedLocalCache.CachedHomePost>();
+            foreach (var vm in Posts)
+                snapshot.Add(HomeFeedLocalCacheMapper.ToCached(vm));
+            HomeFeedMemoryCache.Instance.Set(snapshot);
+        }
+
         private async Task<MediaCacheService.MediaRegistration> CopyToCacheAsync(FileResult fr, string prefix)
         {
             var ext = Path.GetExtension(fr.FileName);
@@ -2330,7 +2505,7 @@ namespace Biliardo.App.Pagine_Home
                 }
 
                 var contract = BuildContractFromVm(this);
-                IsReadyForDisplay = HomePostValidatorV2.IsRenderSafe(contract, out _);
+                IsReadyForDisplay = HomePostValidatorV2.IsHomeVisible(contract, out _);
             }
 
             private static readonly Color[] NicknamePalette = new[]
@@ -2360,7 +2535,7 @@ namespace Biliardo.App.Pagine_Home
         {
             public static HomeFeedLocalCache.CachedHomePost ToCached(HomePostVm vm)
             {
-                var thumbKey = vm.Attachments.FirstOrDefault()?.ThumbStoragePath
+                var thumbKey = vm.Attachments.FirstOrDefault()?.GetPreviewRemotePath()
                     ?? vm.Attachments.FirstOrDefault()?.StoragePath;
 
                 return new HomeFeedLocalCache.CachedHomePost(
@@ -2388,7 +2563,7 @@ namespace Biliardo.App.Pagine_Home
 
             public static HomeFeedLocalCache.CachedHomePost ToCached(FirestoreHomeFeedService.HomePostItem post)
             {
-                var thumbKey = post.Attachments.FirstOrDefault()?.ThumbStoragePath
+                var thumbKey = post.Attachments.FirstOrDefault()?.GetPreviewRemotePath()
                     ?? post.Attachments.FirstOrDefault()?.StoragePath;
 
                 return new HomeFeedLocalCache.CachedHomePost(
@@ -2473,7 +2648,7 @@ namespace Biliardo.App.Pagine_Home
                 SizeBytes: att.SizeBytes,
                 DurationMs: att.DurationMs,
                 Extra: BuildAttachmentExtra(att),
-                PreviewStoragePath: att.ThumbStoragePath,
+                PreviewStoragePath: att.GetPreviewRemotePath(),
                 FullStoragePath: att.StoragePath,
                 DownloadUrl: att.DownloadUrl,
                 PreviewLocalPath: att.ThumbLocalPath,
@@ -2494,7 +2669,7 @@ namespace Biliardo.App.Pagine_Home
                 SizeBytes: att.SizeBytes,
                 DurationMs: att.DurationMs,
                 Extra: att.Extra,
-                PreviewStoragePath: att.ThumbStoragePath,
+                PreviewStoragePath: att.GetPreviewRemotePath(),
                 FullStoragePath: att.StoragePath,
                 DownloadUrl: att.DownloadUrl,
                 PreviewLocalPath: null,
@@ -2592,8 +2767,10 @@ namespace Biliardo.App.Pagine_Home
             public bool IsPoll => Type == "poll";
             public bool IsEvent => Type == "event";
             public string AddressLabel => !string.IsNullOrWhiteSpace(Address) ? Address! : $"{Latitude:0.0000}, {Longitude:0.0000}";
-            public bool RequiresPreview => IsImage || IsVideo;
+            public bool RequiresPreview => HomeAttachmentPreviewRules.RequiresPreview(Type, ContentType, FileName);
             public bool HasPreviewSource => !RequiresPreview || DisplayPreviewSource != null;
+
+            public string? GetPreviewRemotePath() => ThumbStoragePath;
 
             public event EventHandler? PreviewSourceChanged;
 

@@ -19,7 +19,12 @@ namespace Biliardo.App.Infrastructure.Home
         string? PreviewType,
         int? PreviewWidth,
         int? PreviewHeight,
-        IReadOnlyList<int>? Waveform);
+        IReadOnlyList<int>? Waveform)
+    {
+        public string? GetPreviewRemotePath() => PreviewStoragePath;
+
+        public bool RequiresPreview => HomeAttachmentPreviewRules.RequiresPreview(Type, ContentType, FileName);
+    }
 
     public sealed record HomePostContractV2(
         string PostId,

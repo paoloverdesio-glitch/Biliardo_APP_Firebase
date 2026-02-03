@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 namespace Biliardo.App.Infrastructure.Home
 {
@@ -13,40 +14,9 @@ namespace Biliardo.App.Infrastructure.Home
 
         public static bool IsCacheSafe(HomePostContractV2 post) => IsCacheSafe(post, out _);
 
+        public static bool IsHomeVisible(HomePostContractV2 post) => IsHomeVisible(post, out _);
+
         public static bool IsServerReady(HomePostContractV2 post, out string reason)
-        {
-            if (post == null)
-            {
-                reason = "post null";
-                return false;
-            }
-
-            if (post.Deleted)
-            {
-                reason = "deleted";
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(post.AuthorNickname))
-            {
-                reason = "authorNickname missing";
-                return false;
-            }
-
-            if (!HasPayload(post))
-            {
-                reason = "missing text/attachments/repost";
-                return false;
-            }
-
-            if (!AttachmentsAreValid(post.Attachments, out reason))
-                return false;
-
-            reason = "";
-            return true;
-        }
-
-        public static bool IsRenderSafe(HomePostContractV2 post, out string reason)
         {
             if (post == null)
             {
@@ -91,9 +61,26 @@ namespace Biliardo.App.Infrastructure.Home
             return true;
         }
 
+        public static bool IsRenderSafe(HomePostContractV2 post, out string reason)
+        {
+            return IsServerReady(post, out reason);
+        }
+
         public static bool IsCacheSafe(HomePostContractV2 post, out string reason)
         {
-            return IsRenderSafe(post, out reason);
+            return IsServerReady(post, out reason);
+        }
+
+        public static bool IsHomeVisible(HomePostContractV2 post, out string reason)
+        {
+            if (!IsServerReady(post, out reason))
+                return false;
+
+            if (!HasLocalPreviews(post.Attachments, out reason))
+                return false;
+
+            reason = "";
+            return true;
         }
 
         private static bool HasPayload(HomePostContractV2 post)
@@ -132,7 +119,7 @@ namespace Biliardo.App.Infrastructure.Home
                     return false;
                 }
 
-                if (RequiresPreview(att) && string.IsNullOrWhiteSpace(att.PreviewStoragePath))
+                if (RequiresPreview(att) && string.IsNullOrWhiteSpace(att.GetPreviewRemotePath()))
                 {
                     reason = $"attachment preview path missing ({att.Type})";
                     return false;
@@ -150,13 +137,36 @@ namespace Biliardo.App.Infrastructure.Home
 
         private static bool RequiresPreview(HomeAttachmentContractV2 att)
         {
-            if (att.Type is "image" or "video")
-                return true;
+            return HomeAttachmentPreviewRules.RequiresPreview(att.Type, att.ContentType, att.FileName);
+        }
 
-            if (att.Type == "file" && string.Equals(att.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
+        private static bool HasLocalPreviews(IReadOnlyList<HomeAttachmentContractV2>? attachments, out string reason)
+        {
+            if (attachments == null || attachments.Count == 0)
+            {
+                reason = "";
                 return true;
+            }
 
-            return false;
+            foreach (var att in attachments)
+            {
+                if (att == null)
+                    continue;
+
+                if (!RequiresPreview(att))
+                    continue;
+
+                var hasPreview = !string.IsNullOrWhiteSpace(att.PreviewLocalPath) && File.Exists(att.PreviewLocalPath);
+                var hasFull = !string.IsNullOrWhiteSpace(att.FullLocalPath) && File.Exists(att.FullLocalPath);
+                if (!hasPreview && !hasFull)
+                {
+                    reason = $"attachment preview local missing ({att.Type})";
+                    return false;
+                }
+            }
+
+            reason = "";
+            return true;
         }
     }
 }
