@@ -136,8 +136,7 @@ namespace Biliardo.App.Servizi_Firebase
                     {
                         tcs.TrySetException(ex);
                         Cleanup();
-                    },
-                    includeMetadataChanges: false);
+                    });
             }
             catch (Exception ex)
             {
