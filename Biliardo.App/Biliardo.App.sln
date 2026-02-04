@@ -1,16 +1,20 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36705.20 d17.14
+VisualStudioVersion = 17.14.36705.20
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Biliardo.App", "Biliardo.App.csproj", "{32DD7207-321D-44AC-386C-7E9CCA5E426F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		AndroidWindows|Any CPU = AndroidWindows|Any CPU
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{32DD7207-321D-44AC-386C-7E9CCA5E426F}.AndroidWindows|Any CPU.ActiveCfg = AndroidWindows|Any CPU
+		{32DD7207-321D-44AC-386C-7E9CCA5E426F}.AndroidWindows|Any CPU.Build.0 = AndroidWindows|Any CPU
+		{32DD7207-321D-44AC-386C-7E9CCA5E426F}.AndroidWindows|Any CPU.Deploy.0 = AndroidWindows|Any CPU
 		{32DD7207-321D-44AC-386C-7E9CCA5E426F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{32DD7207-321D-44AC-386C-7E9CCA5E426F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{32DD7207-321D-44AC-386C-7E9CCA5E426F}.Debug|Any CPU.Deploy.0 = Debug|Any CPU
