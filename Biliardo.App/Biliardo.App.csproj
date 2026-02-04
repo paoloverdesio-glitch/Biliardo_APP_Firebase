@@ -1,8 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<!-- TARGET FRAMEWORK: Android + iOS (+ Windows su PC) -->
-		<TargetFrameworks>net8.0-android;net8.0-ios</TargetFrameworks>
+		<TargetFrameworks>net8.0-android</TargetFrameworks>
 		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">
 			$(TargetFrameworks);net8.0-windows10.0.19041.0
 		</TargetFrameworks>
@@ -14,21 +13,15 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 
-		<!-- Nome visualizzato -->
 		<ApplicationTitle>Biliardo</ApplicationTitle>
 
-		<!-- Identificatore app - ALLINEATO a google-services.json -->
 		<ApplicationId>com.biliardoapp.biliardo</ApplicationId>
 
-		<!-- Versioni -->
 		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
 		<ApplicationVersion>2</ApplicationVersion>
 
-		<!-- Per sviluppo desktop senza packaging MSIX -->
 		<WindowsPackageType>None</WindowsPackageType>
 
-		<!-- Minimi supportati -->
-		<!-- Android: API min 26 per canali di notifica / FCM moderno -->
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
 			26.0
 		</SupportedOSPlatformVersion>
@@ -40,21 +33,17 @@
 			10.0.17763.0
 		</TargetPlatformMinVersion>
 
-		<!-- Evita problemi con trimming/AOT e callback FCM -->
 		<RunAOTCompilation>false</RunAOTCompilation>
 		<PublishTrimmed>false</PublishTrimmed>
+		<Configurations>Debug;Release;AndroidWindows</Configurations>
 	</PropertyGroup>
 
 	<ItemGroup>
-		<!-- Icona app -->
 		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#0A5F2A" />
 
-		<!-- Splash screen -->
 		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#0A5F2A" BaseSize="128,128" />
 
-		<!-- Immagini / Font / Asset -->
 		<MauiImage Include="Resources\Images\**\*.*" />
-		<!-- icona 3 palle usata nella barra superiore -->
 		<MauiImage Include="Resources\AppIcon\appicon_threeballs.svg" />
 
 		<MauiFont Include="Resources\Fonts\**\*.*" />
@@ -62,65 +51,57 @@
 	</ItemGroup>
 
 	<ItemGroup>
-	  <Compile Remove="Servizi_Media\VoiceRecorder.cs" />
+		<Compile Remove="Servizi_Media\VoiceRecorder.cs" />
 	</ItemGroup>
 
-	<!-- Pacchetti -->
 	<ItemGroup>
-		<!-- MAUI Controls esplicito, come richiesto dal warning MA002 -->
 		<PackageReference Include="CommunityToolkit.Maui" Version="9.0.3" />
 		<PackageReference Include="CommunityToolkit.Maui.MediaElement" Version="4.1.2" />
 		<PackageReference Include="Microsoft.Maui.Controls" Version="8.0.100" />
 
-		<!-- Logging debug: ALLINEATO a .NET 8 (non 9.x) -->
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.1" />
 		<PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.1" />
 		<PackageReference Include="SQLitePCLRaw.bundle_green" Version="2.1.6" />
 
-		<!-- Firebase cross-platform core -->
 		<PackageReference Include="Plugin.Firebase.Core" Version="3.1.1" />
 
-		<!-- FCM cross-platform (Android + iOS, ma ora compiliamo solo Android) -->
 		<PackageReference Include="Plugin.Firebase.CloudMessaging" Version="3.1.2" />
 		<PackageReference Include="Plugin.Firebase.Firestore" Version="3.1.1" />
 	</ItemGroup>
 
-	<!-- google-services.json solo per Android (build action dedicata) -->
 	<ItemGroup Condition="'$(TargetFramework)' == 'net8.0-android'">
 		<GoogleServicesJson Include="Platforms/Android/google-services.json">
 			<CopyToOutputDirectory>Never</CopyToOutputDirectory>
 		</GoogleServicesJson>
 	</ItemGroup>
 
-	<!-- Dipendenze code-behind dalle XAML specifiche -->
 	<ItemGroup>
 		<Compile Update="Pagine_Messaggi\Pagina_MessaggiDettaglio.xaml.cs">
 			<DependentUpon>Pagina_MessaggiDettaglio.xaml</DependentUpon>
 		</Compile>
 	</ItemGroup>
 
-	<!-- Forza la generazione InitializeComponent per le XAML indicate -->
 	<ItemGroup>
 		<MauiXaml Update="App.xaml">
 			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\BottomSheetAllegatiPage.xaml">
-		  <Generator>MSBuild:Compile</Generator>
+			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\Composer\ComposerBarView.xaml">
-		  <Generator>MSBuild:Compile</Generator>
+			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\UserAvatarView.xaml">
-		  <Generator>MSBuild:Compile</Generator>
+			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\LocationPreviewView.xaml">
-		  <Generator>MSBuild:Compile</Generator>
+			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\Media\AudioWavePlayerView.xaml">
-		  <Generator>MSBuild:Compile</Generator>
+			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\Media\PdfAttachmentView.xaml">
-		  <Generator>MSBuild:Compile</Generator>
+			<Generator>MSBuild:Compile</Generator>
 		</MauiXaml>
 		<MauiXaml Update="Componenti_UI\SelettoreUtenteAutocomplete.xaml">
 			<Generator>MSBuild:Compile</Generator>
