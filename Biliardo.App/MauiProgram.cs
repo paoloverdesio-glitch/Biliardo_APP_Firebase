@@ -84,13 +84,6 @@ namespace Biliardo.App
                     android.OnCreate((activity, savedInstanceState) =>
                     {
                         CrossFirebase.Initialize(activity);
-                        if (CrossFirebaseFirestore.IsSupported)
-                        {
-                            CrossFirebaseFirestore.Current.Settings = new FirestoreSettings
-                            {
-                                IsPersistenceEnabled = true
-                            };
-                        }
                     });
 
                     android.OnResume(activity => { });
@@ -103,13 +96,6 @@ namespace Biliardo.App
                     {
                         CrossFirebase.Initialize();
                         FirebaseCloudMessagingImplementation.Initialize();
-                        if (CrossFirebaseFirestore.IsSupported)
-                        {
-                            CrossFirebaseFirestore.Current.Settings = new FirestoreSettings
-                            {
-                                IsPersistenceEnabled = true
-                            };
-                        }
                         return false;
                     });
 
@@ -123,14 +109,7 @@ namespace Biliardo.App
                 {
                     windows.OnLaunched((_, __) =>
                     {
-                        CrossFirebase.Initialize();
-                        if (CrossFirebaseFirestore.IsSupported)
-                        {
-                            CrossFirebaseFirestore.Current.Settings = new FirestoreSettings
-                            {
-                                IsPersistenceEnabled = true
-                            };
-                        }
+                        _ = CrossFirebaseFirestore.IsSupported;
                     });
                 });
 #endif

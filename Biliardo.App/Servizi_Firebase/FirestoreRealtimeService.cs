@@ -43,8 +43,7 @@ namespace Biliardo.App.Servizi_Firebase
 
                     onChanged(items);
                 },
-                ex => onError?.Invoke(ex),
-                includeMetadataChanges: false);
+                ex => onError?.Invoke(ex));
         }
 
         public IDisposable SubscribeUserPublic(
@@ -58,8 +57,7 @@ namespace Biliardo.App.Servizi_Firebase
             var doc = _db.GetDocument($"users_public/{uid.Trim()}");
             return doc.AddSnapshotListener<Dictionary<string, object>>(
                 snapshot => onChanged(MapUserPublic(uid, snapshot)),
-                ex => onError?.Invoke(ex),
-                includeMetadataChanges: false);
+                ex => onError?.Invoke(ex));
         }
 
         public IDisposable SubscribeComments(
@@ -91,8 +89,7 @@ namespace Biliardo.App.Servizi_Firebase
 
                     onChanged(items);
                 },
-                ex => onError?.Invoke(ex),
-                includeMetadataChanges: false);
+                ex => onError?.Invoke(ex));
         }
 
         public IDisposable SubscribeChatList(
@@ -125,8 +122,7 @@ namespace Biliardo.App.Servizi_Firebase
 
                     onChanged(items);
                 },
-                ex => onError?.Invoke(ex),
-                includeMetadataChanges: false);
+                ex => onError?.Invoke(ex));
         }
 
         public IDisposable SubscribeChatMessages(
@@ -158,8 +154,7 @@ namespace Biliardo.App.Servizi_Firebase
 
                     onChanged(items.OrderBy(x => x.CreatedAtUtc).ToList());
                 },
-                ex => onError?.Invoke(ex),
-                includeMetadataChanges: false);
+                ex => onError?.Invoke(ex));
         }
 
         public IDisposable SubscribeChatTyping(
@@ -189,8 +184,7 @@ namespace Biliardo.App.Servizi_Firebase
                     var (isTyping, _) = ComputePeerTyping(payload, myUid, peerUid);
                     onChanged(isTyping);
                 },
-                ex => onError?.Invoke(ex),
-                includeMetadataChanges: false);
+                ex => onError?.Invoke(ex));
         }
 
         private static FirestoreHomeFeedService.HomePostItem? MapHomePost(IDocumentSnapshot<Dictionary<string, object>> doc)
