@@ -2,7 +2,6 @@
 using Biliardo.App.Utilita;
 using Biliardo.App.Infrastructure;
 using Microsoft.Maui.Controls;
-using Microsoft.Maui.Networking;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,6 +34,7 @@ namespace Biliardo.App.Pagine_Messaggi
 
             _firstRenderGate = new FirstRenderGate(this, CvMessaggi);
             ComposerBar.SizeChanged += OnLayoutSizeChanged;
+            ComposerBar.ComposerTextChanged += OnComposerTextChanged;
             SizeChanged += OnLayoutSizeChanged;
         }
 
@@ -68,24 +68,18 @@ namespace Biliardo.App.Pagine_Messaggi
             _appearanceCts = new CancellationTokenSource();
             var ct = _appearanceCts.Token;
 
-            await LoadFromCacheAndRenderImmediatelyAsync();
-            await LoadPeerProfileFromCacheAsync();
-            ScrollBottomImmediately(force: true);
-
             await _firstRenderGate!.WaitAsync();
             if (ct.IsCancellationRequested)
                 return;
 
             _lastMyUid = FirebaseSessionePersistente.GetLocalId();
             _lastPeerId = (_peerUserId ?? "").Trim();
-            if (!string.IsNullOrWhiteSpace(_lastPeerId))
-            {
-                _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, _lastPeerId);
-                await _chatStore.ResetUnreadAsync(_chatCacheKey, CancellationToken.None);
-            }
+            ScrollBottomImmediately(force: true);
 
-            StartRealtimeUpdatesAfterFirstRender();
-            _ = SyncChatFromServerWithTimeoutAsync();
+            if (!string.IsNullOrWhiteSpace(_lastPeerId))
+                _chatCacheKey ??= _chatIdCached ?? $"peer:{_lastPeerId}";
+
+            await StartFirestoreListenersAsync(ct);
         }
 
         protected override void OnDisappearing()
@@ -101,12 +95,22 @@ namespace Biliardo.App.Pagine_Messaggi
 
             // 2.2) Stop sottosistemi
             StopRealtimeUpdates();
+            _listeners.Clear();
+            _messagesListener?.Dispose();
+            _messagesListener = null;
+            _peerProfileListener?.Dispose();
+            _peerProfileListener = null;
+            _typingListener?.Dispose();
+            _typingListener = null;
             StopVoiceUiLoop();
             StopPlaybackSafe();
             CancelPrefetch();
             CancelPendingApply();
             CancelReceipts();
             _appearanceCts?.Cancel();
+            ComposerBar.ComposerTextChanged -= OnComposerTextChanged;
+            StopTypingUpdates();
+            IsPeerTyping = false;
 
             // 2.3) Sicurezza: se esco mentre registro, cancello in background
             _ = Task.Run(async () =>
@@ -197,7 +201,7 @@ namespace Biliardo.App.Pagine_Messaggi
         // ============================================================
         // 5) PROFILO PEER (NOME COMPLETO SOTTO TITOLO CHAT)
         // ============================================================
-        private async Task LoadPeerProfileFromCacheAsync()
+        private void StartPeerProfileListener()
         {
             if (_peerProfileLoaded)
                 return;
@@ -206,17 +210,26 @@ namespace Biliardo.App.Pagine_Messaggi
             if (string.IsNullOrWhiteSpace(peerId))
                 return;
 
-            var cached = await _userPublicCache.TryGetAsync(peerId, CancellationToken.None);
-            if (cached == null)
-                return;
+            _peerProfileListener?.Dispose();
+            _peerProfileListener = _realtime.SubscribeUserPublic(
+                peerId,
+                profile =>
+                {
+                    if (profile == null)
+                        return;
 
-            DisplayNomeCompleto = BuildDisplayNomeCompleto(cached.FirstName, cached.LastName);
-            PeerAvatarUrl = cached.PhotoUrl ?? "";
-            PeerAvatarPath = cached.PhotoLocalPath ?? "";
-            _peerProfileLoaded = true;
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        DisplayNomeCompleto = BuildDisplayNomeCompleto(profile.FirstName, profile.LastName);
+                        PeerAvatarUrl = profile.PhotoUrl ?? "";
+                        PeerAvatarPath = profile.PhotoLocalPath ?? "";
+                        _peerProfileLoaded = true;
+                    });
+                },
+                _ => { });
+
+            _listeners.Add(_peerProfileListener);
         }
-
-        // Nessun fetch automatico profilo: si usa solo la cache locale.
 
         private static string BuildDisplayNomeCompleto(string? firstName, string? lastName)
         {
@@ -233,42 +246,6 @@ namespace Biliardo.App.Pagine_Messaggi
                 return fn;
 
             return $"{fn} {ln}".Trim();
-        }
-
-        private async Task SyncChatFromServerWithTimeoutAsync()
-        {
-            if (_serverSyncDone || Interlocked.Exchange(ref _serverSyncFlag, 1) == 1)
-                return;
-
-            try
-            {
-                if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
-                {
-                    if (Messaggi.Count == 0)
-                        await DisplayAlert("Offline", "Contenuto non disponibile offline.", "OK");
-
-                    IsLoadingMessages = false;
-                    return;
-                }
-
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AppCacheOptions.ServerSyncTimeoutSeconds));
-                await SyncChatFromServerAsync(cts.Token);
-                _serverSyncDone = true;
-            }
-            catch (OperationCanceledException)
-            {
-                IsLoadingMessages = false;
-                await DisplayAlert("Errore rete", "Timeout aggiornamento chat.", "OK");
-            }
-            catch (Exception ex)
-            {
-                IsLoadingMessages = false;
-                await DisplayAlert("Errore", ex.Message, "OK");
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _serverSyncFlag, 0);
-            }
         }
 
         // ============================================================

@@ -42,22 +42,6 @@
                     </CollectionView.ItemTemplate>
                 </CollectionView>
 
-                <Label Text="Chat Cache"
-                       TextColor="White"
-                       FontAttributes="Bold" />
-                <CollectionView ItemsSource="{Binding ChatEntries}">
-                    <CollectionView.ItemTemplate>
-                        <DataTemplate>
-                            <Grid ColumnDefinitions="*,Auto" Padding="6">
-                                <VerticalStackLayout Spacing="2">
-                                    <Label Text="{Binding ChatLabel}" TextColor="White" />
-                                    <Label Text="{Binding SizeLabel}" TextColor="White" FontSize="12" Opacity="0.7" />
-                                </VerticalStackLayout>
-                                <Label Grid.Column="1" Text="{Binding CountLabel}" TextColor="White" FontSize="12" />
-                            </Grid>
-                        </DataTemplate>
-                    </CollectionView.ItemTemplate>
-                </CollectionView>
             </VerticalStackLayout>
         </ScrollView>
     </Grid>

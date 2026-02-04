@@ -1,15 +1,20 @@
 using System;
 using System.Collections.ObjectModel;
-using System.Threading.Tasks;
 using Biliardo.App.Servizi_Firebase;
+using Biliardo.App.Infrastructure.Realtime;
 using Microsoft.Maui.Controls;
+using Microsoft.Maui.ApplicationModel;
+using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace Biliardo.App.Pagine_Home
 {
     public partial class PostDetailPage : ContentPage
     {
         private readonly FirestoreHomeFeedService _homeFeed = new();
-        private string? _cursor;
+        private readonly FirestoreRealtimeService _realtime = new();
+        private readonly ListenerRegistry _listeners = new();
+        private IDisposable? _commentsListener;
 
         public PostDetailPage(Pagina_Home.HomePostVm post)
         {
@@ -27,15 +32,33 @@ namespace Biliardo.App.Pagine_Home
             await LoadCommentsAsync();
         }
 
+        protected override void OnDisappearing()
+        {
+            base.OnDisappearing();
+            _listeners.Clear();
+            _commentsListener?.Dispose();
+            _commentsListener = null;
+        }
+
         private async Task LoadCommentsAsync()
         {
             try
             {
-                var res = await _homeFeed.ListCommentsAsync(Post.PostId, 30, _cursor);
-                Comments.Clear();
-                foreach (var item in res.Items)
-                    Comments.Add(CommentVm.FromService(item));
-                _cursor = res.NextCursor;
+                _commentsListener?.Dispose();
+                _commentsListener = _realtime.SubscribeComments(
+                    Post.PostId,
+                    30,
+                    items =>
+                    {
+                        MainThread.BeginInvokeOnMainThread(() =>
+                        {
+                            Comments.Clear();
+                            foreach (var item in items)
+                                Comments.Add(CommentVm.FromService(item));
+                        });
+                    },
+                    ex => Debug.WriteLine($"[PostDetail] comments listener error: {ex}"));
+                _listeners.Add(_commentsListener);
             }
             catch (Exception ex)
             {
@@ -53,7 +76,6 @@ namespace Biliardo.App.Pagine_Home
             {
                 await _homeFeed.AddCommentAsync(Post.PostId, text);
                 CommentEntry.Text = "";
-                await LoadCommentsAsync();
             }
             catch (Exception ex)
             {

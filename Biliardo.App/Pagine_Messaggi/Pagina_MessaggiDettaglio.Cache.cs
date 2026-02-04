@@ -1,43 +1,14 @@
 using System;
-using Biliardo.App.Cache_Locale.SQLite;
+using System.Linq;
+using System.Threading.Tasks;
 using Biliardo.App.Infrastructure;
 using Biliardo.App.Servizi_Firebase;
+using Microsoft.Maui.ApplicationModel;
 
 namespace Biliardo.App.Pagine_Messaggi
 {
     public partial class Pagina_MessaggiDettaglio
     {
-        private static FirestoreChatService.MessageItem MapRowToMessage(ChatCacheStore.MessageRow row)
-        {
-            var type = string.IsNullOrWhiteSpace(row.Text) ? "file" : "text";
-            return new FirestoreChatService.MessageItem(
-                MessageId: row.MessageId,
-                SenderId: row.SenderId,
-                Type: type,
-                Text: row.Text ?? "",
-                CreatedAtUtc: row.CreatedAtUtc,
-                DeliveredTo: Array.Empty<string>(),
-                ReadBy: Array.Empty<string>(),
-                DeletedForAll: false,
-                DeletedFor: Array.Empty<string>(),
-                DeletedAtUtc: null,
-                StoragePath: row.MediaKey,
-                DurationMs: 0,
-                FileName: null,
-                ContentType: null,
-                SizeBytes: 0,
-                ThumbStoragePath: null,
-                LqipBase64: null,
-                ThumbWidth: null,
-                ThumbHeight: null,
-                PreviewType: null,
-                Waveform: null,
-                Latitude: null,
-                Longitude: null,
-                ContactName: null,
-                ContactPhone: null);
-        }
-
         private ChatMessageVm BuildVmFromMessage(FirestoreChatService.MessageItem message, string myUid, string peerId)
         {
             var vm = ChatMessageVm.FromFirestore(message, myUid, peerId);
@@ -57,19 +28,35 @@ namespace Biliardo.App.Pagine_Messaggi
             return string.IsNullOrWhiteSpace(message.Text) && !string.IsNullOrWhiteSpace(message.StoragePath);
         }
 
-        private async Task UpsertLocalMessageAsync(string chatId, string peerId, FirestoreChatService.MessageItem message)
+        private async Task AppendOptimisticMessageAsync(string peerId, FirestoreChatService.MessageItem message)
         {
-            await _chatCache.UpsertAppendAsync(chatId, new[] { message }, maxItems: AppCacheOptions.MaxChatMessagesPerChat, CancellationToken.None);
+            var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
+            if (string.IsNullOrWhiteSpace(myUid) || string.IsNullOrWhiteSpace(peerId))
+                return;
 
-            await _chatStore.UpsertChatAsync(new ChatCacheStore.ChatRow(
-                chatId,
-                peerId,
-                message.MessageId,
-                message.Text,
-                message.Type,
-                message.CreatedAtUtc,
-                UnreadCount: 0,
-                UpdatedAtUtc: message.CreatedAtUtc), CancellationToken.None);
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                if (Messaggi.Any(x => !x.IsDateSeparator && string.Equals(x.Id, message.MessageId, StringComparison.Ordinal)))
+                    return;
+
+                var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
+                var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
+                var day = message.CreatedAtUtc.ToLocalTime().Date;
+                if (lastDay == null || day != lastDay.Value)
+                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(day));
+
+                var vm = BuildVmFromMessage(message, myUid, peerId);
+                Messaggi.Add(vm);
+                ScrollBottomImmediately(force: true);
+            });
+
+            var cacheKey = _chatCacheKey ?? _chatIdCached ?? $"peer:{peerId}";
+            var current = ChatDetailMemoryCache.Instance.TryGet(cacheKey, out var existing)
+                ? existing.ToList()
+                : new System.Collections.Generic.List<FirestoreChatService.MessageItem>();
+            current.Add(message);
+            ChatDetailMemoryCache.Instance.Set(cacheKey, current);
         }
+
     }
 }

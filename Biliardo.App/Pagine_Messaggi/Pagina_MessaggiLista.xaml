@@ -62,10 +62,17 @@
                                        FontAttributes="Bold"
                                        TextColor="White"
                                        LineBreakMode="TailTruncation"/>
-                                <Label Text="{Binding UltimoMessaggio}"
+                                <Label Text="{Binding PreviewText}"
                                        FontSize="12"
                                        TextColor="#B0B0B0"
-                                       LineBreakMode="TailTruncation" />
+                                       LineBreakMode="TailTruncation">
+                                    <Label.Triggers>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsTyping}" Value="True">
+                                            <Setter Property="TextColor" Value="#25D366" />
+                                            <Setter Property="FontAttributes" Value="Italic" />
+                                        </DataTrigger>
+                                    </Label.Triggers>
+                                </Label>
                             </VerticalStackLayout>
 
                             <VerticalStackLayout Grid.Column="2"

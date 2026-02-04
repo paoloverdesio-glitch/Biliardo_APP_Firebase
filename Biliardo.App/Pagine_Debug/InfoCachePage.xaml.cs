@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.ApplicationModel;
-using Biliardo.App.Infrastructure;
 using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Pagine_Media;
@@ -16,10 +15,8 @@ namespace Biliardo.App.Pagine_Debug
     public partial class InfoCachePage : ContentPage
     {
         private readonly MediaCacheService _mediaCache = new();
-        private readonly ChatLocalCache _chatCache = new();
 
         public ObservableCollection<MediaEntryVm> MediaEntries { get; } = new();
-        public ObservableCollection<ChatEntryVm> ChatEntries { get; } = new();
 
         private string _totalLabel = string.Empty;
         public string TotalLabel
@@ -56,11 +53,6 @@ namespace Biliardo.App.Pagine_Debug
                 var entries = await _mediaCache.ListEntriesAsync(CancellationToken.None);
                 foreach (var entry in entries)
                     MediaEntries.Add(new MediaEntryVm(entry, OpenCacheEntryAsync));
-
-                ChatEntries.Clear();
-                var chatSummaries = await _chatCache.ListSummariesAsync(CancellationToken.None);
-                foreach (var summary in chatSummaries)
-                    ChatEntries.Add(new ChatEntryVm(summary.ChatId, summary.MessageCount, summary.Bytes));
 
             }
             catch
@@ -150,24 +142,6 @@ namespace Biliardo.App.Pagine_Debug
             public string StoragePath { get; }
             public string SizeLabel { get; }
             public Command<MediaEntryVm> OpenCommand { get; }
-        }
-
-        public sealed class ChatEntryVm
-        {
-            public ChatEntryVm(string chatId, int count, long bytes)
-            {
-                ChatId = chatId;
-                MessageCount = count;
-                Bytes = bytes;
-            }
-
-            public string ChatId { get; }
-            public int MessageCount { get; }
-            public long Bytes { get; }
-
-            public string ChatLabel => ChatId;
-            public string CountLabel => $"{MessageCount} msg";
-            public string SizeLabel => FormatBytes(Bytes);
         }
 
         private static string FormatBytes(long bytes)

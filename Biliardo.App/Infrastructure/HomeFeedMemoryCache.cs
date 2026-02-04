@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Biliardo.App.Cache_Locale.Home;
+using Biliardo.App.Servizi_Firebase;
 
 namespace Biliardo.App.Infrastructure
 {
@@ -10,16 +10,16 @@ namespace Biliardo.App.Infrastructure
         public static HomeFeedMemoryCache Instance { get; } = new();
 
         private readonly object _lock = new();
-        private List<HomeFeedLocalCache.CachedHomePost> _items = new();
+        private List<FirestoreHomeFeedService.HomePostItem> _items = new();
         private DateTimeOffset _lastUpdatedUtc;
 
-        public bool TryGet(out IReadOnlyList<HomeFeedLocalCache.CachedHomePost> items)
+        public bool TryGet(out IReadOnlyList<FirestoreHomeFeedService.HomePostItem> items)
         {
             lock (_lock)
             {
                 if (_items.Count == 0)
                 {
-                    items = Array.Empty<HomeFeedLocalCache.CachedHomePost>();
+                    items = Array.Empty<FirestoreHomeFeedService.HomePostItem>();
                     return false;
                 }
 
@@ -28,7 +28,7 @@ namespace Biliardo.App.Infrastructure
             }
         }
 
-        public void Set(IReadOnlyList<HomeFeedLocalCache.CachedHomePost> items)
+        public void Set(IReadOnlyList<FirestoreHomeFeedService.HomePostItem> items)
         {
             if (items == null)
                 return;
