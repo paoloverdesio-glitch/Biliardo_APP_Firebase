@@ -107,7 +107,7 @@ namespace Biliardo.App
 #elif WINDOWS
                 events.AddWindows(windows =>
                 {
-                    windows.OnLaunched((_, __) =>
+                    windows.OnLaunched((app, __) =>
                     {
                         _ = CrossFirebaseFirestore.IsSupported;
                     });
