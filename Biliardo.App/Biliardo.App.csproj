@@ -1,10 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
+<<<<<<< HEAD
 		<TargetFrameworks>net8.0-android</TargetFrameworks>
 		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">
 			$(TargetFrameworks);net8.0-windows10.0.19041.0
 		</TargetFrameworks>
+=======
+		<!-- TARGET FRAMEWORK: Android + Windows -->
+		<TargetFrameworks>net8.0-android;net8.0-windows10.0.19041.0</TargetFrameworks>
+>>>>>>> origin/codex/analyze-server-interactions-on-home-page-pev9nj
 
 		<OutputType>Exe</OutputType>
 		<RootNamespace>Biliardo.App</RootNamespace>

@@ -25,6 +25,8 @@ using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
 using Biliardo.App.Infrastructure.Realtime;
 using Biliardo.App.Utilita;
+using Microsoft.Maui.Controls;
+using Microsoft.Maui.Controls.Xaml;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Networking;
