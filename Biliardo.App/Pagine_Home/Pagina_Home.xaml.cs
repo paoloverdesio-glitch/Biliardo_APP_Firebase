@@ -20,6 +20,7 @@ using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Pagine_Debug;
 using Biliardo.App.RiquadroDebugTrasferimentiFirebase;
 using Biliardo.App.Pagine_Media;
+using Biliardo.App.Servizi_Diagnostics;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
 using Biliardo.App.Infrastructure;
@@ -843,6 +844,10 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task SendHomePostOptimisticAsync(ComposerSendPayload payload, HomePostVm vm)
         {
+            DiagLog.Step("Home.SendPost", "Start");
+            DiagLog.Note("Home.SendPost.TextLen", (vm.PendingText ?? "").Length.ToString());
+            DiagLog.Note("Home.SendPost.PendingItems", vm.PendingItems.Count.ToString());
+
             var attachments = new List<FirestoreHomeFeedService.HomeAttachment>();
             var existingAttachments = vm.Attachments
                 .Where(att => att != null)
@@ -864,6 +869,7 @@ namespace Biliardo.App.Pagine_Home
             }
 
             var postId = await _homeFeed.CreatePostAsync(vm.PendingText ?? "", attachments, clientNonce: vm.ClientNonce);
+            DiagLog.Note("Home.SendPost.PostId", postId);
             var localByFullRemote = new Dictionary<string, string>(StringComparer.Ordinal);
             var localByPreviewRemote = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -907,10 +913,12 @@ namespace Biliardo.App.Pagine_Home
             });
 
             RefreshMemoryCacheFromPosts();
+            DiagLog.Step("Home.SendPost", "Ok");
         }
 
         private void MarkHomePostFailed(HomePostVm vm, Exception ex)
         {
+            DiagLog.Exception("Home.SendPost", ex);
             MainThread.BeginInvokeOnMainThread(() =>
             {
                 vm.IsPendingUpload = false;

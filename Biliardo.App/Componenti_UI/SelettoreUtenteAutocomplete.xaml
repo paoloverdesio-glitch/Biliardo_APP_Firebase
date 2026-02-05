@@ -65,11 +65,8 @@
 
                     <CollectionView.ItemTemplate>
                         <DataTemplate>
-                            <Grid Padding="12,10" ColumnDefinitions="Auto,*" HeightRequest="44">
-                                <ui:UserAvatarView WidthRequest="24"
-                                                   HeightRequest="24"
-                                                   Size="24"
-                                                   AvatarUrl="{Binding PhotoUrl}"
+                            <Grid Padding="12,10" ColumnDefinitions="Auto,*" HeightRequest="64">
+                                <ui:UserAvatarView AvatarUrl="{Binding PhotoUrl}"
                                                    AvatarPath="{Binding PhotoUrl}"
                                                    DisplayName="{Binding Nickname}"
                                                    VerticalOptions="Center" />

@@ -46,6 +46,9 @@ namespace Biliardo.App
             DiagLog.Note("Device.Model", DeviceInfo.Model);
             DiagLog.Note("Device.Manufacturer", DeviceInfo.Manufacturer);
             DiagLog.Note("Navigation.Model", "NavigationPage");
+            DiagLog.Note("Auth.SdkSupported", FirebaseAuthSdkService.IsSupported.ToString());
+            DiagLog.Note("Auth.SdkHasUser", (FirebaseAuthSdkService.CurrentUser != null).ToString());
+            DiagLog.Note("Auth.SdkUserUid", FirebaseAuthSdkService.CurrentUser?.Uid ?? "");
             DiagLog.Step("App.Started");
 
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -112,6 +115,9 @@ namespace Biliardo.App
             {
                 var provider = await SessionePersistente.GetProviderAsync();
                 DiagLog.Note("Auth.Provider", provider ?? "");
+                DiagLog.Note("Auth.SdkSupported", FirebaseAuthSdkService.IsSupported.ToString());
+                DiagLog.Note("Auth.SdkHasUser", (FirebaseAuthSdkService.CurrentUser != null).ToString());
+                DiagLog.Note("Auth.SdkUserUid", FirebaseAuthSdkService.CurrentUser?.Uid ?? "");
 
                 var hasSession = await HasUsableSessionAsync(provider);
                 DiagLog.Note("Auth.HasSession", hasSession.ToString());

@@ -8,6 +8,7 @@ using System.Globalization;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Networking;
+using Biliardo.App.Servizi_Diagnostics;
 using Biliardo.App.Servizi_Firebase;
 
 namespace Biliardo.App.Componenti_UI
@@ -94,6 +95,7 @@ namespace Biliardo.App.Componenti_UI
 
                 if (prefix.Length < MinChars)
                 {
+                    DiagLog.Note("Directory.Search.Skip", "MinChars");
                     HideDropdown();
                     return;
                 }
@@ -105,12 +107,14 @@ namespace Biliardo.App.Componenti_UI
                     _items.Clear();
                 }
 
+                DiagLog.Step("Directory.Search", _currentPrefix);
                 await LoadPageAsync(initial: _items.Count == 0, token);
             }
             catch (TaskCanceledException) { }
             catch (Exception ex)
             {
                 Spinner.IsRunning = Spinner.IsVisible = false;
+                DiagLog.Exception("Directory.Search", ex);
                 await Application.Current?.MainPage?.DisplayAlert("Errore", ex.Message, "OK");
             }
         }
@@ -119,6 +123,7 @@ namespace Biliardo.App.Componenti_UI
         {
             if (Connectivity.NetworkAccess != NetworkAccess.Internet)
             {
+                DiagLog.Note("Directory.Search.Network", "Offline");
                 LblEmpty.IsVisible = true;
                 DropPanel.IsVisible = true;
                 return;

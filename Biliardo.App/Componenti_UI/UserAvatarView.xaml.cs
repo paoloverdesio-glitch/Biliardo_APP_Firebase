@@ -60,11 +60,13 @@ namespace Biliardo.App.Componenti_UI
             set => SetValue(DisplayNameProperty, value);
         }
 
+        public const double DefaultSize = 49d;
+
         public static readonly BindableProperty SizeProperty = BindableProperty.Create(
             nameof(Size),
             typeof(double),
             typeof(UserAvatarView),
-            36d);
+            DefaultSize);
 
         public double Size
         {
@@ -104,7 +106,7 @@ namespace Biliardo.App.Componenti_UI
             else if (!string.IsNullOrWhiteSpace(path))
                 key = "path:" + path;
 
-            // Se Ë la stessa chiave gi‡ applicata, evita lavoro e riduci invalidazioni durante scroll.
+            // Se √® la stessa chiave gi√† applicata, evita lavoro e riduci invalidazioni durante scroll.
             if (!string.IsNullOrWhiteSpace(key) && string.Equals(key, _lastKey, StringComparison.Ordinal))
             {
                 UpdateInitials();

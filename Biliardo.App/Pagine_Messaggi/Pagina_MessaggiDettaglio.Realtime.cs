@@ -151,13 +151,19 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task RenderMessagesAsync(IReadOnlyList<FirestoreChatService.MessageItem> cached, string myUid, string peerId)
         {
+            var chatId = ResolveChatIdForClear(myUid, peerId);
+            var clearedAt = ChatLocalState.GetClearedAt(chatId ?? "");
+            var filtered = clearedAt.HasValue
+                ? cached.Where(m => m.CreatedAtUtc > clearedAt.Value).ToList()
+                : cached;
+
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 if (Messaggi.Count > 0)
                     return;
 
                 DateTime? lastDay = null;
-                foreach (var m in cached.OrderBy(x => x.CreatedAtUtc))
+                foreach (var m in filtered.OrderBy(x => x.CreatedAtUtc))
                 {
                     var day = m.CreatedAtUtc.ToLocalTime().Date;
                     if (lastDay == null || day != lastDay.Value)
@@ -210,6 +216,10 @@ namespace Biliardo.App.Pagine_Messaggi
                         return;
 
                     var ordered = items.OrderBy(x => x.CreatedAtUtc).ToList();
+                    var clearedAt = ChatLocalState.GetClearedAt(chatId);
+                    if (clearedAt.HasValue)
+                        ordered = ordered.Where(m => m.CreatedAtUtc > clearedAt.Value).ToList();
+
                     var sig = ComputeUiSignature(ordered);
 
                     if (IsScrollBusy())
@@ -520,6 +530,23 @@ namespace Biliardo.App.Pagine_Messaggi
                 CvMessaggi.ScrollTo(vm, position: ScrollToPosition.End, animate: false);
             }
             catch { }
+        }
+
+        private string? ResolveChatIdForClear(string myUid, string peerId)
+        {
+            if (!string.IsNullOrWhiteSpace(_chatIdCached))
+                return _chatIdCached;
+            if (!string.IsNullOrWhiteSpace(_lastChatId))
+                return _lastChatId;
+
+            try
+            {
+                return FirestoreChatService.GetDeterministicDmChatId(myUid, peerId);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         // ============================================================
