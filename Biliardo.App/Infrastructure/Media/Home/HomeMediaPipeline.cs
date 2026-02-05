@@ -30,9 +30,9 @@ namespace Biliardo.App.Infrastructure.Media.Home
             {
                 var extra = new Dictionary<string, object>
                 {
-                    ["lat"] = FirestoreRestClient.VDouble(item.Latitude ?? 0),
-                    ["lon"] = FirestoreRestClient.VDouble(item.Longitude ?? 0),
-                    ["address"] = FirestoreRestClient.VString(item.Address ?? "")
+                    ["lat"] = item.Latitude ?? 0,
+                    ["lon"] = item.Longitude ?? 0,
+                    ["address"] = item.Address ?? ""
                 };
 
                 return new FirestoreHomeFeedService.HomeAttachment("location", null, null, null, null, 0, 0, extra);
@@ -42,8 +42,8 @@ namespace Biliardo.App.Infrastructure.Media.Home
             {
                 var extra = new Dictionary<string, object>
                 {
-                    ["name"] = FirestoreRestClient.VString(item.ContactName ?? item.DisplayName),
-                    ["phone"] = FirestoreRestClient.VString(item.ContactPhone ?? "")
+                    ["name"] = item.ContactName ?? item.DisplayName,
+                    ["phone"] = item.ContactPhone ?? ""
                 };
 
                 return new FirestoreHomeFeedService.HomeAttachment("contact", null, null, null, null, 0, 0, extra);

@@ -115,7 +115,7 @@ namespace Biliardo.App.Pagine_Messaggi
                     var vmText = CreateOptimisticTextMessage(msgId, myUid!, payload.Text);
                     vmText.RetryCommand = RetrySendCommand;
                     AddOptimisticMessage(vmText);
-                    await UpsertLocalMessageAsync(chatId!, peerId, new FirestoreChatService.MessageItem(
+                    await AppendOptimisticMessageAsync(peerId, new FirestoreChatService.MessageItem(
                         MessageId: msgId,
                         SenderId: myUid!,
                         Type: "text",
@@ -163,7 +163,7 @@ namespace Biliardo.App.Pagine_Messaggi
                     vmAtt.PendingLocalPath = attVm.LocalPath;
                     vmAtt.RetryCommand = RetrySendCommand;
                     AddOptimisticMessage(vmAtt);
-                    await UpsertLocalMessageAsync(chatId!, peerId, new FirestoreChatService.MessageItem(
+                    await AppendOptimisticMessageAsync(peerId, new FirestoreChatService.MessageItem(
                         MessageId: msgId,
                         SenderId: myUid!,
                         Type: attVm.Kind switch
@@ -648,7 +648,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 previewMap: previewMap,
                 waveform: a.Waveform);
 
-            await UpsertLocalMessageAsync(chatId, peerUid, new FirestoreChatService.MessageItem(
+            await AppendOptimisticMessageAsync(peerUid, new FirestoreChatService.MessageItem(
                 MessageId: msgId,
                 SenderId: myUid,
                 Type: type,
@@ -740,18 +740,18 @@ namespace Biliardo.App.Pagine_Messaggi
             var map = new Dictionary<string, object>();
 
             if (!string.IsNullOrWhiteSpace(thumbStoragePath))
-                map["thumbStoragePath"] = FirestoreRestClient.VString(thumbStoragePath);
+                map["thumbStoragePath"] = thumbStoragePath;
 
             if (!string.IsNullOrWhiteSpace(preview.LqipBase64) && AppMediaOptions.StoreLqipInFirestore)
-                map["lqipBase64"] = FirestoreRestClient.VString(preview.LqipBase64);
+                map["lqipBase64"] = preview.LqipBase64;
 
             if (preview.Width > 0)
-                map["thumbWidth"] = FirestoreRestClient.VInt(preview.Width);
+                map["thumbWidth"] = preview.Width;
             if (preview.Height > 0)
-                map["thumbHeight"] = FirestoreRestClient.VInt(preview.Height);
+                map["thumbHeight"] = preview.Height;
 
             if (!string.IsNullOrWhiteSpace(preview.PreviewType))
-                map["previewType"] = FirestoreRestClient.VString(preview.PreviewType);
+                map["previewType"] = preview.PreviewType;
 
             return map.Count == 0 ? null : map;
         }

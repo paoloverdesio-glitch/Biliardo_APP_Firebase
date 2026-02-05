@@ -1,11 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<!-- TARGET FRAMEWORK: per ora SOLO Android (+ Windows su PC) -->
-		<TargetFrameworks>net8.0-android</TargetFrameworks>
-		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">
-			$(TargetFrameworks);net8.0-windows10.0.19041.0
-		</TargetFrameworks>
+		<!-- TARGET FRAMEWORK: Android + Windows -->
+		<TargetFrameworks>net8.0-android;net8.0-windows10.0.19041.0</TargetFrameworks>
 
 		<OutputType>Exe</OutputType>
 		<RootNamespace>Biliardo.App</RootNamespace>
@@ -82,6 +79,7 @@
 
 		<!-- FCM cross-platform (Android + iOS, ma ora compiliamo solo Android) -->
 		<PackageReference Include="Plugin.Firebase.CloudMessaging" Version="3.1.2" />
+		<PackageReference Include="Plugin.Firebase.Firestore" Version="3.1.1" />
 	</ItemGroup>
 
 	<!-- google-services.json solo per Android (build action dedicata) -->
