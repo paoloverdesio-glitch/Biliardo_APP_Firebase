@@ -63,7 +63,7 @@ jobs:
         run: dotnet workload install maui-android
 
       - name: Restore (Android)
-        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-android34.0
+        run: dotnet restore Biliardo.App/Biliardo.App.csproj -p:TargetFramework=net8.0-android
 
       - name: Build (Android)
-        run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android34.0 --no-restore
+        run: dotnet build Biliardo.App/Biliardo.App.csproj -c Debug -f net8.0-android --no-restore
