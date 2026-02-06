@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Biliardo.App.Infrastructure.Home;
 using Biliardo.App.Servizi_Diagnostics;
 using Plugin.Firebase.Firestore;
@@ -138,42 +139,30 @@ namespace Biliardo.App.Servizi_Firebase
             DiagLog.Note("Home.CreatePost.AuthorNickname", nickname);
             DiagLog.Note("Home.CreatePost.Attachments", safeAttachments.Count.ToString(CultureInfo.InvariantCulture));
 
-            var fields = new Dictionary<string, object?>
+            var restFields = new Dictionary<string, object>
             {
-                ["schemaVersion"] = HomePostValidatorV2.SchemaVersion,
-                ["ready"] = safeAttachments.Count == 0 ? isReady : false,
-                ["authorUid"] = myUid,
-                ["authorNickname"] = nickname,
-                ["authorFirstName"] = string.IsNullOrWhiteSpace(firstName) ? null : firstName,
-                ["authorLastName"] = string.IsNullOrWhiteSpace(lastName) ? null : lastName,
-                ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? null : avatarPath,
-                ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarUrl) ? null : avatarUrl,
-                ["createdAt"] = now,
-                ["text"] = safeText,
-                ["attachments"] = safeAttachments.Select(ToFirestoreAttachment).ToList(),
-                ["likeCount"] = 0,
-                ["commentCount"] = 0,
-                ["shareCount"] = 0,
-                ["deleted"] = false,
-                ["deletedAt"] = null,
-                ["repostOfPostId"] = string.IsNullOrWhiteSpace(repostOfPostId) ? null : repostOfPostId,
-                ["clientNonce"] = string.IsNullOrWhiteSpace(clientNonce) ? null : clientNonce
+                ["schemaVersion"] = FirestoreRestClient.VInt(HomePostValidatorV2.SchemaVersion),
+                ["ready"] = FirestoreRestClient.VBool(isReady),
+                ["authorUid"] = FirestoreRestClient.VString(myUid),
+                ["authorNickname"] = FirestoreRestClient.VString(nickname ?? ""),
+                ["authorFirstName"] = string.IsNullOrWhiteSpace(firstName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(firstName),
+                ["authorLastName"] = string.IsNullOrWhiteSpace(lastName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(lastName),
+                ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarPath),
+                ["authorAvatarUrl"] = string.IsNullOrWhiteSpace(avatarUrl) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(avatarUrl),
+                ["createdAt"] = FirestoreRestClient.VTimestamp(now),
+                ["text"] = FirestoreRestClient.VString(safeText),
+                ["attachments"] = FirestoreRestClient.VArray(safeAttachments.Select(ToRestAttachmentValue).ToArray()),
+                ["likeCount"] = FirestoreRestClient.VInt(0),
+                ["commentCount"] = FirestoreRestClient.VInt(0),
+                ["shareCount"] = FirestoreRestClient.VInt(0),
+                ["deleted"] = FirestoreRestClient.VBool(false),
+                ["deletedAt"] = FirestoreRestClient.VNull(),
+                ["repostOfPostId"] = string.IsNullOrWhiteSpace(repostOfPostId) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(repostOfPostId),
+                ["clientNonce"] = string.IsNullOrWhiteSpace(clientNonce) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(clientNonce)
             };
 
-            var doc = _db.GetCollection("home_posts").CreateDocument();
-            var postId = doc.Id;
-            await doc.SetDataAsync(fields);
-
-            if (safeAttachments.Count > 0)
-            {
-                var patchReady = isReady;
-                await doc.UpdateDataAsync(new[]
-                {
-                    ("attachments", (object)safeAttachments.Select(ToFirestoreAttachment).ToList()),
-                    ("ready", (object)patchReady)
-                });
-            }
-
+            var created = await FirestoreRestClient.CreateDocumentAsync("home_posts", null, restFields, idToken, ct);
+            var postId = ParseDocumentId(created);
             return postId;
         }
 
@@ -398,6 +387,88 @@ namespace Biliardo.App.Servizi_Firebase
                 ["thumbHeight"] = attachment.ThumbHeight,
                 ["waveform"] = attachment.Waveform?.ToList()
             };
+        }
+
+        private static object ToRestAttachmentValue(HomeAttachment attachment)
+        {
+            var fields = new Dictionary<string, object>
+            {
+                ["type"] = FirestoreRestClient.VString(attachment.Type ?? ""),
+                ["storagePath"] = string.IsNullOrWhiteSpace(attachment.StoragePath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.StoragePath),
+                ["downloadUrl"] = string.IsNullOrWhiteSpace(attachment.DownloadUrl) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.DownloadUrl),
+                ["fileName"] = string.IsNullOrWhiteSpace(attachment.FileName) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.FileName),
+                ["contentType"] = string.IsNullOrWhiteSpace(attachment.ContentType) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.ContentType),
+                ["sizeBytes"] = FirestoreRestClient.VInt(attachment.SizeBytes),
+                ["durationMs"] = FirestoreRestClient.VInt(attachment.DurationMs),
+                ["extra"] = attachment.Extra == null ? FirestoreRestClient.VNull() : ToRestValue(attachment.Extra),
+                ["thumbStoragePath"] = string.IsNullOrWhiteSpace(attachment.ThumbStoragePath) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.ThumbStoragePath),
+                ["lqipBase64"] = string.IsNullOrWhiteSpace(attachment.LqipBase64) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.LqipBase64),
+                ["previewType"] = string.IsNullOrWhiteSpace(attachment.PreviewType) ? FirestoreRestClient.VNull() : FirestoreRestClient.VString(attachment.PreviewType),
+                ["thumbWidth"] = attachment.ThumbWidth.HasValue ? FirestoreRestClient.VInt(attachment.ThumbWidth.Value) : FirestoreRestClient.VNull(),
+                ["thumbHeight"] = attachment.ThumbHeight.HasValue ? FirestoreRestClient.VInt(attachment.ThumbHeight.Value) : FirestoreRestClient.VNull(),
+                ["waveform"] = attachment.Waveform == null ? FirestoreRestClient.VNull() : FirestoreRestClient.VArray(attachment.Waveform.Select(v => FirestoreRestClient.VInt(v)).ToArray())
+            };
+
+            return FirestoreRestClient.VMap(fields);
+        }
+
+        private static object ToRestValue(object? value)
+        {
+            if (value == null)
+                return FirestoreRestClient.VNull();
+
+            switch (value)
+            {
+                case string s:
+                    return FirestoreRestClient.VString(s);
+                case bool b:
+                    return FirestoreRestClient.VBool(b);
+                case int i:
+                    return FirestoreRestClient.VInt(i);
+                case long l:
+                    return FirestoreRestClient.VInt(l);
+                case short sh:
+                    return FirestoreRestClient.VInt(sh);
+                case double d:
+                    return FirestoreRestClient.VDouble(d);
+                case float f:
+                    return FirestoreRestClient.VDouble(f);
+                case decimal m:
+                    return FirestoreRestClient.VDouble((double)m);
+                case DateTimeOffset dto:
+                    return FirestoreRestClient.VTimestamp(dto);
+                case DateTime dt:
+                    return FirestoreRestClient.VTimestamp(new DateTimeOffset(dt));
+                case IDictionary<string, object> map:
+                    {
+                        var fields = new Dictionary<string, object>();
+                        foreach (var kv in map)
+                            fields[kv.Key] = ToRestValue(kv.Value);
+                        return FirestoreRestClient.VMap(fields);
+                    }
+                case IEnumerable<int> ints:
+                    return FirestoreRestClient.VArray(ints.Select(v => FirestoreRestClient.VInt(v)).ToArray());
+                case IEnumerable<object> objs:
+                    return FirestoreRestClient.VArray(objs.Select(ToRestValue).ToArray());
+                default:
+                    return FirestoreRestClient.VString(value.ToString() ?? "");
+            }
+        }
+
+        private static string ParseDocumentId(JsonDocument document)
+        {
+            if (document == null)
+                throw new ArgumentNullException(nameof(document));
+
+            if (!document.RootElement.TryGetProperty("name", out var nameProp))
+                throw new InvalidOperationException("Firestore CREATE: risposta senza nome documento.");
+
+            var name = nameProp.GetString();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException("Firestore CREATE: nome documento vuoto.");
+
+            var parts = name.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length > 0 ? parts[^1] : throw new InvalidOperationException("Firestore CREATE: ID documento non valido.");
         }
 
         private static HomeAttachmentContractV2 ToContractAttachment(HomeAttachment attachment)

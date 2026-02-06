@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Biliardo.App.Servizi_Diagnostics;
-using Plugin.Firebase.Firestore;
 
 namespace Biliardo.App.Servizi_Firebase
 {
@@ -73,27 +73,72 @@ namespace Biliardo.App.Servizi_Firebase
             DiagLog.Note("Directory.Search.Take", take.ToString());
             DiagLog.Note("Directory.Search.After", afterLower ?? "");
 
-            var query = CrossFirebaseFirestore.Current
-                .GetCollection("users_public")
-                .OrderBy("nicknameLower", false)
-                .WhereGreaterThan("nicknameLower", prefixLower)
-                .WhereLessThan("nicknameLower", high)
-                .LimitedTo(take + 1);
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var filters = new List<object>
+            {
+                new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "nicknameLower" },
+                        ["op"] = "GREATER_THAN_OR_EQUAL",
+                        ["value"] = new Dictionary<string, object> { ["stringValue"] = prefixLower }
+                    }
+                },
+                new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "nicknameLower" },
+                        ["op"] = "LESS_THAN_OR_EQUAL",
+                        ["value"] = new Dictionary<string, object> { ["stringValue"] = high }
+                    }
+                }
+            };
 
             if (!string.IsNullOrWhiteSpace(afterLower))
-                query = query.WhereGreaterThan("nicknameLower", afterLower);
+            {
+                filters.Add(new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "nicknameLower" },
+                        ["op"] = "GREATER_THAN",
+                        ["value"] = new Dictionary<string, object> { ["stringValue"] = afterLower }
+                    }
+                });
+            }
 
-            var rangeItems = await FetchUsersAsync(query, ct).ConfigureAwait(false);
+            var structuredQuery = new Dictionary<string, object>
+            {
+                ["from"] = new[]
+                {
+                    new Dictionary<string, object> { ["collectionId"] = "users_public" }
+                },
+                ["orderBy"] = new[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "nicknameLower" },
+                        ["direction"] = "ASCENDING"
+                    }
+                },
+                ["where"] = new Dictionary<string, object>
+                {
+                    ["compositeFilter"] = new Dictionary<string, object>
+                    {
+                        ["op"] = "AND",
+                        ["filters"] = filters.ToArray()
+                    }
+                },
+                ["limit"] = take + 1
+            };
 
-            var exactQuery = CrossFirebaseFirestore.Current
-                .GetCollection("users_public")
-                .WhereEqualsTo("nicknameLower", prefixLower)
-                .LimitedTo(1);
-
-            var exactItems = await FetchUsersAsync(exactQuery, ct).ConfigureAwait(false);
-
-            var merged = rangeItems
-                .Concat(exactItems)
+            var queryDoc = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
+            var merged = ParseUsersFromRunQuery(queryDoc)
                 .Where(u => !string.IsNullOrWhiteSpace(u.NicknameLower))
                 .GroupBy(u => u.Uid, StringComparer.Ordinal)
                 .Select(g => g.First())
@@ -120,79 +165,53 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(uid))
                 return null;
 
-            var doc = CrossFirebaseFirestore.Current.GetDocument($"users_public/{uid.Trim()}");
-            var snapshot = await doc.GetDocumentSnapshotAsync<Dictionary<string, object>>(Source.Default);
-            if (snapshot.Data == null)
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var doc = await FirestoreRestClient.GetDocumentAsync($"users_public/{uid.Trim()}", idToken, ct);
+            if (!doc.RootElement.TryGetProperty("fields", out var fields))
                 return null;
 
-            return MapUserPublic(uid, snapshot);
+            return MapUserPublicFromFields(uid, fields);
         }
 
-        private static async Task<List<UserPublicItem>> FetchUsersAsync(IQuery query, CancellationToken ct)
+        private static List<UserPublicItem> ParseUsersFromRunQuery(JsonDocument doc)
         {
-            var tcs = new TaskCompletionSource<List<UserPublicItem>>(TaskCreationOptions.RunContinuationsAsynchronously);
-            IDisposable? listener = null;
-
-            void Cleanup()
+            var list = new List<UserPublicItem>();
+            foreach (var element in doc.RootElement.EnumerateArray())
             {
-                try { listener?.Dispose(); } catch { }
+                if (!element.TryGetProperty("document", out var docElement))
+                    continue;
+                if (!docElement.TryGetProperty("name", out var nameProp))
+                    continue;
+                if (!docElement.TryGetProperty("fields", out var fields))
+                    continue;
+
+                var name = nameProp.GetString();
+                var uid = ExtractDocId(name);
+                if (string.IsNullOrWhiteSpace(uid))
+                    continue;
+
+                var item = MapUserPublicFromFields(uid, fields);
+                if (item != null)
+                    list.Add(item);
             }
 
-            try
-            {
-                listener = query.AddSnapshotListener<Dictionary<string, object>>(
-                    snapshot =>
-                    {
-                        var list = new List<UserPublicItem>();
-                        foreach (var doc in snapshot.Documents)
-                        {
-                            var item = MapUserPublic(doc.Reference.Id, doc);
-                            if (item != null)
-                                list.Add(item);
-                        }
-
-                        tcs.TrySetResult(list);
-                        Cleanup();
-                    },
-                    ex =>
-                    {
-                        DiagLog.Exception("Directory.FetchUsers", ex);
-                        tcs.TrySetException(ex);
-                        Cleanup();
-                    });
-            }
-            catch (Exception ex)
-            {
-                Cleanup();
-                DiagLog.Exception("Directory.FetchUsers", ex);
-                tcs.TrySetException(ex);
-            }
-
-            using (ct.Register(() =>
-            {
-                tcs.TrySetCanceled(ct);
-                Cleanup();
-            }))
-            {
-                return await tcs.Task.ConfigureAwait(false);
-            }
+            return list;
         }
 
-        private static UserPublicItem? MapUserPublic(string uid, IDocumentSnapshot<Dictionary<string, object>> snapshot)
+        private static UserPublicItem? MapUserPublicFromFields(string uid, JsonElement fields)
         {
-            var data = snapshot.Data;
-            if (data == null)
-                return null;
-
-            var nickname = ReadString(data, "nickname") ?? "";
-            var nicknameLower = ReadString(data, "nicknameLower")
+            var nickname = ReadString(fields, "nickname") ?? "";
+            var nicknameLower = ReadString(fields, "nicknameLower")
                                 ?? (string.IsNullOrWhiteSpace(nickname) ? "" : nickname.ToLowerInvariant());
 
-            var firstName = ReadString(data, "firstName") ?? ReadString(data, "nome") ?? "";
-            var lastName = ReadString(data, "lastName") ?? ReadString(data, "cognome") ?? "";
+            var firstName = ReadString(fields, "firstName") ?? ReadString(fields, "nome") ?? "";
+            var lastName = ReadString(fields, "lastName") ?? ReadString(fields, "cognome") ?? "";
 
-            var avatarUrl = ReadString(data, "avatarUrl") ?? ReadString(data, "photoUrl") ?? "";
-            var avatarPath = ReadString(data, "avatarPath") ?? "";
+            var avatarUrl = ReadString(fields, "avatarUrl") ?? ReadString(fields, "photoUrl") ?? "";
+            var avatarPath = ReadString(fields, "avatarPath") ?? "";
 
             return new UserPublicItem
             {
@@ -207,7 +226,21 @@ namespace Biliardo.App.Servizi_Firebase
             };
         }
 
-        private static string? ReadString(IDictionary<string, object>? map, string key)
-            => map != null && map.TryGetValue(key, out var value) ? value?.ToString() : null;
+        private static string? ReadString(JsonElement fields, string key)
+        {
+            if (!fields.TryGetProperty(key, out var field))
+                return null;
+            if (field.TryGetProperty("stringValue", out var stringValue))
+                return stringValue.GetString();
+            return null;
+        }
+
+        private static string? ExtractDocId(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return null;
+            var parts = name.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length > 0 ? parts[^1] : null;
+        }
     }
 }
