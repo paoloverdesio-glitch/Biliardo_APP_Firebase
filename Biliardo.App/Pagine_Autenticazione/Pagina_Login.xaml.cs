@@ -98,9 +98,11 @@ namespace Biliardo.App.Pagine_Autenticazione
             try
             {
                 DiagLog.Step("Login(Firebase)", "Click");
+                DiagLog.Note("Login.Email", email);
 
                 // 1) Sign-in
                 var signIn = await FirebaseAuthClient.SignInWithPasswordAsync(email, password, CancellationToken.None);
+                DiagLog.Note("Login.Rest.IdToken", string.IsNullOrWhiteSpace(signIn.IdToken) ? "Missing" : "Present");
 
                 // 2) Lookup per emailVerified (+ displayName/email/localId aggiornati)
                 var info = await FirebaseAuthClient.LookupAsync(signIn.IdToken, CancellationToken.None);
@@ -127,6 +129,10 @@ namespace Biliardo.App.Pagine_Autenticazione
 
                     return;
                 }
+
+                // 3b) Sign-in Firebase Auth SDK (necessario per Firestore SDK + rules)
+                _ = await FirebaseAuthSdkService.EnsureSignedInAsync(email, password, CancellationToken.None);
+                DiagLog.Note("Login.SdkUserUid", FirebaseAuthSdkService.CurrentUser?.Uid ?? "");
 
                 // 4) Normalizzazione metadati (se lookup fornisce valori migliori)
                 if (!string.IsNullOrWhiteSpace(user.LocalId)) signIn.LocalId = user.LocalId;

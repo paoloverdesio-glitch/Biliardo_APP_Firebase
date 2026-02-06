@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Biliardo.App.Servizi_Diagnostics;
 using Plugin.Firebase.Firestore;
 
 namespace Biliardo.App.Servizi_Firebase
@@ -68,6 +69,10 @@ namespace Biliardo.App.Servizi_Firebase
             var high = prefixLower + "\uf8ff";
             var afterLower = string.IsNullOrWhiteSpace(after) ? null : after.Trim().ToLowerInvariant();
 
+            DiagLog.Note("Directory.Search.Prefix", prefixLower);
+            DiagLog.Note("Directory.Search.Take", take.ToString());
+            DiagLog.Note("Directory.Search.After", afterLower ?? "");
+
             var query = CrossFirebaseFirestore.Current
                 .GetCollection("users_public")
                 .OrderBy("nicknameLower", false)
@@ -100,10 +105,27 @@ namespace Biliardo.App.Servizi_Firebase
             {
                 var page = merged.Take(take).ToList();
                 next = page.Count > 0 ? page[^1].NicknameLower : null;
+                DiagLog.Note("Directory.Search.NextCursor", next ?? "");
+                DiagLog.Note("Directory.Search.Count", page.Count.ToString());
                 return new SearchUsersRes { Items = page, NextCursor = next };
             }
 
+            DiagLog.Note("Directory.Search.NextCursor", "");
+            DiagLog.Note("Directory.Search.Count", merged.Count.ToString());
             return new SearchUsersRes { Items = merged, NextCursor = null };
+        }
+
+        public static async Task<UserPublicItem?> GetUserPublicAsync(string uid, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(uid))
+                return null;
+
+            var doc = CrossFirebaseFirestore.Current.GetDocument($"users_public/{uid.Trim()}");
+            var snapshot = await doc.GetDocumentSnapshotAsync<Dictionary<string, object>>(Source.Default);
+            if (snapshot.Data == null)
+                return null;
+
+            return MapUserPublic(uid, snapshot);
         }
 
         private static async Task<List<UserPublicItem>> FetchUsersAsync(IQuery query, CancellationToken ct)
@@ -134,6 +156,7 @@ namespace Biliardo.App.Servizi_Firebase
                     },
                     ex =>
                     {
+                        DiagLog.Exception("Directory.FetchUsers", ex);
                         tcs.TrySetException(ex);
                         Cleanup();
                     });
@@ -141,6 +164,7 @@ namespace Biliardo.App.Servizi_Firebase
             catch (Exception ex)
             {
                 Cleanup();
+                DiagLog.Exception("Directory.FetchUsers", ex);
                 tcs.TrySetException(ex);
             }
 

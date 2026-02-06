@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Biliardo.App.Infrastructure.Home;
+using Biliardo.App.Servizi_Diagnostics;
 using Plugin.Firebase.Firestore;
 
 namespace Biliardo.App.Servizi_Firebase
@@ -88,7 +89,13 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
             var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
-            var nickname = FirebaseSessionePersistente.GetDisplayName() ?? "";
+            var displayName = FirebaseSessionePersistente.GetDisplayName();
+            var email = FirebaseSessionePersistente.GetEmail();
+            var nickname = !string.IsNullOrWhiteSpace(displayName)
+                ? displayName
+                : !string.IsNullOrWhiteSpace(email)
+                    ? email
+                    : myUid;
 
             string? avatarPath = null;
             string? avatarUrl = null;
@@ -127,12 +134,16 @@ namespace Biliardo.App.Servizi_Firebase
             var readyCandidate = draft with { Ready = true };
             var isReady = HomePostValidatorV2.IsServerReady(readyCandidate);
 
+            DiagLog.Note("Home.CreatePost.AuthorUid", myUid);
+            DiagLog.Note("Home.CreatePost.AuthorNickname", nickname);
+            DiagLog.Note("Home.CreatePost.Attachments", safeAttachments.Count.ToString(CultureInfo.InvariantCulture));
+
             var fields = new Dictionary<string, object?>
             {
                 ["schemaVersion"] = HomePostValidatorV2.SchemaVersion,
                 ["ready"] = safeAttachments.Count == 0 ? isReady : false,
                 ["authorUid"] = myUid,
-                ["authorNickname"] = string.IsNullOrWhiteSpace(nickname) ? null : nickname,
+                ["authorNickname"] = nickname,
                 ["authorFirstName"] = string.IsNullOrWhiteSpace(firstName) ? null : firstName,
                 ["authorLastName"] = string.IsNullOrWhiteSpace(lastName) ? null : lastName,
                 ["authorAvatarPath"] = string.IsNullOrWhiteSpace(avatarPath) ? null : avatarPath,

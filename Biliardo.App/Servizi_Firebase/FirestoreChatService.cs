@@ -392,6 +392,106 @@ namespace Biliardo.App.Servizi_Firebase
             });
         }
 
+        public async Task<int> GetUnreadCountAsync(string chatId, string myUid, DateTimeOffset? clearedAfterUtc = null, int limit = 200, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return 0;
+
+            if (limit <= 0) limit = 200;
+
+            static DateTimeOffset? ReadTimestamp(object? value)
+            {
+                if (value == null)
+                    return null;
+                if (value is DateTimeOffset dto)
+                    return dto;
+                if (value is DateTime dt)
+                    return new DateTimeOffset(dt);
+                if (value is long ticks && ticks > 0)
+                    return new DateTimeOffset(ticks, TimeSpan.Zero);
+                return null;
+            }
+
+            var query = _db
+                .GetCollection($"chats/{chatId}/messages")
+                .OrderBy("createdAt", true)
+                .LimitedTo(limit);
+
+            var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable? listener = null;
+
+            void Cleanup()
+            {
+                try { listener?.Dispose(); } catch { }
+            }
+
+            try
+            {
+                listener = query.AddSnapshotListener<Dictionary<string, object>>(
+                    snapshot =>
+                    {
+                        var count = 0;
+                        foreach (var doc in snapshot.Documents)
+                        {
+                            var data = doc.Data;
+                            if (data == null)
+                                continue;
+
+                            var senderId = data.TryGetValue("senderId", out var senderObj) ? senderObj?.ToString() ?? "" : "";
+                            if (string.IsNullOrWhiteSpace(senderId) || string.Equals(senderId, myUid, StringComparison.Ordinal))
+                                continue;
+
+                            if (clearedAfterUtc.HasValue)
+                            {
+                                var createdAt = ReadTimestamp(data.TryGetValue("createdAt", out var createdObj) ? createdObj : null);
+                                if (createdAt.HasValue && createdAt.Value <= clearedAfterUtc.Value)
+                                    continue;
+                            }
+
+                            var deletedForAll = data.TryGetValue("deletedForAll", out var delAllObj) && delAllObj is bool b && b;
+                            if (deletedForAll)
+                                continue;
+
+                            if (data.TryGetValue("deletedFor", out var delObj) && delObj is IEnumerable<object> delList)
+                            {
+                                if (delList.Select(x => x?.ToString()).Any(x => string.Equals(x, myUid, StringComparison.Ordinal)))
+                                    continue;
+                            }
+
+                            if (data.TryGetValue("readBy", out var readObj) && readObj is IEnumerable<object> readList)
+                            {
+                                if (readList.Select(x => x?.ToString()).Any(x => string.Equals(x, myUid, StringComparison.Ordinal)))
+                                    continue;
+                            }
+
+                            count++;
+                        }
+
+                        tcs.TrySetResult(count);
+                        Cleanup();
+                    },
+                    ex =>
+                    {
+                        tcs.TrySetException(ex);
+                        Cleanup();
+                    });
+            }
+            catch (Exception ex)
+            {
+                Cleanup();
+                tcs.TrySetException(ex);
+            }
+
+            using (ct.Register(() =>
+            {
+                tcs.TrySetCanceled(ct);
+                Cleanup();
+            }))
+            {
+                return await tcs.Task.ConfigureAwait(false);
+            }
+        }
+
         public async Task MarkDeliveredBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
