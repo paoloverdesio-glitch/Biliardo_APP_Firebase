@@ -15,7 +15,6 @@ using Biliardo.App.Pagine_Home;
 using Biliardo.App.Pagine_Autenticazione;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Firebase;
-using Biliardo.App.Realtime;
 using Biliardo.App.Infrastructure.Sync;
 using Plugin.Firebase.CloudMessaging.EventArgs;
 
@@ -47,6 +46,9 @@ namespace Biliardo.App
             DiagLog.Note("Device.Model", DeviceInfo.Model);
             DiagLog.Note("Device.Manufacturer", DeviceInfo.Manufacturer);
             DiagLog.Note("Navigation.Model", "NavigationPage");
+            DiagLog.Note("Auth.SdkSupported", FirebaseAuthSdkService.IsSupported.ToString());
+            DiagLog.Note("Auth.SdkHasUser", (FirebaseAuthSdkService.CurrentUser != null).ToString());
+            DiagLog.Note("Auth.SdkUserUid", FirebaseAuthSdkService.CurrentUser?.Uid ?? "");
             DiagLog.Step("App.Started");
 
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -113,6 +115,9 @@ namespace Biliardo.App
             {
                 var provider = await SessionePersistente.GetProviderAsync();
                 DiagLog.Note("Auth.Provider", provider ?? "");
+                DiagLog.Note("Auth.SdkSupported", FirebaseAuthSdkService.IsSupported.ToString());
+                DiagLog.Note("Auth.SdkHasUser", (FirebaseAuthSdkService.CurrentUser != null).ToString());
+                DiagLog.Note("Auth.SdkUserUid", FirebaseAuthSdkService.CurrentUser?.Uid ?? "");
 
                 var hasSession = await HasUsableSessionAsync(provider);
                 DiagLog.Note("Auth.HasSession", hasSession.ToString());
@@ -167,7 +172,6 @@ namespace Biliardo.App
                     var ro = n.Data.ToDictionary(kv => kv.Key, kv => kv.Value);
                     _ = Task.Run(() => PushCacheUpdater.UpdateAsync(ro, CancellationToken.None));
                     _ = Task.Run(() => EnqueueMissingIfNeededAsync(ro));
-                    PublishRealtimeFromPush(ro);
                 }
             }
             catch (Exception ex)
@@ -330,25 +334,5 @@ namespace Biliardo.App
             }
         }
 
-        private static void PublishRealtimeFromPush(IReadOnlyDictionary<string, string> data)
-        {
-            if (data == null || data.Count == 0)
-                return;
-
-            var kind = data.TryGetValue("kind", out var k) ? k : "";
-            if (string.Equals(kind, "private_message", StringComparison.OrdinalIgnoreCase))
-            {
-                BusEventiRealtime.Instance.PublishChatMessage(data);
-                return;
-            }
-
-            if (string.Equals(kind, "home_post", StringComparison.OrdinalIgnoreCase))
-            {
-                BusEventiRealtime.Instance.PublishHomePost(data);
-                return;
-            }
-
-            // fallback: se non conosco il tipo, non pubblico
-        }
     }
 }

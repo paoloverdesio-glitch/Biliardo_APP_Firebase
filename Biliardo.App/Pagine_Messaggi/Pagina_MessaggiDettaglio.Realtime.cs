@@ -3,13 +3,12 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Maui.Graphics;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls;
 
 using Biliardo.App.Servizi_Firebase;
-using Biliardo.App.Servizi_Sicurezza;
-using Biliardo.App.Realtime;
 using Biliardo.App.Infrastructure;
 
 namespace Biliardo.App.Pagine_Messaggi
@@ -142,32 +141,29 @@ namespace Biliardo.App.Pagine_Messaggi
             if (string.IsNullOrWhiteSpace(myUid))
                 return;
 
-            _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
+            _chatCacheKey ??= _chatIdCached ?? $"peer:{peerId}";
             if (ChatDetailMemoryCache.Instance.TryGet(_chatCacheKey, out var memoryItems) && !_loadedFromMemory)
             {
                 _loadedFromMemory = true;
                 await RenderMessagesAsync(memoryItems, myUid, peerId);
             }
-
-            var cached = await _chatCache.TryReadAsync(_chatCacheKey, CancellationToken.None);
-            if (cached.Count == 0)
-                return;
-
-            _loadedFromCache = true;
-
-            await RenderMessagesAsync(cached, myUid, peerId);
-            ChatDetailMemoryCache.Instance.Set(_chatCacheKey, cached);
         }
 
         private async Task RenderMessagesAsync(IReadOnlyList<FirestoreChatService.MessageItem> cached, string myUid, string peerId)
         {
+            var chatId = ResolveChatIdForClear(myUid, peerId);
+            var clearedAt = ChatLocalState.GetClearedAt(chatId ?? "");
+            var filtered = clearedAt.HasValue
+                ? cached.Where(m => m.CreatedAtUtc > clearedAt.Value).ToList()
+                : cached;
+
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 if (Messaggi.Count > 0)
                     return;
 
                 DateTime? lastDay = null;
-                foreach (var m in cached.OrderBy(x => x.CreatedAtUtc))
+                foreach (var m in filtered.OrderBy(x => x.CreatedAtUtc))
                 {
                     var day = m.CreatedAtUtc.ToLocalTime().Date;
                     if (lastDay == null || day != lastDay.Value)
@@ -186,253 +182,86 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task LoadOlderMessagesAsync()
         {
-            if (_isLoadingOlder)
-                return;
+            await Task.CompletedTask;
+        }
 
+        private async Task StartFirestoreListenersAsync(CancellationToken ct)
+        {
             var myUid = FirebaseSessionePersistente.GetLocalId();
-            var peerId = _lastPeerId;
-
-            if (string.IsNullOrWhiteSpace(myUid) ||
-                string.IsNullOrWhiteSpace(peerId))
+            var peerId = (_peerUserId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(myUid) || string.IsNullOrWhiteSpace(peerId))
                 return;
 
-            var oldest = Messaggi.FirstOrDefault(x => !x.IsDateSeparator);
-            if (oldest == null)
+            StartPeerProfileListener();
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
                 return;
 
-            _isLoadingOlder = true;
-            try
-            {
-                var cacheKey = _chatCacheKey ?? _chatCache.GetCacheKey(_chatIdCached, peerId);
-                _chatCacheKey = cacheKey;
+            var chatId = await EnsureChatIdAsync(idToken, myUid, peerId, ct);
+            if (string.IsNullOrWhiteSpace(chatId))
+                return;
 
-                var olderRows = await _chatStore.ListMessagesBeforeAsync(cacheKey, oldest.CreatedAt, limit: 30, CancellationToken.None);
-                if (olderRows.Count == 0)
-                    return;
+            _chatIdCached = chatId;
+            _lastChatId = chatId;
+            _chatCacheKey ??= chatId;
 
-                var ordered = olderRows
-                    .Select(row => MapRowToMessage(row))
-                    .OrderBy(x => x.CreatedAtUtc)
-                    .ToList();
-
-                await MainThread.InvokeOnMainThreadAsync(() =>
+            _messagesListener?.Dispose();
+            _messagesListener = _realtime.SubscribeChatMessages(
+                chatId,
+                80,
+                items =>
                 {
-                    var insertIndex = 0;
-                    var existingFirstDay = oldest.CreatedAt.ToLocalTime().Date;
+                    if (ct.IsCancellationRequested)
+                        return;
 
-                    DateTime? lastDay = null;
-                    foreach (var m in ordered)
+                    var ordered = items.OrderBy(x => x.CreatedAtUtc).ToList();
+                    var clearedAt = ChatLocalState.GetClearedAt(chatId);
+                    if (clearedAt.HasValue)
+                        ordered = ordered.Where(m => m.CreatedAtUtc > clearedAt.Value).ToList();
+
+                    var sig = ComputeUiSignature(ordered);
+
+                    if (IsScrollBusy())
                     {
-                        if (m.DeletedFor != null && m.DeletedFor.Contains(myUid!, StringComparer.Ordinal))
-                            continue;
-
-                        var day = m.CreatedAtUtc.ToLocalTime().Date;
-                        if (lastDay == null || day != lastDay.Value)
-                        {
-                            if (day != existingFirstDay)
-                                Messaggi.Insert(insertIndex++, ChatMessageVm.CreateDateSeparator(day));
-                            lastDay = day;
-                        }
-
-                        var vm = BuildVmFromMessage(m, myUid!, peerId!);
-                        Messaggi.Insert(insertIndex++, vm);
+                        QueuePendingUpdate(sig, ordered);
                     }
-                });
-            }
-            catch
-            {
-                // ignore
-            }
-            finally
-            {
-                _isLoadingOlder = false;
-            }
+                    else
+                    {
+                        _ = ApplyOrderedMessagesAsync(ordered, sig, myUid, peerId, chatId, ct);
+                    }
+
+                    ChatDetailMemoryCache.Instance.Set(_chatCacheKey, ordered);
+                },
+                ex => Debug.WriteLine($"[ChatDetail] messages listener error: {ex}"));
+            _listeners.Add(_messagesListener);
+
+            _typingListener?.Dispose();
+            _typingListener = _realtime.SubscribeChatTyping(
+                chatId,
+                myUid,
+                isTyping =>
+                {
+                    if (ct.IsCancellationRequested)
+                        return;
+
+                    MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        IsPeerTyping = isTyping;
+                    });
+                },
+                ex => Debug.WriteLine($"[ChatDetail] typing listener error: {ex}"));
+            _listeners.Add(_typingListener);
         }
 
         private void StartRealtimeUpdatesAfterFirstRender()
         {
-            if (_realtimeSubscribed)
-                return;
-
-            _realtimeSubscribed = true;
-            BusEventiRealtime.Instance.NewChatMessageNotification += OnRealtimeChatMessage;
+            // No-op: realtime gestito da listener Firestore
         }
 
         private void StopRealtimeUpdates()
         {
-            if (!_realtimeSubscribed)
-                return;
-
-            _realtimeSubscribed = false;
-            BusEventiRealtime.Instance.NewChatMessageNotification -= OnRealtimeChatMessage;
-        }
-
-        private void OnRealtimeChatMessage(object? sender, RealtimeEventPayload e)
-        {
-            var data = e.Data;
-            if (data == null || data.Count == 0)
-                return;
-
-            if (data.TryGetValue("chatId", out var chatId) && !string.IsNullOrWhiteSpace(chatId))
-                _chatIdCached = chatId;
-
-            if (!IsRealtimePayloadForThisChat(data))
-                return;
-
-            if (TryBuildMessageFromPayload(data, out var message, out var requiresSync))
-            {
-                if (requiresSync)
-                    _ = _fetchMissing.EnqueueAsync(message.MessageId ?? "", "private_message", data, priority: 5, CancellationToken.None);
-                _ = AppendRealtimeMessageAsync(message, requiresSync);
-                return;
-            }
-        }
-
-        private bool IsRealtimePayloadForThisChat(IReadOnlyDictionary<string, string> data)
-        {
-            if (_chatIdCached != null && data.TryGetValue("chatId", out var chatId))
-                return string.Equals(chatId, _chatIdCached, StringComparison.Ordinal);
-
-            if (!string.IsNullOrWhiteSpace(_peerUserId))
-            {
-                if (data.TryGetValue("peerUid", out var peerUid)
-                    && string.Equals(peerUid, _peerUserId, StringComparison.Ordinal))
-                    return true;
-
-                if (data.TryGetValue("fromUid", out var fromUid)
-                    && string.Equals(fromUid, _peerUserId, StringComparison.Ordinal))
-                    return true;
-            }
-
-            return false;
-        }
-
-        private static bool TryBuildMessageFromPayload(
-            IReadOnlyDictionary<string, string> data,
-            out FirestoreChatService.MessageItem message,
-            out bool requiresSync)
-        {
-            message = default!;
-            requiresSync = false;
-
-            if (!data.TryGetValue("messageId", out var messageId) || string.IsNullOrWhiteSpace(messageId))
-                return false;
-
-            if (!data.TryGetValue("senderId", out var senderId) || string.IsNullOrWhiteSpace(senderId))
-                return false;
-
-            var text = data.TryGetValue("text", out var txt) ? txt ?? "" : "";
-            var type = data.TryGetValue("type", out var t) ? t ?? "text" : "text";
-            var storagePath = data.TryGetValue("storagePath", out var sp) ? sp : null;
-
-            if (!TryParseTimestamp(data, out var createdAt))
-                createdAt = DateTimeOffset.UtcNow;
-
-            requiresSync = string.IsNullOrWhiteSpace(text) && !string.IsNullOrWhiteSpace(storagePath);
-
-            message = new FirestoreChatService.MessageItem(
-                MessageId: messageId,
-                SenderId: senderId,
-                Type: type,
-                Text: text,
-                CreatedAtUtc: createdAt,
-                DeliveredTo: Array.Empty<string>(),
-                ReadBy: Array.Empty<string>(),
-                DeletedForAll: false,
-                DeletedFor: Array.Empty<string>(),
-                DeletedAtUtc: null,
-                StoragePath: storagePath,
-                DurationMs: 0,
-                FileName: null,
-                ContentType: null,
-                SizeBytes: 0,
-                ThumbStoragePath: null,
-                LqipBase64: null,
-                ThumbWidth: null,
-                ThumbHeight: null,
-                PreviewType: null,
-                Waveform: null,
-                Latitude: null,
-                Longitude: null,
-                ContactName: null,
-                ContactPhone: null);
-
-            return true;
-        }
-
-        private static bool TryParseTimestamp(IReadOnlyDictionary<string, string> data, out DateTimeOffset timestamp)
-        {
-            timestamp = DateTimeOffset.UtcNow;
-
-            if (data.TryGetValue("createdAtUtc", out var createdAtUtc)
-                && DateTimeOffset.TryParse(createdAtUtc, out var dto))
-            {
-                timestamp = dto;
-                return true;
-            }
-
-            if (data.TryGetValue("createdAt", out var createdAt)
-                && DateTimeOffset.TryParse(createdAt, out var dto2))
-            {
-                timestamp = dto2;
-                return true;
-            }
-
-            if (data.TryGetValue("createdAtMs", out var msString)
-                && long.TryParse(msString, out var ms))
-            {
-                timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ms);
-                return true;
-            }
-
-            return false;
-        }
-
-        private async Task AppendRealtimeMessageAsync(FirestoreChatService.MessageItem message, bool requiresSync)
-        {
-            var myUid = FirebaseSessionePersistente.GetLocalId() ?? "";
-            var peerId = (_peerUserId ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(peerId) || string.IsNullOrWhiteSpace(myUid))
-                return;
-
-            await MainThread.InvokeOnMainThreadAsync(() =>
-            {
-                if (Messaggi.Any(x => !x.IsDateSeparator && string.Equals(x.Id, message.MessageId, StringComparison.Ordinal)))
-                    return;
-
-                var lastReal = Messaggi.LastOrDefault(x => !x.IsDateSeparator);
-                var lastDay = lastReal?.CreatedAt.ToLocalTime().Date;
-                var day = message.CreatedAtUtc.ToLocalTime().Date;
-                if (lastDay == null || day != lastDay.Value)
-                    Messaggi.Add(ChatMessageVm.CreateDateSeparator(day));
-
-                var vm = BuildVmFromMessage(message, myUid, peerId);
-                if (requiresSync)
-                {
-                    vm.Text = "Contenuto disponibile";
-                    vm.RequiresSync = true;
-                    vm.SyncCommand = null;
-                }
-
-                Messaggi.Add(vm);
-                ScrollBottomImmediately(force: false);
-            });
-
-            _chatCacheKey ??= _chatCache.GetCacheKey(_chatIdCached, peerId);
-            await _chatCache.UpsertAppendAsync(_chatCacheKey, new[] { message }, maxItems: AppCacheOptions.MaxChatMessagesPerChat, CancellationToken.None);
-
-            await _chatStore.UpsertChatAsync(new Cache_Locale.SQLite.ChatCacheStore.ChatRow(
-                _chatCacheKey,
-                peerId,
-                message.MessageId,
-                message.Text,
-                message.Type,
-                message.CreatedAtUtc,
-                UnreadCount: 0,
-                UpdatedAtUtc: message.CreatedAtUtc), CancellationToken.None);
-
-            if (!string.Equals(message.SenderId, myUid, StringComparison.Ordinal))
-                QueueDelivered(message.MessageId);
+            // No-op: realtime gestito da listener Firestore
         }
 
         // ============================================================
@@ -471,75 +300,6 @@ namespace Biliardo.App.Pagine_Messaggi
             }
 
             return hc.ToHashCode().ToString("X");
-        }
-
-        private async Task SyncChatFromServerAsync(CancellationToken ct = default)
-        {
-            // 4.1) Validazione peer
-            var peerId = (_peerUserId ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(peerId))
-                return;
-
-            // 4.2) Solo provider Firebase
-            var provider = await SessionePersistente.GetProviderAsync();
-            if (!string.Equals(provider, "firebase", StringComparison.OrdinalIgnoreCase))
-                return;
-
-            // 4.3) Token + uid
-            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
-            var myUid = FirebaseSessionePersistente.GetLocalId();
-
-            if (string.IsNullOrWhiteSpace(idToken) || string.IsNullOrWhiteSpace(myUid))
-                return;
-
-            // 4.4) chatId
-            var chatId = await EnsureChatIdAsync(idToken!, myUid!, peerId, ct);
-            _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
-
-            // 4.5) cache contesto per pending apply
-            _lastMyUid = myUid;
-            _lastPeerId = peerId;
-            _lastChatId = chatId;
-
-            // 4.6) lettura ultimi messaggi
-            var msgs = await _fsChat.GetLastMessagesAsync(idToken!, chatId, limit: 80, ct: ct);
-            var ordered = msgs.OrderBy(m => m.CreatedAtUtc).ToList();
-            var latest = ordered.LastOrDefault();
-            if (latest != null)
-            {
-                await _chatStore.UpsertChatAsync(new Cache_Locale.SQLite.ChatCacheStore.ChatRow(
-                    chatId,
-                    peerId,
-                    latest.MessageId,
-                    latest.Text,
-                    latest.Type,
-                    latest.CreatedAtUtc,
-                    UnreadCount: 0,
-                    UpdatedAtUtc: latest.CreatedAtUtc), ct);
-            }
-
-            // 4.7) firma
-            var sig = ComputeUiSignature(ordered);
-            if (sig == _lastUiSignature)
-            {
-                if (IsLoadingMessages)
-                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
-                return;
-            }
-
-            // 4.8) se sto scrollando, accoda e applica quando idle
-            if (IsScrollBusy())
-            {
-                QueuePendingUpdate(sig, ordered);
-
-                if (IsLoadingMessages)
-                    MainThread.BeginInvokeOnMainThread(() => IsLoadingMessages = false);
-
-                return;
-            }
-
-            // 4.9) apply immediato
-            await ApplyOrderedMessagesAsync(ordered, sig, myUid!, peerId, chatId, ct);
         }
 
         // ============================================================
@@ -707,16 +467,8 @@ namespace Biliardo.App.Pagine_Messaggi
                     ScrollBottomImmediately(force: false);
             });
 
-            try
-            {
-                _chatCacheKey ??= _chatCache.GetCacheKey(chatId, peerId);
-                await _chatCache.UpsertAppendAsync(_chatCacheKey, ordered, maxItems: AppCacheOptions.MaxChatMessagesPerChat, ct);
+            if (!string.IsNullOrWhiteSpace(_chatCacheKey))
                 ChatDetailMemoryCache.Instance.Set(_chatCacheKey, ordered);
-            }
-            catch
-            {
-                // ignore cache errors
-            }
         }
 
         // ============================================================
@@ -780,6 +532,23 @@ namespace Biliardo.App.Pagine_Messaggi
             catch { }
         }
 
+        private string? ResolveChatIdForClear(string myUid, string peerId)
+        {
+            if (!string.IsNullOrWhiteSpace(_chatIdCached))
+                return _chatIdCached;
+            if (!string.IsNullOrWhiteSpace(_lastChatId))
+                return _lastChatId;
+
+            try
+            {
+                return FirestoreChatService.GetDeterministicDmChatId(myUid, peerId);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         // ============================================================
         // 8) AZIONI SUL MESSAGGIO (tap bolla: delete per me / per tutti)
         // ============================================================
@@ -797,15 +566,11 @@ namespace Biliardo.App.Pagine_Messaggi
             {
                 if (!string.IsNullOrWhiteSpace(_lastChatId) && !string.IsNullOrWhiteSpace(_lastMyUid))
                     await _fsChat.DeleteMessageForMeAsync(_lastChatId, m.Id, _lastMyUid);
-
-                await SyncChatFromServerAsync();
             }
             else if (choice == "Elimina per tutti")
             {
                 if (!string.IsNullOrWhiteSpace(_lastChatId))
                     await _fsChat.DeleteMessageForAllAsync(_lastChatId, m.Id);
-
-                await SyncChatFromServerAsync();
             }
         }
 

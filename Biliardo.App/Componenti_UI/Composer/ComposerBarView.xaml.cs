@@ -87,6 +87,7 @@ namespace Biliardo.App.Componenti_UI.Composer
                 OnPropertyChanged(nameof(CanSend));
                 OnPropertyChanged(nameof(CanShowMic));
                 OnPropertyChanged(nameof(IsMicVisible));
+                ComposerTextChanged?.Invoke(this, _composerText);
             }
         }
 
@@ -142,6 +143,7 @@ namespace Biliardo.App.Componenti_UI.Composer
         public event EventHandler<ComposerSendPayload>? SendRequested;
         public event EventHandler<PendingItemVm>? PendingItemSendRequested;
         public event EventHandler<PendingItemVm>? PendingItemRemoved;
+        public event EventHandler<string>? ComposerTextChanged;
 
         public bool TryAddPendingItem(PendingItemVm item, int? maxNonTextItems = null)
         {

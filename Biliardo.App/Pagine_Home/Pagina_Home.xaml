@@ -160,8 +160,7 @@
                                 <HorizontalStackLayout Spacing="10" VerticalOptions="Center">
                                     <ui:UserAvatarView AvatarUrl="{Binding AuthorAvatarUrl}"
                                                        AvatarPath="{Binding AuthorAvatarPath}"
-                                                       DisplayName="{Binding AuthorAvatarDisplayName}"
-                                                       Size="42" />
+                                                       DisplayName="{Binding AuthorAvatarDisplayName}" />
                                     <VerticalStackLayout Spacing="0">
                                         <Label Text="{Binding AuthorNickname}"
                                                TextColor="{Binding AuthorNicknameColor}"

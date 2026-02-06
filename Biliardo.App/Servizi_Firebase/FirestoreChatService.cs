@@ -1,15 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Plugin.Firebase.Firestore;
 
 namespace Biliardo.App.Servizi_Firebase
 {
     public sealed class FirestoreChatService
     {
         private readonly string _projectId;
+        private readonly IFirebaseFirestore _db;
 
         public FirestoreChatService(string projectId)
         {
@@ -17,6 +18,7 @@ namespace Biliardo.App.Servizi_Firebase
                 throw new ArgumentException("projectId non valido.", nameof(projectId));
 
             _projectId = projectId.Trim();
+            _db = CrossFirebaseFirestore.Current;
         }
 
         public sealed record ChatItem(
@@ -26,7 +28,9 @@ namespace Biliardo.App.Servizi_Firebase
             string LastText,
             string LastType,
             DateTimeOffset? LastAtUtc,
-            DateTimeOffset? UpdatedAtUtc
+            DateTimeOffset? UpdatedAtUtc,
+            bool IsPeerTyping,
+            DateTimeOffset? PeerTypingAtUtc
         );
 
         public sealed record MessageItem(
@@ -153,379 +157,30 @@ namespace Biliardo.App.Servizi_Firebase
 
             var now = DateTimeOffset.UtcNow;
 
-            var fields = new Dictionary<string, object>
+            var doc = _db.GetDocument($"chats/{chatId}");
+            var snapshot = await doc.GetDocumentSnapshotAsync<Dictionary<string, object>>(Source.Default);
+            if (snapshot.Data != null)
+                return chatId;
+
+            var fields = new Dictionary<string, object?>
             {
-                ["members"] = FirestoreRestClient.VArrayStrings(new[] { uidA, uidB }),
-                ["isGroup"] = FirestoreRestClient.VBool(false),
-
-                ["memberNicknames"] = FirestoreRestClient.VMap(new Dictionary<string, object>
+                ["members"] = new[] { uidA, uidB },
+                ["isGroup"] = false,
+                ["memberNicknames"] = new Dictionary<string, object?>
                 {
-                    [uidA] = FirestoreRestClient.VString(nicknameA ?? string.Empty),
-                    [uidB] = FirestoreRestClient.VString(nicknameB ?? string.Empty),
-                }),
-
-                ["lastMessageText"] = FirestoreRestClient.VString(string.Empty),
-                ["lastMessageType"] = FirestoreRestClient.VString("text"),
-                ["lastMessageAt"] = FirestoreRestClient.VTimestamp(now),
-
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now),
-                ["createdAt"] = FirestoreRestClient.VTimestamp(now),
+                    [uidA] = nicknameA ?? string.Empty,
+                    [uidB] = nicknameB ?? string.Empty
+                },
+                ["lastMessageText"] = string.Empty,
+                ["lastMessageType"] = "text",
+                ["lastMessageAt"] = now,
+                ["updatedAt"] = now,
+                ["createdAt"] = now
             };
 
-            try
-            {
-                await FirestoreRestClient.CreateDocumentAsync(
-                    collectionPath: "chats",
-                    documentId: chatId,
-                    fields: fields,
-                    idToken: idToken,
-                    ct: ct);
-            }
-            catch (Exception ex)
-            {
-                var m = ex.Message ?? "";
-
-                if (m.Contains("409", StringComparison.OrdinalIgnoreCase) ||
-                    m.Contains("ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase))
-                {
-                    return chatId;
-                }
-
-                throw;
-            }
+            await doc.SetDataAsync(fields);
 
             return chatId;
-        }
-
-        public async Task<IReadOnlyList<ChatItem>> ListChatsAsync(
-            string idToken,
-            string myUid,
-            int limit = 50,
-            CancellationToken ct = default)
-        {
-            if (limit <= 0) limit = 50;
-
-            var structuredQuery = new Dictionary<string, object>
-            {
-                ["from"] = new object[]
-                {
-                    new Dictionary<string, object> { ["collectionId"] = "chats" }
-                },
-                ["where"] = new Dictionary<string, object>
-                {
-                    ["fieldFilter"] = new Dictionary<string, object>
-                    {
-                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "members" },
-                        ["op"] = "ARRAY_CONTAINS",
-                        ["value"] = FirestoreRestClient.VString(myUid)
-                    }
-                },
-                ["limit"] = limit
-            };
-
-            using var doc = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
-
-            var chats = new List<ChatItem>();
-
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-                return chats;
-
-            foreach (var el in doc.RootElement.EnumerateArray())
-            {
-                if (el.ValueKind != JsonValueKind.Object) continue;
-                if (!el.TryGetProperty("document", out var d) || d.ValueKind != JsonValueKind.Object) continue;
-
-                var name = ReadString(d, "name");
-                if (string.IsNullOrWhiteSpace(name)) continue;
-
-                var chatId = ExtractLastPathSegment(name!);
-
-                if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
-                    continue;
-
-                var members = ReadStringArray(fields, "members");
-                var peerUid = members.FirstOrDefault(x => !string.Equals(x, myUid, StringComparison.Ordinal)) ?? "";
-
-                var peerNick = ReadMapString(fields, "memberNicknames", peerUid) ?? "";
-
-                var lastText = ReadStringField(fields, "lastMessageText") ?? "";
-                var lastType = ReadStringField(fields, "lastMessageType") ?? "text";
-
-                var lastAt = ReadTimestampField(fields, "lastMessageAt");
-                var updatedAt = ReadTimestampField(fields, "updatedAt");
-
-                chats.Add(new ChatItem(chatId, peerUid, peerNick, lastText, lastType, lastAt, updatedAt));
-            }
-
-            return chats;
-        }
-
-        public async Task<IReadOnlyList<MessageItem>> GetLastMessagesAsync(
-            string idToken,
-            string chatId,
-            int limit = 50,
-            CancellationToken ct = default)
-        {
-            if (limit <= 0) limit = 50;
-
-            var structuredQuery = new Dictionary<string, object>
-            {
-                ["from"] = new object[]
-                {
-                    new Dictionary<string, object> { ["collectionId"] = "messages" }
-                },
-                ["orderBy"] = new object[]
-                {
-                    new Dictionary<string, object>
-                    {
-                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
-                        ["direction"] = "DESCENDING"
-                    }
-                },
-                ["limit"] = limit
-            };
-
-            using var doc = await FirestoreRestClient.RunQueryAsync(
-                structuredQuery,
-                idToken,
-                parentDocumentPath: $"chats/{chatId}",
-                ct: ct);
-
-            var outList = new List<MessageItem>();
-
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-                return outList;
-
-            foreach (var el in doc.RootElement.EnumerateArray())
-            {
-                if (el.ValueKind != JsonValueKind.Object) continue;
-                if (!el.TryGetProperty("document", out var d) || d.ValueKind != JsonValueKind.Object) continue;
-
-                var name = ReadString(d, "name");
-                if (string.IsNullOrWhiteSpace(name)) continue;
-
-                var messageId = ExtractLastPathSegment(name!);
-
-                if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
-                    continue;
-
-                var senderId = ReadStringField(fields, "senderId");
-                var type = ReadStringField(fields, "type");
-                var createdAt = ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.MinValue;
-
-                var deliveredTo = ReadStringArray(fields, "deliveredTo");
-                var readBy = ReadStringArray(fields, "readBy");
-                var deletedForAll = ReadBoolField(fields, "deletedForAll") ?? false;
-                var deletedFor = ReadStringArray(fields, "deletedFor");
-                var deletedAt = ReadTimestampField(fields, "deletedAt");
-
-                string text = "";
-
-                var payloadText = ReadMapString(fields, "payload", "text");
-                if (!string.IsNullOrWhiteSpace(payloadText))
-                    text = payloadText;
-
-                if (string.IsNullOrWhiteSpace(senderId))
-                    senderId = ReadStringField(fields, "fromUid") ?? "";
-
-                if (string.IsNullOrWhiteSpace(text))
-                    text = ReadStringField(fields, "text") ?? "";
-
-                if (string.IsNullOrWhiteSpace(type))
-                    type = "text";
-
-                // media
-                var storagePath = ReadMapString(fields, "payload", "storagePath");
-                var fileName = ReadMapString(fields, "payload", "fileName");
-                var contentType = ReadMapString(fields, "payload", "contentType");
-                var durationMs = ReadMapInt64(fields, "payload", "durationMs");
-                var sizeBytes = ReadMapInt64(fields, "payload", "sizeBytes");
-
-                var thumbStoragePath = ReadNestedMapString(fields, "payload", "preview", "thumbStoragePath");
-                var lqipBase64 = ReadNestedMapString(fields, "payload", "preview", "lqipBase64");
-                var thumbWidth = ReadNestedMapInt(fields, "payload", "preview", "thumbWidth");
-                var thumbHeight = ReadNestedMapInt(fields, "payload", "preview", "thumbHeight");
-                var previewType = ReadNestedMapString(fields, "payload", "preview", "previewType");
-
-                var waveform = ReadMapIntArray(fields, "payload", "waveform");
-
-                // location
-                var lat = ReadMapDouble(fields, "payload", "lat");
-                var lon = ReadMapDouble(fields, "payload", "lon");
-
-                // contact
-                var cn = ReadMapString(fields, "payload", "contactName");
-                var cp = ReadMapString(fields, "payload", "contactPhone");
-
-                outList.Add(new MessageItem(
-                    MessageId: messageId,
-                    SenderId: senderId ?? "",
-                    Type: type ?? "text",
-                    Text: text ?? "",
-                    CreatedAtUtc: createdAt,
-                    DeliveredTo: deliveredTo,
-                    ReadBy: readBy,
-                    DeletedForAll: deletedForAll,
-                    DeletedFor: deletedFor,
-                    DeletedAtUtc: deletedAt,
-                    StoragePath: storagePath,
-                    DurationMs: durationMs,
-                    FileName: fileName,
-                    ContentType: contentType,
-                    SizeBytes: sizeBytes,
-                    ThumbStoragePath: thumbStoragePath,
-                    LqipBase64: lqipBase64,
-                    ThumbWidth: thumbWidth,
-                    ThumbHeight: thumbHeight,
-                    PreviewType: previewType,
-                    Waveform: waveform,
-                    Latitude: lat,
-                    Longitude: lon,
-                    ContactName: cn,
-                    ContactPhone: cp
-                ));
-            }
-
-            return outList;
-        }
-
-        public async Task<IReadOnlyList<MessageItem>> GetMessagesBeforeAsync(
-            string idToken,
-            string chatId,
-            DateTimeOffset beforeUtc,
-            int limit = 50,
-            CancellationToken ct = default)
-        {
-            if (limit <= 0) limit = 50;
-
-            var structuredQuery = new Dictionary<string, object>
-            {
-                ["from"] = new object[]
-                {
-                    new Dictionary<string, object> { ["collectionId"] = "messages" }
-                },
-                ["where"] = new Dictionary<string, object>
-                {
-                    ["fieldFilter"] = new Dictionary<string, object>
-                    {
-                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
-                        ["op"] = "LESS_THAN",
-                        ["value"] = FirestoreRestClient.VTimestamp(beforeUtc)
-                    }
-                },
-                ["orderBy"] = new object[]
-                {
-                    new Dictionary<string, object>
-                    {
-                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
-                        ["direction"] = "DESCENDING"
-                    }
-                },
-                ["limit"] = limit
-            };
-
-            using var doc = await FirestoreRestClient.RunQueryAsync(
-                structuredQuery,
-                idToken,
-                parentDocumentPath: $"chats/{chatId}",
-                ct: ct);
-
-            var outList = new List<MessageItem>();
-
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-                return outList;
-
-            foreach (var el in doc.RootElement.EnumerateArray())
-            {
-                if (el.ValueKind != JsonValueKind.Object) continue;
-                if (!el.TryGetProperty("document", out var d) || d.ValueKind != JsonValueKind.Object) continue;
-
-                var name = ReadString(d, "name");
-                if (string.IsNullOrWhiteSpace(name)) continue;
-
-                var messageId = ExtractLastPathSegment(name!);
-
-                if (!d.TryGetProperty("fields", out var fields) || fields.ValueKind != JsonValueKind.Object)
-                    continue;
-
-                var senderId = ReadStringField(fields, "senderId");
-                var type = ReadStringField(fields, "type");
-                var createdAt = ReadTimestampField(fields, "createdAt") ?? DateTimeOffset.MinValue;
-
-                var deliveredTo = ReadStringArray(fields, "deliveredTo");
-                var readBy = ReadStringArray(fields, "readBy");
-                var deletedForAll = ReadBoolField(fields, "deletedForAll") ?? false;
-                var deletedFor = ReadStringArray(fields, "deletedFor");
-                var deletedAt = ReadTimestampField(fields, "deletedAt");
-
-                string text = "";
-
-                var payloadText = ReadMapString(fields, "payload", "text");
-                if (!string.IsNullOrWhiteSpace(payloadText))
-                    text = payloadText;
-
-                if (string.IsNullOrWhiteSpace(senderId))
-                    senderId = ReadStringField(fields, "fromUid") ?? "";
-
-                if (string.IsNullOrWhiteSpace(text))
-                    text = ReadStringField(fields, "text") ?? "";
-
-                if (string.IsNullOrWhiteSpace(type))
-                    type = "text";
-
-                // media
-                var storagePath = ReadMapString(fields, "payload", "storagePath");
-                var fileName = ReadMapString(fields, "payload", "fileName");
-                var contentType = ReadMapString(fields, "payload", "contentType");
-                var durationMs = ReadMapInt64(fields, "payload", "durationMs");
-                var sizeBytes = ReadMapInt64(fields, "payload", "sizeBytes");
-
-                var thumbStoragePath = ReadNestedMapString(fields, "payload", "preview", "thumbStoragePath");
-                var lqipBase64 = ReadNestedMapString(fields, "payload", "preview", "lqipBase64");
-                var thumbWidth = ReadNestedMapInt(fields, "payload", "preview", "thumbWidth");
-                var thumbHeight = ReadNestedMapInt(fields, "payload", "preview", "thumbHeight");
-                var previewType = ReadNestedMapString(fields, "payload", "preview", "previewType");
-
-                var waveform = ReadMapIntArray(fields, "payload", "waveform");
-
-                // location
-                var lat = ReadMapDouble(fields, "payload", "lat");
-                var lon = ReadMapDouble(fields, "payload", "lon");
-
-                // contact
-                var cn = ReadMapString(fields, "payload", "contactName");
-                var cp = ReadMapString(fields, "payload", "contactPhone");
-
-                outList.Add(new MessageItem(
-                    MessageId: messageId,
-                    SenderId: senderId ?? "",
-                    Type: type ?? "text",
-                    Text: text ?? "",
-                    CreatedAtUtc: createdAt,
-                    DeliveredTo: deliveredTo,
-                    ReadBy: readBy,
-                    DeletedForAll: deletedForAll,
-                    DeletedFor: deletedFor,
-                    DeletedAtUtc: deletedAt,
-                    StoragePath: storagePath,
-                    DurationMs: durationMs,
-                    FileName: fileName,
-                    ContentType: contentType,
-                    SizeBytes: sizeBytes,
-                    ThumbStoragePath: thumbStoragePath,
-                    LqipBase64: lqipBase64,
-                    ThumbWidth: thumbWidth,
-                    ThumbHeight: thumbHeight,
-                    PreviewType: previewType,
-                    Waveform: waveform,
-                    Latitude: lat,
-                    Longitude: lon,
-                    ContactName: cn,
-                    ContactPhone: cp
-                ));
-            }
-
-            return outList;
         }
 
         public async Task SendTextMessageWithIdAsync(
@@ -541,42 +196,29 @@ namespace Biliardo.App.Servizi_Firebase
 
             var now = DateTimeOffset.UtcNow;
 
-            var payloadMap = FirestoreRestClient.VMap(new Dictionary<string, object>
+            var payloadMap = new Dictionary<string, object?>
             {
-                ["text"] = FirestoreRestClient.VString(text)
-            });
+                ["text"] = text
+            };
 
             // NOTE:
             // Le rules per CREATE messages impongono keys().hasOnly([...]) e NON includono "deletedAt".
             // Se lo invii anche solo come null, Firestore risponde 403 PERMISSION_DENIED.
-            var msgFields = new Dictionary<string, object>
+            var msgFields = new Dictionary<string, object?>
             {
-                ["senderId"] = FirestoreRestClient.VString(senderUid),
-                ["type"] = FirestoreRestClient.VString("text"),
+                ["senderId"] = senderUid,
+                ["type"] = "text",
                 ["payload"] = payloadMap,
-                ["createdAt"] = FirestoreRestClient.VTimestamp(now),
-                ["deliveredTo"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
+                ["createdAt"] = now,
+                ["deliveredTo"] = Array.Empty<string>(),
+                ["readBy"] = Array.Empty<string>(),
+                ["deletedFor"] = Array.Empty<string>(),
+                ["deletedForAll"] = false,
+                ["updatedAt"] = now
             };
 
-            try
-            {
-                await FirestoreRestClient.CreateDocumentAsync(
-                    collectionPath: $"chats/{chatId}/messages",
-                    documentId: messageId,
-                    fields: msgFields,
-                    idToken: idToken,
-                    ct: ct);
-            }
-            catch (Exception ex)
-            {
-                var m = ex.Message ?? "";
-                if (!(m.Contains("409", StringComparison.OrdinalIgnoreCase) || m.Contains("ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase)))
-                    throw;
-            }
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.SetDataAsync(msgFields);
 
             await PatchChatPreviewAsync(idToken, chatId, senderUid, "text", text, ct);
         }
@@ -602,52 +244,37 @@ namespace Biliardo.App.Servizi_Firebase
 
             var now = DateTimeOffset.UtcNow;
 
-            var payloadFields = new Dictionary<string, object>
+            var payloadFields = new Dictionary<string, object?>
             {
-                ["storagePath"] = FirestoreRestClient.VString(storagePath),
-                ["durationMs"] = FirestoreRestClient.VInt(durationMs),
-                ["sizeBytes"] = FirestoreRestClient.VInt(sizeBytes),
-                ["fileName"] = FirestoreRestClient.VString(fileName ?? "file.bin"),
-                ["contentType"] = FirestoreRestClient.VString(string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType),
+                ["storagePath"] = storagePath,
+                ["durationMs"] = durationMs,
+                ["sizeBytes"] = sizeBytes,
+                ["fileName"] = fileName ?? "file.bin",
+                ["contentType"] = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
             };
 
             if (previewMap != null && previewMap.Count > 0)
-                payloadFields["preview"] = FirestoreRestClient.VMap(previewMap);
+                payloadFields["preview"] = previewMap;
 
             if (waveform != null && waveform.Count > 0)
-                payloadFields["waveform"] = FirestoreRestClient.VArray(waveform.Select(x => FirestoreRestClient.VInt(x)).ToArray());
-
-            var payloadMap = FirestoreRestClient.VMap(payloadFields);
+                payloadFields["waveform"] = waveform.ToList();
 
             // (vedi nota sopra: niente "deletedAt" in CREATE)
-            var msgFields = new Dictionary<string, object>
+            var msgFields = new Dictionary<string, object?>
             {
-                ["senderId"] = FirestoreRestClient.VString(senderUid),
-                ["type"] = FirestoreRestClient.VString(type),
-                ["payload"] = payloadMap,
-                ["createdAt"] = FirestoreRestClient.VTimestamp(now),
-                ["deliveredTo"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
+                ["senderId"] = senderUid,
+                ["type"] = type,
+                ["payload"] = payloadFields,
+                ["createdAt"] = now,
+                ["deliveredTo"] = Array.Empty<string>(),
+                ["readBy"] = Array.Empty<string>(),
+                ["deletedFor"] = Array.Empty<string>(),
+                ["deletedForAll"] = false,
+                ["updatedAt"] = now
             };
 
-            try
-            {
-                await FirestoreRestClient.CreateDocumentAsync(
-                    collectionPath: $"chats/{chatId}/messages",
-                    documentId: messageId,
-                    fields: msgFields,
-                    idToken: idToken,
-                    ct: ct);
-            }
-            catch (Exception ex)
-            {
-                var m = ex.Message ?? "";
-                if (!(m.Contains("409", StringComparison.OrdinalIgnoreCase) || m.Contains("ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase)))
-                    throw;
-            }
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.SetDataAsync(msgFields);
 
             var preview = type switch
             {
@@ -671,32 +298,28 @@ namespace Biliardo.App.Servizi_Firebase
         {
             var now = DateTimeOffset.UtcNow;
 
-            var payloadMap = FirestoreRestClient.VMap(new Dictionary<string, object>
+            var payloadMap = new Dictionary<string, object?>
             {
-                ["lat"] = new Dictionary<string, object> { ["doubleValue"] = lat },
-                ["lon"] = new Dictionary<string, object> { ["doubleValue"] = lon },
-            });
-
-            // (vedi nota sopra: niente "deletedAt" in CREATE)
-            var msgFields = new Dictionary<string, object>
-            {
-                ["senderId"] = FirestoreRestClient.VString(senderUid),
-                ["type"] = FirestoreRestClient.VString("location"),
-                ["payload"] = payloadMap,
-                ["createdAt"] = FirestoreRestClient.VTimestamp(now),
-                ["deliveredTo"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
+                ["lat"] = lat,
+                ["lon"] = lon,
             };
 
-            await FirestoreRestClient.CreateDocumentAsync(
-                collectionPath: $"chats/{chatId}/messages",
-                documentId: messageId,
-                fields: msgFields,
-                idToken: idToken,
-                ct: ct);
+            // (vedi nota sopra: niente "deletedAt" in CREATE)
+            var msgFields = new Dictionary<string, object?>
+            {
+                ["senderId"] = senderUid,
+                ["type"] = "location",
+                ["payload"] = payloadMap,
+                ["createdAt"] = now,
+                ["deliveredTo"] = Array.Empty<string>(),
+                ["readBy"] = Array.Empty<string>(),
+                ["deletedFor"] = Array.Empty<string>(),
+                ["deletedForAll"] = false,
+                ["updatedAt"] = now
+            };
+
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.SetDataAsync(msgFields);
 
             await PatchChatPreviewAsync(idToken, chatId, senderUid, "location", "📍 Posizione", ct);
         }
@@ -712,32 +335,28 @@ namespace Biliardo.App.Servizi_Firebase
         {
             var now = DateTimeOffset.UtcNow;
 
-            var payloadMap = FirestoreRestClient.VMap(new Dictionary<string, object>
+            var payloadMap = new Dictionary<string, object?>
             {
-                ["contactName"] = FirestoreRestClient.VString(contactName ?? ""),
-                ["contactPhone"] = FirestoreRestClient.VString(contactPhone ?? ""),
-            });
-
-            // (vedi nota sopra: niente "deletedAt" in CREATE)
-            var msgFields = new Dictionary<string, object>
-            {
-                ["senderId"] = FirestoreRestClient.VString(senderUid),
-                ["type"] = FirestoreRestClient.VString("contact"),
-                ["payload"] = payloadMap,
-                ["createdAt"] = FirestoreRestClient.VTimestamp(now),
-                ["deliveredTo"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["readBy"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedFor"] = FirestoreRestClient.VArrayStrings(Array.Empty<string>()),
-                ["deletedForAll"] = FirestoreRestClient.VBool(false),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
+                ["contactName"] = contactName ?? "",
+                ["contactPhone"] = contactPhone ?? "",
             };
 
-            await FirestoreRestClient.CreateDocumentAsync(
-                collectionPath: $"chats/{chatId}/messages",
-                documentId: messageId,
-                fields: msgFields,
-                idToken: idToken,
-                ct: ct);
+            // (vedi nota sopra: niente "deletedAt" in CREATE)
+            var msgFields = new Dictionary<string, object?>
+            {
+                ["senderId"] = senderUid,
+                ["type"] = "contact",
+                ["payload"] = payloadMap,
+                ["createdAt"] = now,
+                ["deliveredTo"] = Array.Empty<string>(),
+                ["readBy"] = Array.Empty<string>(),
+                ["deletedFor"] = Array.Empty<string>(),
+                ["deletedForAll"] = false,
+                ["updatedAt"] = now
+            };
+
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.SetDataAsync(msgFields);
 
             await PatchChatPreviewAsync(idToken, chatId, senderUid, "contact", "👤 Contatto", ct);
         }
@@ -751,18 +370,12 @@ namespace Biliardo.App.Servizi_Firebase
             // Coerente con le rules:
             // - in update sono permessi solo: deliveredTo, readBy, deletedFor, deletedForAll, updatedAt
             // - deletedAt/text/payload NON sono ammessi in update (quindi generano 403).
-            var fields = new Dictionary<string, object>
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.UpdateDataAsync(new[]
             {
-                ["deletedForAll"] = FirestoreRestClient.VBool(true),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(DateTimeOffset.UtcNow),
-            };
-
-            await FirestoreRestClient.PatchDocumentAsync(
-                $"chats/{chatId}/messages/{messageId}",
-                fields,
-                new[] { "deletedForAll", "updatedAt" },
-                idToken,
-                ct);
+                ("deletedForAll", (object)true),
+                ("updatedAt", (object)FieldValue.ServerTimestamp())
+            });
         }
 
         public async Task DeleteMessageForMeAsync(string chatId, string messageId, string uid, CancellationToken ct = default)
@@ -771,17 +384,112 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
-            await FirestoreRestClient.CommitAsync(
-                $"chats/{chatId}/messages/{messageId}",
-                new[]
-                {
-                    FirestoreRestClient.TransformAppendMissingElements("deletedFor", new object[]
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.UpdateDataAsync(new[]
+            {
+                ("deletedFor", (object)FieldValue.ArrayUnion(new object[] { uid })),
+                ("updatedAt", (object)FieldValue.ServerTimestamp())
+            });
+        }
+
+        public async Task<int> GetUnreadCountAsync(string chatId, string myUid, DateTimeOffset? clearedAfterUtc = null, int limit = 200, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return 0;
+
+            if (limit <= 0) limit = 200;
+
+            static DateTimeOffset? ReadTimestamp(object? value)
+            {
+                if (value == null)
+                    return null;
+                if (value is DateTimeOffset dto)
+                    return dto;
+                if (value is DateTime dt)
+                    return new DateTimeOffset(dt);
+                if (value is long ticks && ticks > 0)
+                    return new DateTimeOffset(ticks, TimeSpan.Zero);
+                return null;
+            }
+
+            var query = _db
+                .GetCollection($"chats/{chatId}/messages")
+                .OrderBy("createdAt", true)
+                .LimitedTo(limit);
+
+            var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable? listener = null;
+
+            void Cleanup()
+            {
+                try { listener?.Dispose(); } catch { }
+            }
+
+            try
+            {
+                listener = query.AddSnapshotListener<Dictionary<string, object>>(
+                    snapshot =>
                     {
-                        FirestoreRestClient.VString(uid)
-                    })
-                },
-                idToken,
-                ct);
+                        var count = 0;
+                        foreach (var doc in snapshot.Documents)
+                        {
+                            var data = doc.Data;
+                            if (data == null)
+                                continue;
+
+                            var senderId = data.TryGetValue("senderId", out var senderObj) ? senderObj?.ToString() ?? "" : "";
+                            if (string.IsNullOrWhiteSpace(senderId) || string.Equals(senderId, myUid, StringComparison.Ordinal))
+                                continue;
+
+                            if (clearedAfterUtc.HasValue)
+                            {
+                                var createdAt = ReadTimestamp(data.TryGetValue("createdAt", out var createdObj) ? createdObj : null);
+                                if (createdAt.HasValue && createdAt.Value <= clearedAfterUtc.Value)
+                                    continue;
+                            }
+
+                            var deletedForAll = data.TryGetValue("deletedForAll", out var delAllObj) && delAllObj is bool b && b;
+                            if (deletedForAll)
+                                continue;
+
+                            if (data.TryGetValue("deletedFor", out var delObj) && delObj is IEnumerable<object> delList)
+                            {
+                                if (delList.Select(x => x?.ToString()).Any(x => string.Equals(x, myUid, StringComparison.Ordinal)))
+                                    continue;
+                            }
+
+                            if (data.TryGetValue("readBy", out var readObj) && readObj is IEnumerable<object> readList)
+                            {
+                                if (readList.Select(x => x?.ToString()).Any(x => string.Equals(x, myUid, StringComparison.Ordinal)))
+                                    continue;
+                            }
+
+                            count++;
+                        }
+
+                        tcs.TrySetResult(count);
+                        Cleanup();
+                    },
+                    ex =>
+                    {
+                        tcs.TrySetException(ex);
+                        Cleanup();
+                    });
+            }
+            catch (Exception ex)
+            {
+                Cleanup();
+                tcs.TrySetException(ex);
+            }
+
+            using (ct.Register(() =>
+            {
+                tcs.TrySetCanceled(ct);
+                Cleanup();
+            }))
+            {
+                return await tcs.Task.ConfigureAwait(false);
+            }
         }
 
         public async Task MarkDeliveredBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
@@ -798,18 +506,18 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
-            var writes = ids.Select(messageId =>
-                (documentPath: $"chats/{chatId}/messages/{messageId}",
-                 transforms: (IReadOnlyList<FirestoreRestClient.FieldTransform>)new[]
-                 {
-                     FirestoreRestClient.TransformAppendMissingElements("deliveredTo", new object[]
-                     {
-                         FirestoreRestClient.VString(myUid)
-                     }),
-                     FirestoreRestClient.TransformServerTimestamp("updatedAt")
-                 })).ToList();
+            var batch = _db.CreateBatch();
+            foreach (var messageId in ids)
+            {
+                var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+                batch.UpdateData(doc, new[]
+                {
+                    ("deliveredTo", (object)FieldValue.ArrayUnion(new object[] { myUid })),
+                    ("updatedAt", (object)FieldValue.ServerTimestamp())
+                });
+            }
 
-            await FirestoreRestClient.CommitBatchAsync(writes, idToken, ct);
+            await batch.CommitAsync();
         }
 
         public async Task MarkReadBatchAsync(string chatId, IEnumerable<string> messageIds, string myUid, CancellationToken ct = default)
@@ -826,21 +534,21 @@ namespace Biliardo.App.Servizi_Firebase
             if (string.IsNullOrWhiteSpace(idToken))
                 throw new InvalidOperationException("Sessione scaduta. Rifai login.");
 
-            var writes = ids.Select(messageId =>
-                (documentPath: $"chats/{chatId}/messages/{messageId}",
-                 transforms: (IReadOnlyList<FirestoreRestClient.FieldTransform>)new[]
-                 {
-                     FirestoreRestClient.TransformAppendMissingElements("readBy", new object[]
-                     {
-                         FirestoreRestClient.VString(myUid)
-                     }),
-                     FirestoreRestClient.TransformServerTimestamp("updatedAt")
-                 })).ToList();
+            var batch = _db.CreateBatch();
+            foreach (var messageId in ids)
+            {
+                var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+                batch.UpdateData(doc, new[]
+                {
+                    ("readBy", (object)FieldValue.ArrayUnion(new object[] { myUid })),
+                    ("updatedAt", (object)FieldValue.ServerTimestamp())
+                });
+            }
 
-            await FirestoreRestClient.CommitBatchAsync(writes, idToken, ct);
+            await batch.CommitAsync();
         }
 
-        private static async Task PatchChatPreviewAsync(
+        private async Task PatchChatPreviewAsync(
             string idToken,
             string chatId,
             string senderUid,
@@ -850,24 +558,42 @@ namespace Biliardo.App.Servizi_Firebase
         {
             var now = DateTimeOffset.UtcNow;
 
-            var chatPatch = new Dictionary<string, object>
+            var doc = _db.GetDocument($"chats/{chatId}");
+            await doc.UpdateDataAsync(new[]
             {
-                ["lastMessageText"] = FirestoreRestClient.VString(previewText ?? ""),
-                ["lastMessageAt"] = FirestoreRestClient.VTimestamp(now),
-                ["lastMessageSenderUid"] = FirestoreRestClient.VString(senderUid),
-                ["lastMessageType"] = FirestoreRestClient.VString(string.IsNullOrWhiteSpace(type) ? "text" : type),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now),
-            };
+                ("lastMessageText", (object)(previewText ?? "")),
+                ("lastMessageAt", (object)now),
+                ("lastMessageSenderUid", (object)senderUid),
+                ("lastMessageType", (object)(string.IsNullOrWhiteSpace(type) ? "text" : type)),
+                ("updatedAt", (object)now)
+            });
+        }
 
-            await FirestoreRestClient.PatchDocumentAsync(
-                documentPath: $"chats/{chatId}",
-                fields: chatPatch,
-                updateMaskFieldPaths: new[]
-                {
-                    "lastMessageText","lastMessageAt","lastMessageSenderUid","lastMessageType","updatedAt"
-                },
-                idToken: idToken,
-                ct: ct);
+        public async Task SetTypingStateAsync(
+            string chatId,
+            string myUid,
+            bool isTyping,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                return;
+
+            var payload = new Dictionary<string, object?>();
+            if (isTyping)
+            {
+                payload["typingUid"] = myUid;
+                payload["typingAt"] = DateTimeOffset.UtcNow;
+            }
+
+            var doc = _db.GetDocument($"chats/{chatId}");
+            await doc.UpdateDataAsync(new[]
+            {
+                ("payload", (object)payload)
+            });
         }
 
         public async Task<bool> TryMarkDeliveredAsync(
@@ -884,23 +610,12 @@ namespace Biliardo.App.Servizi_Firebase
             if (currentDeliveredTo != null && currentDeliveredTo.Contains(myUid, StringComparer.Ordinal))
                 return false;
 
-            var merged = (currentDeliveredTo ?? Array.Empty<string>()).ToList();
-            merged.Add(myUid);
-
-            var now = DateTimeOffset.UtcNow;
-
-            var patch = new Dictionary<string, object>
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.UpdateDataAsync(new[]
             {
-                ["deliveredTo"] = FirestoreRestClient.VArrayStrings(merged),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
-            };
-
-            await FirestoreRestClient.PatchDocumentAsync(
-                documentPath: $"chats/{chatId}/messages/{messageId}",
-                fields: patch,
-                updateMaskFieldPaths: new[] { "deliveredTo", "updatedAt" },
-                idToken: idToken,
-                ct: ct);
+                ("deliveredTo", (object)FieldValue.ArrayUnion(new object[] { myUid })),
+                ("updatedAt", (object)FieldValue.ServerTimestamp())
+            });
 
             return true;
         }
@@ -919,308 +634,15 @@ namespace Biliardo.App.Servizi_Firebase
             if (currentReadBy != null && currentReadBy.Contains(myUid, StringComparer.Ordinal))
                 return false;
 
-            var merged = (currentReadBy ?? Array.Empty<string>()).ToList();
-            merged.Add(myUid);
-
-            var now = DateTimeOffset.UtcNow;
-
-            var patch = new Dictionary<string, object>
+            var doc = _db.GetDocument($"chats/{chatId}/messages/{messageId}");
+            await doc.UpdateDataAsync(new[]
             {
-                ["readBy"] = FirestoreRestClient.VArrayStrings(merged),
-                ["updatedAt"] = FirestoreRestClient.VTimestamp(now)
-            };
-
-            await FirestoreRestClient.PatchDocumentAsync(
-                documentPath: $"chats/{chatId}/messages/{messageId}",
-                fields: patch,
-                updateMaskFieldPaths: new[] { "readBy", "updatedAt" },
-                idToken: idToken,
-                ct: ct);
+                ("readBy", (object)FieldValue.ArrayUnion(new object[] { myUid })),
+                ("updatedAt", (object)FieldValue.ServerTimestamp())
+            });
 
             return true;
         }
 
-        // ----------------- parse helpers -----------------
-
-        private static string ExtractLastPathSegment(string fullName)
-        {
-            var idx = fullName.LastIndexOf("/", StringComparison.Ordinal);
-            return idx >= 0 ? fullName[(idx + 1)..] : fullName;
-        }
-
-        private static string? ReadString(JsonElement obj, string prop)
-        {
-            if (obj.ValueKind != JsonValueKind.Object) return null;
-            if (!obj.TryGetProperty(prop, out var p)) return null;
-            if (p.ValueKind != JsonValueKind.String) return null;
-            return p.GetString();
-        }
-
-        private static string? ReadStringField(JsonElement fields, string fieldName)
-        {
-            if (fields.ValueKind != JsonValueKind.Object) return null;
-            if (!fields.TryGetProperty(fieldName, out var v)) return null;
-            if (v.ValueKind != JsonValueKind.Object) return null;
-
-            if (v.TryGetProperty("stringValue", out var s) && s.ValueKind == JsonValueKind.String)
-                return s.GetString();
-
-            return null;
-        }
-
-        private static DateTimeOffset? ReadTimestampField(JsonElement fields, string fieldName)
-        {
-            if (fields.ValueKind != JsonValueKind.Object) return null;
-            if (!fields.TryGetProperty(fieldName, out var v)) return null;
-            if (v.ValueKind != JsonValueKind.Object) return null;
-
-            if (!v.TryGetProperty("timestampValue", out var t) || t.ValueKind != JsonValueKind.String)
-                return null;
-
-            var ts = t.GetString();
-            if (string.IsNullOrWhiteSpace(ts)) return null;
-
-            if (DateTimeOffset.TryParse(ts, out var dto))
-                return dto;
-
-            return null;
-        }
-
-        private static bool? ReadBoolField(JsonElement fields, string fieldName)
-        {
-            if (fields.ValueKind != JsonValueKind.Object) return null;
-            if (!fields.TryGetProperty(fieldName, out var v)) return null;
-            if (v.ValueKind != JsonValueKind.Object) return null;
-
-            if (v.TryGetProperty("booleanValue", out var b))
-            {
-                if (b.ValueKind == JsonValueKind.True) return true;
-                if (b.ValueKind == JsonValueKind.False) return false;
-            }
-
-            return null;
-        }
-
-        private static List<string> ReadStringArray(JsonElement fields, string fieldName)
-        {
-            var list = new List<string>();
-
-            if (fields.ValueKind != JsonValueKind.Object) return list;
-            if (!fields.TryGetProperty(fieldName, out var v)) return list;
-            if (v.ValueKind != JsonValueKind.Object) return list;
-
-            if (!v.TryGetProperty("arrayValue", out var av) || av.ValueKind != JsonValueKind.Object)
-                return list;
-
-            if (!av.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array)
-                return list;
-
-            foreach (var item in values.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.Object &&
-                    item.TryGetProperty("stringValue", out var sv) &&
-                    sv.ValueKind == JsonValueKind.String)
-                {
-                    var s = sv.GetString();
-                    if (!string.IsNullOrWhiteSpace(s))
-                        list.Add(s);
-                }
-            }
-
-            return list;
-        }
-
-        private static string? ReadMapString(JsonElement fields, string mapFieldName, string key)
-        {
-            if (string.IsNullOrWhiteSpace(key)) return null;
-            if (fields.ValueKind != JsonValueKind.Object) return null;
-            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!f.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (entry.TryGetProperty("stringValue", out var sv) && sv.ValueKind == JsonValueKind.String)
-                return sv.GetString();
-
-            return null;
-        }
-
-        private static long ReadMapInt64(JsonElement fields, string mapFieldName, string key)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(key)) return 0;
-                if (fields.ValueKind != JsonValueKind.Object) return 0;
-                if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
-                    return 0;
-
-                if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
-                    return 0;
-
-                if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
-                    return 0;
-
-                if (!f.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
-                    return 0;
-
-                if (entry.TryGetProperty("integerValue", out var iv))
-                {
-                    if (iv.ValueKind == JsonValueKind.String && long.TryParse(iv.GetString(), out var x))
-                        return x;
-                    if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt64(out var y))
-                        return y;
-                }
-            }
-            catch { }
-            return 0;
-        }
-
-        private static double? ReadMapDouble(JsonElement fields, string mapFieldName, string key)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(key)) return null;
-                if (fields.ValueKind != JsonValueKind.Object) return null;
-                if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!f.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (entry.TryGetProperty("doubleValue", out var dv))
-                {
-                    if (dv.ValueKind == JsonValueKind.Number && dv.TryGetDouble(out var x)) return x;
-                    if (dv.ValueKind == JsonValueKind.String && double.TryParse(dv.GetString(), out var y)) return y;
-                }
-                if (entry.TryGetProperty("integerValue", out var iv))
-                {
-                    if (iv.ValueKind == JsonValueKind.String && long.TryParse(iv.GetString(), out var z)) return z;
-                }
-            }
-            catch { }
-            return null;
-        }
-
-        private static string? ReadNestedMapString(JsonElement fields, string mapFieldName, string nestedMapName, string key)
-        {
-            if (string.IsNullOrWhiteSpace(key)) return null;
-            if (fields.ValueKind != JsonValueKind.Object) return null;
-            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!f.TryGetProperty(nestedMapName, out var nested) || nested.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!nested.TryGetProperty("mapValue", out var nmap) || nmap.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!nmap.TryGetProperty("fields", out var nf) || nf.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!nf.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (entry.TryGetProperty("stringValue", out var sv) && sv.ValueKind == JsonValueKind.String)
-                return sv.GetString();
-
-            return null;
-        }
-
-        private static int? ReadNestedMapInt(JsonElement fields, string mapFieldName, string nestedMapName, string key)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(key)) return null;
-                if (fields.ValueKind != JsonValueKind.Object) return null;
-                if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!f.TryGetProperty(nestedMapName, out var nested) || nested.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!nested.TryGetProperty("mapValue", out var nmap) || nmap.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!nmap.TryGetProperty("fields", out var nf) || nf.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (!nf.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
-                    return null;
-
-                if (entry.TryGetProperty("integerValue", out var iv))
-                {
-                    if (iv.ValueKind == JsonValueKind.String && int.TryParse(iv.GetString(), out var x))
-                        return x;
-                    if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt32(out var y))
-                        return y;
-                }
-            }
-            catch { }
-
-            return null;
-        }
-
-        private static IReadOnlyList<int>? ReadMapIntArray(JsonElement fields, string mapFieldName, string key)
-        {
-            if (string.IsNullOrWhiteSpace(key)) return null;
-            if (fields.ValueKind != JsonValueKind.Object) return null;
-            if (!fields.TryGetProperty(mapFieldName, out var v) || v.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!v.TryGetProperty("mapValue", out var mv) || mv.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!mv.TryGetProperty("fields", out var f) || f.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!f.TryGetProperty(key, out var entry) || entry.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!entry.TryGetProperty("arrayValue", out var av) || av.ValueKind != JsonValueKind.Object)
-                return null;
-
-            if (!av.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array)
-                return null;
-
-            var list = new List<int>();
-            foreach (var item in values.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.Object) continue;
-                if (item.TryGetProperty("integerValue", out var iv))
-                {
-                    if (iv.ValueKind == JsonValueKind.String && int.TryParse(iv.GetString(), out var x))
-                        list.Add(x);
-                    else if (iv.ValueKind == JsonValueKind.Number && iv.TryGetInt32(out var y))
-                        list.Add(y);
-                }
-            }
-
-            return list.Count == 0 ? null : list;
-        }
     }
 }

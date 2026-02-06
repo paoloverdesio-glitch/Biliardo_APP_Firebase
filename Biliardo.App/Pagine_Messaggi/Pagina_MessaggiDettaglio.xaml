@@ -35,22 +35,31 @@
                                AvatarUrl="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarUrl}"
                                AvatarPath="{Binding Source={x:Reference ThisPage}, Path=PeerAvatarPath}"
                                DisplayName="{Binding Source={x:Reference ThisPage}, Path=AvatarDisplayName}"
-                               Size="42"
                                VerticalOptions="Center" />
 
-            <VerticalStackLayout Grid.Column="2" Spacing="2" VerticalOptions="Center">
-                <Label Text="{Binding Source={x:Reference ThisPage}, Path=TitoloChat}"
-                       TextColor="White"
-                       FontAttributes="Bold"
-                       FontSize="18"
-                       LineBreakMode="TailTruncation" />
-                <Label Text="{Binding Source={x:Reference ThisPage}, Path=DisplayNomeCompleto}"
-                       IsVisible="{Binding Source={x:Reference ThisPage}, Path=HasDisplayNomeCompleto}"
-                       TextColor="White"
+            <Grid Grid.Column="2" ColumnDefinitions="*,Auto" ColumnSpacing="8" VerticalOptions="Center">
+                <VerticalStackLayout Grid.Column="0" Spacing="2">
+                    <Label Text="{Binding Source={x:Reference ThisPage}, Path=TitoloChat}"
+                           TextColor="White"
+                           FontAttributes="Bold"
+                           FontSize="18"
+                           LineBreakMode="TailTruncation" />
+                    <Label Text="{Binding Source={x:Reference ThisPage}, Path=DisplayNomeCompleto}"
+                           IsVisible="{Binding Source={x:Reference ThisPage}, Path=HasDisplayNomeCompleto}"
+                           TextColor="White"
+                           FontSize="12"
+                           Opacity="0.75"
+                           LineBreakMode="TailTruncation" />
+                </VerticalStackLayout>
+
+                <Label Grid.Column="1"
+                       Text="{Binding Source={x:Reference ThisPage}, Path=PeerTypingLabel}"
+                       IsVisible="{Binding Source={x:Reference ThisPage}, Path=IsPeerTyping}"
+                       TextColor="{Binding Source={x:Reference ThisPage}, Path=AccentGreenColor}"
                        FontSize="12"
-                       Opacity="0.75"
+                       VerticalTextAlignment="Center"
                        LineBreakMode="TailTruncation" />
-            </VerticalStackLayout>
+            </Grid>
         </Grid>
 
         <!-- AREA MESSAGGI + LOADING -->

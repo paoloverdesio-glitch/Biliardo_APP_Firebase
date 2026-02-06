@@ -9,6 +9,8 @@ using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Effects;
 using Biliardo.App.Cache_Locale.SQLite;
 using CommunityToolkit.Maui;
+using Plugin.Firebase.Core;
+using Plugin.Firebase.Firestore;
 
 #if ANDROID
 using Plugin.Firebase.Core.Platforms.Android;
@@ -101,6 +103,14 @@ namespace Biliardo.App
                     ios.OnResignActivation(app => { });
                     ios.DidEnterBackground(app => { });
                     ios.WillEnterForeground(app => { });
+                });
+#elif WINDOWS
+                events.AddWindows(windows =>
+                {
+                    windows.OnLaunched((app, __) =>
+                    {
+                        _ = CrossFirebaseFirestore.IsSupported;
+                    });
                 });
 #endif
             });

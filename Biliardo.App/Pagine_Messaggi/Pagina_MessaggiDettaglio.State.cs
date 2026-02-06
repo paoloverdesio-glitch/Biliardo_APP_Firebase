@@ -2,10 +2,9 @@
 using Biliardo.App.Infrastructure.Media;
 using Biliardo.App.Infrastructure.Media.Cache;
 using Biliardo.App.Infrastructure.Media.Processing;
-using Biliardo.App.Infrastructure.Sync;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Media;
-using Biliardo.App.Cache_Locale.Profili;
+using Biliardo.App.Infrastructure.Realtime;
 using Biliardo.App.Utilita;
 using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
@@ -150,6 +149,21 @@ namespace Biliardo.App.Pagine_Messaggi
             set { _peerAvatarPath = value ?? ""; OnPropertyChanged(); }
         }
 
+        private bool _isPeerTyping;
+        public bool IsPeerTyping
+        {
+            get => _isPeerTyping;
+            set
+            {
+                if (_isPeerTyping == value) return;
+                _isPeerTyping = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(PeerTypingLabel));
+            }
+        }
+
+        public string PeerTypingLabel => IsPeerTyping ? "Sta scrivendo..." : "";
+
         // ============================================================
         // 7) COMPOSER: TESTO / ALLEGATI / INVIO (BINDING XAML o VIEW)
         // ============================================================
@@ -242,9 +256,6 @@ namespace Biliardo.App.Pagine_Messaggi
         private bool _userNearBottom = true;
         private bool _isLoadingOlder;
         private CancellationTokenSource? _appearanceCts;
-        private bool _realtimeSubscribed;
-        private int _serverSyncFlag;
-        private bool _serverSyncDone;
 
         // Modali: evita stop aggiornamenti realtime quando apro un modal (foto fullscreen, bottom sheet, ecc.)
         private bool _suppressStopRealtimeOnce;
@@ -253,18 +264,21 @@ namespace Biliardo.App.Pagine_Messaggi
         // 12) SERVIZI FIREBASE (chat)
         // ============================================================
         private readonly FirestoreChatService _fsChat = new("biliardoapp");
+        private readonly FirestoreRealtimeService _realtime = new();
         private readonly MediaCacheService _mediaCache = new();
-        private readonly Cache_Locale.SQLite.ChatCacheStore _chatStore = new();
-
-        // Cache persistente reale (non usare la classe annidata Pagina_MessaggiDettaglio.ChatLocalCache)
-        private readonly Biliardo.App.Infrastructure.ChatLocalCache _chatCache = new();
-        private readonly UserPublicLocalCache _userPublicCache = new();
-        private readonly FetchMissingContentUseCase _fetchMissing = new();
+        private readonly ListenerRegistry _listeners = new();
+        private IDisposable? _messagesListener;
+        private IDisposable? _peerProfileListener;
+        private IDisposable? _typingListener;
 
         private readonly IMediaPreviewGenerator _previewGenerator = new MediaPreviewGenerator();
 
         private readonly List<int> _recordingWaveform = new();
         private long _lastWaveformSampleTicks;
+
+        private CancellationTokenSource? _typingDebounceCts;
+        private CancellationTokenSource? _typingIdleCts;
+        private bool _typingSent;
 
         // ============================================================
         // 13) REALTIME / DIFF / PENDING APPLY (anti-jank)
@@ -371,6 +385,104 @@ namespace Biliardo.App.Pagine_Messaggi
         {
             // Nota: CvMessaggi è definito in XAML, quindi disponibile qui.
             ChatScrollTuning.Apply(CvMessaggi);
+        }
+
+        private void OnComposerTextChanged(object? sender, string text)
+        {
+            var hasText = !string.IsNullOrWhiteSpace(text);
+            QueueTypingState(hasText);
+        }
+
+        private void QueueTypingState(bool isTyping)
+        {
+            try { _typingDebounceCts?.Cancel(); } catch { }
+            try { _typingDebounceCts?.Dispose(); } catch { }
+            _typingDebounceCts = null;
+
+            try { _typingIdleCts?.Cancel(); } catch { }
+            try { _typingIdleCts?.Dispose(); } catch { }
+            _typingIdleCts = null;
+
+            if (!isTyping)
+            {
+                _ = UpdateTypingStateAsync(false);
+                return;
+            }
+
+            var cts = new CancellationTokenSource();
+            _typingDebounceCts = cts;
+            var token = cts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(350, token);
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    await UpdateTypingStateAsync(true);
+                    ScheduleTypingIdleClear();
+                }
+                catch { }
+            }, token);
+        }
+
+        private void ScheduleTypingIdleClear()
+        {
+            try { _typingIdleCts?.Cancel(); } catch { }
+            try { _typingIdleCts?.Dispose(); } catch { }
+
+            var cts = new CancellationTokenSource();
+            _typingIdleCts = cts;
+            var token = cts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(3500, token);
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    await UpdateTypingStateAsync(false);
+                }
+                catch { }
+            }, token);
+        }
+
+        private async Task UpdateTypingStateAsync(bool isTyping)
+        {
+            if (_typingSent == isTyping)
+                return;
+
+            var chatId = _chatIdCached ?? _lastChatId;
+            var myUid = _lastMyUid;
+            if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(myUid))
+                return;
+
+            _typingSent = isTyping;
+            try
+            {
+                await _fsChat.SetTypingStateAsync(chatId, myUid, isTyping);
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
+        private void StopTypingUpdates()
+        {
+            try { _typingDebounceCts?.Cancel(); } catch { }
+            try { _typingDebounceCts?.Dispose(); } catch { }
+            _typingDebounceCts = null;
+
+            try { _typingIdleCts?.Cancel(); } catch { }
+            try { _typingIdleCts?.Dispose(); } catch { }
+            _typingIdleCts = null;
+
+            _ = UpdateTypingStateAsync(false);
         }
 
     }

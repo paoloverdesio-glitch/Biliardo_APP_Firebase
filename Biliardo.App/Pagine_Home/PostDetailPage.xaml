@@ -30,8 +30,7 @@
                         <HorizontalStackLayout Spacing="10">
                             <ui:UserAvatarView AvatarUrl="{Binding Post.AuthorAvatarUrl}"
                                                AvatarPath="{Binding Post.AuthorAvatarPath}"
-                                               DisplayName="{Binding Post.AuthorNickname}"
-                                               Size="36" />
+                                               DisplayName="{Binding Post.AuthorNickname}" />
                             <VerticalStackLayout Spacing="2">
                                 <Label Text="{Binding Post.AuthorNickname}" TextColor="White" FontAttributes="Bold" />
                                 <Label Text="{Binding Post.CreatedAtLabel}" TextColor="#A0A0A0" FontSize="12" />
@@ -55,8 +54,7 @@
                         <HorizontalStackLayout Spacing="10">
                             <ui:UserAvatarView AvatarUrl="{Binding AuthorAvatarUrl}"
                                                AvatarPath="{Binding AuthorAvatarPath}"
-                                               DisplayName="{Binding AuthorNickname}"
-                                               Size="28" />
+                                               DisplayName="{Binding AuthorNickname}" />
                             <VerticalStackLayout Spacing="2">
                                 <Label Text="{Binding AuthorNickname}" TextColor="White" FontAttributes="Bold" FontSize="12" />
                                 <Label Text="{Binding Text}" TextColor="White" FontSize="12" />
