@@ -568,7 +568,7 @@ namespace Biliardo.App.Pagine_Messaggi
                                 dataOra: whenLocal,
                                 lastAtUtc: whenUtc,
                                 nonLetti: 0,
-                                isTyping: c.IsPeerTyping));
+                                isTyping: c.IsPeerTyping);
 
                             if (ShouldShowChat(chat.ChatId, chat.LastAtUtc))
                                 newItems.Add(chat);
@@ -619,7 +619,7 @@ namespace Biliardo.App.Pagine_Messaggi
             if (_profileLoads.TryGetValue(peerUid, out var existing))
                 return existing;
 
-            return _profileLoads.GetOrAdd(peerUid, _ => Task.Run(async () =>
+            return _profileLoads.GetOrAdd(peerUid, _key => Task.Run(async () =>
             {
                 try
                 {
@@ -656,7 +656,7 @@ namespace Biliardo.App.Pagine_Messaggi
             if (string.IsNullOrWhiteSpace(peerUid) || string.IsNullOrWhiteSpace(chatId))
                 return Task.CompletedTask;
 
-            return _unreadLoads.GetOrAdd(peerUid, _ => Task.Run(async () =>
+            return _unreadLoads.GetOrAdd(peerUid, _key => Task.Run(async () =>
             {
                 try
                 {
