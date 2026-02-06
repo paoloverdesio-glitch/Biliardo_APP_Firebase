@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk"> 
 
   <PropertyGroup>
     <TargetFrameworks>net8.0-android</TargetFrameworks>
@@ -63,9 +63,8 @@
     <GoogleServicesJson Include="Platforms/Android/google-services.json">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </GoogleServicesJson>
-    <PackageReference Include="Xamarin.AndroidX.Activity.Ktx" Version="1.7.2.1" ExcludeAssets="build;buildTransitive" />
-    <PackageReference Update="Xamarin.AndroidX.Collection.Ktx" ExcludeAssets="all" />
-    <AndroidRemoveLibrary Include="androidx.collection.collection-ktx.jar" />
+<PackageReference Include="Xamarin.AndroidX.Collection.Ktx" Version="1.2.0.9" ExcludeAssets="buildTransitive" />
+<PackageReference Include="Xamarin.AndroidX.Activity.Ktx" Version="1.7.2.1" ExcludeAssets="build;buildTransitive" />
 
     <!-- Rimossi Xamarin.AndroidX.Collection / Ktx: evitano duplicazioni AAR/JAR -->
   </ItemGroup>
