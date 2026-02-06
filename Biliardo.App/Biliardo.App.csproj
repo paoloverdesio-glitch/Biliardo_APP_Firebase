@@ -64,6 +64,7 @@
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </GoogleServicesJson>
     <PackageReference Include="Xamarin.AndroidX.Activity.Ktx" Version="1.7.2.1" ExcludeAssets="build;buildTransitive" />
+    <PackageReference Update="Xamarin.AndroidX.Collection.Ktx" ExcludeAssets="all" />
 
     <!-- Rimossi Xamarin.AndroidX.Collection / Ktx: evitano duplicazioni AAR/JAR -->
   </ItemGroup>
