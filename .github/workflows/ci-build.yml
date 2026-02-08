@@ -1,0 +1,113 @@
+name: CI Build (Android + Windows)
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  android:
+    name: Android (net8.0-android)
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_PLATFORM: "34"
+      ANDROID_BUILD_TOOLS: "34.0.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK 8.0.417
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.417"
+
+      - name: Setup Java 17 (Microsoft)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "microsoft"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Install MAUI Android workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet workload install maui-android
+
+      - name: Sanity check (requested)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOTNET_EXE="$(command -v dotnet)"
+          command -v dotnet
+          dotnet --version
+          echo "DOTNET_ROOT=${DOTNET_ROOT:-}"
+          "${DOTNET_EXE}" --version
+          "${JAVA_HOME}/bin/java" -version
+
+      - name: Restore (Android only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOTNET_EXE="$(command -v dotnet)"
+          "${DOTNET_EXE}" restore Biliardo.App/Biliardo.App.csproj \
+            -p:TargetFramework=net8.0-android \
+            -p:TargetFrameworks=net8.0-android
+
+      - name: Build (Android)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOTNET_EXE="$(command -v dotnet)"
+          "${DOTNET_EXE}" build Biliardo.App/Biliardo.App.csproj \
+            -c Debug -f net8.0-android --no-restore \
+            -p:AndroidSdkDirectory="${ANDROID_SDK_ROOT}" \
+            -p:JavaSdkDirectory="${JAVA_HOME}"
+
+  windows:
+    name: Windows (net8.0-windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK 8.0.417
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.417"
+
+      - name: Install MAUI Windows workload
+        shell: pwsh
+        run: |
+          dotnet workload install maui-windows
+
+      - name: Sanity check (Windows)
+        shell: pwsh
+        run: |
+          where.exe dotnet
+          dotnet --version
+          if ($env:DOTNET_ROOT) { & "$env:DOTNET_ROOT\dotnet" --version }
+
+      - name: Restore (Windows only)
+        shell: pwsh
+        run: |
+          dotnet restore Biliardo.App/Biliardo.App.csproj `
+            -p:TargetFramework=net8.0-windows10.0.19041.0 `
+            -p:TargetFrameworks=net8.0-windows10.0.19041.0
+
+      - name: Build (like VS target framework)
+        shell: pwsh
+        run: |
+          dotnet build Biliardo.App/Biliardo.App.csproj `
+            -c Debug -f net8.0-windows10.0.19041.0 --no-restore
