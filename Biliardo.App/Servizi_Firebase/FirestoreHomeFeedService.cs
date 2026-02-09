@@ -78,6 +78,57 @@ namespace Biliardo.App.Servizi_Firebase
 
         public sealed record PageResult<T>(IReadOnlyList<T> Items, string? NextCursor);
 
+        public async Task<IReadOnlyList<HomePostItem>> GetHomePostsPageAsync(
+            DateTimeOffset? startAfterUtc,
+            int limit,
+            CancellationToken ct = default)
+        {
+            if (limit <= 0) limit = 20;
+
+            var idToken = await FirebaseSessionePersistente.GetIdTokenValidoAsync(ct);
+            if (string.IsNullOrWhiteSpace(idToken))
+                throw new InvalidOperationException("Sessione scaduta. Rifai login.");
+
+            var structuredQuery = new Dictionary<string, object>
+            {
+                ["from"] = new[]
+                {
+                    new Dictionary<string, object> { ["collectionId"] = "home_posts" }
+                },
+                ["where"] = new Dictionary<string, object>
+                {
+                    ["fieldFilter"] = new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "deleted" },
+                        ["op"] = "EQUAL",
+                        ["value"] = FirestoreRestClient.VBool(false)
+                    }
+                },
+                ["orderBy"] = new[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["field"] = new Dictionary<string, object> { ["fieldPath"] = "createdAt" },
+                        ["direction"] = "DESCENDING"
+                    }
+                },
+                ["limit"] = limit
+            };
+
+            if (startAfterUtc.HasValue)
+            {
+                structuredQuery["startAt"] = new Dictionary<string, object>
+                {
+                    ["values"] = new[] { FirestoreRestClient.VTimestamp(startAfterUtc.Value) },
+                    ["before"] = false
+                };
+            }
+
+            var queryDoc = await FirestoreRestClient.RunQueryAsync(structuredQuery, idToken, ct);
+            var items = ParsePostsFromRunQuery(queryDoc);
+            return items;
+        }
+
         public async Task<string> CreatePostAsync(
             string text,
             IReadOnlyList<HomeAttachment> attachments,
@@ -490,6 +541,238 @@ namespace Biliardo.App.Servizi_Firebase
                 PreviewWidth: attachment.ThumbWidth,
                 PreviewHeight: attachment.ThumbHeight,
                 Waveform: attachment.Waveform);
+        }
+
+        private static List<HomePostItem> ParsePostsFromRunQuery(JsonDocument doc)
+        {
+            var list = new List<HomePostItem>();
+            if (doc == null)
+                return list;
+
+            foreach (var element in doc.RootElement.EnumerateArray())
+            {
+                if (!element.TryGetProperty("document", out var docElement))
+                    continue;
+                if (!docElement.TryGetProperty("name", out var nameProp))
+                    continue;
+                if (!docElement.TryGetProperty("fields", out var fields))
+                    continue;
+
+                var name = nameProp.GetString();
+                var postId = ExtractDocumentId(name);
+                if (string.IsNullOrWhiteSpace(postId))
+                    continue;
+
+                var createdAt = ReadTimestamp(fields, "createdAt") ?? DateTimeOffset.UtcNow;
+                var attachments = ReadAttachments(fields);
+
+                var item = new HomePostItem(
+                    PostId: postId,
+                    AuthorUid: ReadString(fields, "authorUid") ?? "",
+                    AuthorNickname: ReadString(fields, "authorNickname") ?? "",
+                    AuthorFirstName: ReadString(fields, "authorFirstName") ?? "",
+                    AuthorLastName: ReadString(fields, "authorLastName") ?? "",
+                    AuthorAvatarPath: ReadString(fields, "authorAvatarPath"),
+                    AuthorAvatarUrl: ReadString(fields, "authorAvatarUrl"),
+                    CreatedAtUtc: createdAt,
+                    Text: ReadString(fields, "text") ?? "",
+                    Attachments: attachments,
+                    LikeCount: ReadInt(fields, "likeCount") ?? 0,
+                    CommentCount: ReadInt(fields, "commentCount") ?? 0,
+                    ShareCount: ReadInt(fields, "shareCount") ?? 0,
+                    Deleted: ReadBool(fields, "deleted") ?? false,
+                    DeletedAtUtc: ReadTimestamp(fields, "deletedAt"),
+                    RepostOfPostId: ReadString(fields, "repostOfPostId"),
+                    ClientNonce: ReadString(fields, "clientNonce"),
+                    SchemaVersion: ReadInt(fields, "schemaVersion") ?? HomePostValidatorV2.SchemaVersion,
+                    Ready: ReadBool(fields, "ready") ?? true,
+                    IsLiked: false);
+
+                list.Add(item);
+            }
+
+            return list
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .ToList();
+        }
+
+        private static string? ExtractDocumentId(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return null;
+
+            var parts = name.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length > 0 ? parts[^1] : null;
+        }
+
+        private static IReadOnlyList<HomeAttachment> ReadAttachments(JsonElement fields)
+        {
+            var list = new List<HomeAttachment>();
+            if (!fields.TryGetProperty("attachments", out var attField))
+                return list;
+            if (!attField.TryGetProperty("arrayValue", out var arrayValue))
+                return list;
+            if (!arrayValue.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array)
+                return list;
+
+            foreach (var val in values.EnumerateArray())
+            {
+                if (!val.TryGetProperty("mapValue", out var mapValue))
+                    continue;
+                if (!mapValue.TryGetProperty("fields", out var attFields))
+                    continue;
+
+                list.Add(new HomeAttachment(
+                    Type: ReadString(attFields, "type") ?? "",
+                    StoragePath: ReadString(attFields, "storagePath"),
+                    DownloadUrl: ReadString(attFields, "downloadUrl"),
+                    FileName: ReadString(attFields, "fileName"),
+                    ContentType: ReadString(attFields, "contentType"),
+                    SizeBytes: ReadInt64(attFields, "sizeBytes"),
+                    DurationMs: ReadInt64(attFields, "durationMs"),
+                    Extra: ReadMap(attFields, "extra"),
+                    ThumbStoragePath: ReadString(attFields, "thumbStoragePath"),
+                    LqipBase64: ReadString(attFields, "lqipBase64"),
+                    PreviewType: ReadString(attFields, "previewType"),
+                    ThumbWidth: ReadInt(attFields, "thumbWidth"),
+                    ThumbHeight: ReadInt(attFields, "thumbHeight"),
+                    Waveform: ReadIntArray(attFields, "waveform")));
+            }
+
+            return list;
+        }
+
+        private static string? ReadString(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return null;
+            if (field.TryGetProperty("stringValue", out var value))
+                return value.GetString();
+            return null;
+        }
+
+        private static bool? ReadBool(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return null;
+            if (field.TryGetProperty("booleanValue", out var value))
+                return value.GetBoolean();
+            return null;
+        }
+
+        private static int? ReadInt(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return null;
+            if (!field.TryGetProperty("integerValue", out var value))
+                return null;
+            if (int.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                return parsed;
+            return null;
+        }
+
+        private static long ReadInt64(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return 0;
+            if (!field.TryGetProperty("integerValue", out var value))
+                return 0;
+            return long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
+        }
+
+        private static DateTimeOffset? ReadTimestamp(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return null;
+            if (!field.TryGetProperty("timestampValue", out var value))
+                return null;
+            if (DateTimeOffset.TryParse(value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
+                return parsed;
+            return null;
+        }
+
+        private static Dictionary<string, object>? ReadMap(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return null;
+            if (!field.TryGetProperty("mapValue", out var mapValue))
+                return null;
+            if (!mapValue.TryGetProperty("fields", out var mapFields))
+                return null;
+
+            var dict = new Dictionary<string, object>();
+            foreach (var prop in mapFields.EnumerateObject())
+            {
+                var val = ReadValue(prop.Value);
+                if (val != null)
+                    dict[prop.Name] = val;
+            }
+
+            return dict.Count == 0 ? null : dict;
+        }
+
+        private static IReadOnlyList<int>? ReadIntArray(JsonElement fields, string name)
+        {
+            if (!fields.TryGetProperty(name, out var field))
+                return null;
+            if (!field.TryGetProperty("arrayValue", out var arrayValue))
+                return null;
+            if (!arrayValue.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var list = new List<int>();
+            foreach (var item in values.EnumerateArray())
+            {
+                if (item.TryGetProperty("integerValue", out var intVal)
+                    && int.TryParse(intVal.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                {
+                    list.Add(parsed);
+                }
+            }
+
+            return list.Count == 0 ? null : list;
+        }
+
+        private static object? ReadValue(JsonElement value)
+        {
+            if (value.TryGetProperty("stringValue", out var s))
+                return s.GetString() ?? "";
+            if (value.TryGetProperty("integerValue", out var i))
+                return long.TryParse(i.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
+            if (value.TryGetProperty("doubleValue", out var d))
+                return d.GetDouble();
+            if (value.TryGetProperty("booleanValue", out var b))
+                return b.GetBoolean();
+            if (value.TryGetProperty("timestampValue", out var t))
+            {
+                return DateTimeOffset.TryParse(t.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+                    ? parsed
+                    : null;
+            }
+            if (value.TryGetProperty("mapValue", out var mapValue) && mapValue.TryGetProperty("fields", out var mapFields))
+            {
+                var dict = new Dictionary<string, object>();
+                foreach (var prop in mapFields.EnumerateObject())
+                {
+                    var inner = ReadValue(prop.Value);
+                    if (inner != null)
+                        dict[prop.Name] = inner;
+                }
+                return dict;
+            }
+            if (value.TryGetProperty("arrayValue", out var arrayValue) && arrayValue.TryGetProperty("values", out var values))
+            {
+                var list = new List<object>();
+                foreach (var item in values.EnumerateArray())
+                {
+                    var inner = ReadValue(item);
+                    if (inner != null)
+                        list.Add(inner);
+                }
+                return list;
+            }
+
+            return null;
         }
 
     }
