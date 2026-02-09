@@ -78,7 +78,7 @@ namespace Biliardo.App.Pagine_Messaggi
             var peerId = (_peerUserId ?? "").Trim();
             if (string.IsNullOrWhiteSpace(peerId))
             {
-                await DisplayAlert("Errore", "Peer non valido (userId mancante).", "OK");
+                await ShowServerErrorPopupAsync("Errore invio messaggio", new InvalidOperationException("Peer non valido (userId mancante)."));
                 return;
             }
 
@@ -245,7 +245,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", $"Invio non riuscito: {ex.Message}", "OK");
+                await ShowServerErrorPopupAsync("Errore invio messaggio", ex);
             }
             finally
             {
@@ -449,7 +449,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore allegato", ex);
             }
         }
 
@@ -494,7 +494,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore allegato", ex);
             }
         }
 
@@ -853,6 +853,8 @@ namespace Biliardo.App.Pagine_Messaggi
                 vm.StatusLabel = "Errore";
                 vm.StatusColor = Colors.OrangeRed;
             });
+
+            _ = ShowServerErrorPopupAsync("Errore invio messaggio", ex);
         }
 
         private async Task RetrySendAsync(ChatMessageVm? vm)
