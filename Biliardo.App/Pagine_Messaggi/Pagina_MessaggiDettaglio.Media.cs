@@ -146,7 +146,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore media", ex);
             }
         }
 
@@ -261,7 +261,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore media", ex);
             }
         }
 
@@ -282,7 +282,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore media", ex);
             }
         }
 
@@ -325,7 +325,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore media", ex);
             }
         }
 
@@ -449,7 +449,7 @@ namespace Biliardo.App.Pagine_Messaggi
                 if (string.IsNullOrWhiteSpace(local))
                 {
                     if (showErrors)
-                        await DisplayAlert("Errore", "Impossibile scaricare il file.", "OK");
+                        await ShowServerErrorPopupAsync("Errore download", new InvalidOperationException("Impossibile scaricare il file."));
                     return null;
                 }
 
@@ -466,13 +466,13 @@ namespace Biliardo.App.Pagine_Messaggi
             catch (OperationCanceledException)
             {
                 if (showErrors)
-                    await DisplayAlert("Errore", "Timeout download contenuto.", "OK");
+                    await ShowServerErrorPopupAsync("Errore download", new TimeoutException("Timeout download contenuto."));
                 return null;
             }
             catch
             {
                 if (showErrors)
-                    await DisplayAlert("Errore", "Impossibile aprire il contenuto.", "OK");
+                    await ShowServerErrorPopupAsync("Errore apertura", new InvalidOperationException("Impossibile aprire il contenuto."));
                 return null;
             }
             finally
