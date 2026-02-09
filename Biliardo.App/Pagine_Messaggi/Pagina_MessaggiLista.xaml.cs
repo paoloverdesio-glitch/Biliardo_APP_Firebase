@@ -6,7 +6,9 @@ using Biliardo.App.Effects;
 using Biliardo.App.Servizi_Firebase;
 using Biliardo.App.Servizi_Notifiche;
 using Biliardo.App.Servizi_Sicurezza;
+using Biliardo.App.Utilita;
 using Microsoft.Maui.ApplicationModel;
+using Microsoft.Maui.Controls;
 using Microsoft.Maui.Graphics;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -50,6 +52,12 @@ namespace Biliardo.App.Pagine_Messaggi
 
         public bool HasChatSelection => _selectedChatIds.Count > 0;
 
+        private Task ShowServerErrorPopupAsync(string title, Exception ex)
+        {
+            var message = ex?.ToString() ?? "";
+            return PopupErrorHelper.ShowAsync(this, title, message);
+        }
+
         // =========================================================
         // 2) UI - Nuova chat / Selezione
         // =========================================================
@@ -76,7 +84,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore", ex);
             }
         }
 
@@ -118,7 +126,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore", ex);
             }
         }
 
@@ -215,7 +223,7 @@ namespace Biliardo.App.Pagine_Messaggi
             }
             catch (Exception ex)
             {
-                await DisplayAlert("Errore", ex.Message, "OK");
+                await ShowServerErrorPopupAsync("Errore", ex);
             }
         }
 
@@ -464,6 +472,16 @@ namespace Biliardo.App.Pagine_Messaggi
         private readonly ConcurrentDictionary<string, Task> _profileLoads = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<string, Task> _unreadLoads = new(StringComparer.Ordinal);
 
+        private static Task ShowServerErrorPopupAsync(string title, Exception ex)
+        {
+            var page = Application.Current?.MainPage;
+            if (page == null)
+                return Task.CompletedTask;
+
+            var message = ex?.ToString() ?? "";
+            return PopupErrorHelper.ShowAsync(page, title, message);
+        }
+
         public void ReplaceAll(IReadOnlyList<ChatPreview> items)
         {
             if (IsSuspended)
@@ -596,7 +614,11 @@ namespace Biliardo.App.Pagine_Messaggi
                             _ = EnsureUnreadCountAsync(myUid, it.WithUserId, it.ChatId);
                         }
                     },
-                    ex => Debug.WriteLine($"[ChatList] listener error: {ex}"));
+                    ex =>
+                    {
+                        Debug.WriteLine($"[ChatList] listener error: {ex}");
+                        _ = ShowServerErrorPopupAsync("Errore download chat", ex);
+                    });
                 RegisterListener(_chatListListener);
             }
             finally
