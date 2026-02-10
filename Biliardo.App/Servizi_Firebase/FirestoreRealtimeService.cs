@@ -106,7 +106,6 @@ namespace Biliardo.App.Servizi_Firebase
             var query = _db
                 .GetCollection("chats")
                 .WhereArrayContains("members", myUid)
-                .OrderBy("updatedAt", true)
                 .LimitedTo(limit);
 
             return query.AddSnapshotListener<Dictionary<string, object>>(

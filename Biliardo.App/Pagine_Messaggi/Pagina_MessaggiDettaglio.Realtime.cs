@@ -220,6 +220,10 @@ namespace Biliardo.App.Pagine_Messaggi
                     if (clearedAt.HasValue)
                         ordered = ordered.Where(m => m.CreatedAtUtc > clearedAt.Value).ToList();
 
+                    ordered = ordered
+                        .Where(m => !RequiresPreviewForMessage(m) || HasPreviewForMessage(m))
+                        .ToList();
+
                     var sig = ComputeUiSignature(ordered);
 
                     if (IsScrollBusy())
@@ -233,7 +237,11 @@ namespace Biliardo.App.Pagine_Messaggi
 
                     ChatDetailMemoryCache.Instance.Set(_chatCacheKey, ordered);
                 },
-                ex => Debug.WriteLine($"[ChatDetail] messages listener error: {ex}"));
+                ex =>
+                {
+                    Debug.WriteLine($"[ChatDetail] messages listener error: {ex}");
+                    _ = ShowServerErrorPopupAsync("Errore download messaggi", ex);
+                });
             _listeners.Add(_messagesListener);
 
             _typingListener?.Dispose();
@@ -257,6 +265,39 @@ namespace Biliardo.App.Pagine_Messaggi
         private void StartRealtimeUpdatesAfterFirstRender()
         {
             // No-op: realtime gestito da listener Firestore
+        }
+
+        private static bool RequiresPreviewForMessage(FirestoreChatService.MessageItem message)
+        {
+            if (message == null)
+                return false;
+
+            var type = message.Type ?? "";
+            return type.Equals("photo", StringComparison.OrdinalIgnoreCase)
+                   || type.Equals("video", StringComparison.OrdinalIgnoreCase)
+                   || type.Equals("file", StringComparison.OrdinalIgnoreCase)
+                   || type.Equals("audio", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasPreviewForMessage(FirestoreChatService.MessageItem message)
+        {
+            if (message == null)
+                return false;
+
+            if (!string.IsNullOrWhiteSpace(message.ThumbStoragePath))
+                return true;
+            if (!string.IsNullOrWhiteSpace(message.LqipBase64))
+                return true;
+            if (!string.IsNullOrWhiteSpace(message.PreviewType))
+                return true;
+            if (message.ThumbWidth.HasValue && message.ThumbWidth.Value > 0)
+                return true;
+            if (message.ThumbHeight.HasValue && message.ThumbHeight.Value > 0)
+                return true;
+            if (message.Waveform != null && message.Waveform.Count > 0)
+                return true;
+
+            return false;
         }
 
         private void StopRealtimeUpdates()

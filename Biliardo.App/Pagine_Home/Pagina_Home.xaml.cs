@@ -77,6 +77,9 @@ namespace Biliardo.App.Pagine_Home
         private readonly ListenerRegistry _listeners = new();
         private IDisposable? _homeListener;
         private IDisposable? _profileListener;
+        private const int HomePageSize = 20;
+        private DateTimeOffset? _homePagingCursorUtc;
+        private bool _initialPageLoaded;
 
         // Popup personalizzato
         private TaskCompletionSource<bool>? _popupTcs;
@@ -143,6 +146,7 @@ namespace Biliardo.App.Pagine_Home
             if (!await EnsureFirebaseSessionOrBackToLoginAsync())
                 return;
 
+            await LoadInitialHomePostsAsync(ct);
             StartRealtimeUpdatesAfterFirstRender(ct);
         }
 
@@ -283,7 +287,6 @@ namespace Biliardo.App.Pagine_Home
                 {
                     _loadedFromMemory = true;
                     var visible = new List<HomePostVm>();
-                    var pending = new List<HomePostVm>();
                     foreach (var cachedPost in memory.OrderByDescending(x => x.CreatedAtUtc))
                     {
                         var vm = HomePostVm.FromService(cachedPost);
@@ -292,10 +295,8 @@ namespace Biliardo.App.Pagine_Home
                         vm.SyncCommand = null;
 
                         var contract = BuildContractFromVm(vm);
-                        if (HomePostValidatorV2.IsHomeVisible(contract, out _))
+                        if (HomePostValidatorV2.IsServerReady(contract, out _))
                             visible.Add(vm);
-                        else if (HomePostValidatorV2.IsServerReady(contract, out _))
-                            pending.Add(vm);
                     }
 
                     await MainThread.InvokeOnMainThreadAsync(() =>
@@ -305,11 +306,11 @@ namespace Biliardo.App.Pagine_Home
                             Posts.Add(vm);
                     });
 
-                    foreach (var pendingPost in pending)
-                        QueueEnsurePreviewAvailable(pendingPost);
+                    foreach (var post in visible)
+                        QueueEnsurePreviewAvailable(post);
                 }
 
-                _noMoreHomePosts = true;
+                _noMoreHomePosts = false;
                 _ = PrefetchHomeMediaAsync(0, Math.Min(Posts.Count - 1, 5), _appearanceCts?.Token ?? CancellationToken.None);
             }
             catch
@@ -341,6 +342,9 @@ namespace Biliardo.App.Pagine_Home
         {
             if (Posts.Count == 0)
                 return;
+
+            if (e.LastVisibleItemIndex >= Posts.Count - 1 - 2)
+                await LoadMoreHomePostsAsync();
 
             _ = PrefetchHomeMediaAsync(e.FirstVisibleItemIndex, e.LastVisibleItemIndex, _appearanceCts?.Token ?? CancellationToken.None);
         }
@@ -430,9 +434,87 @@ namespace Biliardo.App.Pagine_Home
             }, ct);
         }
 
+        private async Task LoadInitialHomePostsAsync(CancellationToken ct)
+        {
+            if (_initialPageLoaded)
+                return;
+
+            _initialPageLoaded = true;
+            await FetchHomePostsPageAsync(ct, isInitial: true);
+        }
+
+        private async Task FetchHomePostsPageAsync(CancellationToken ct, bool isInitial)
+        {
+            if (_isLoadingMore || _noMoreHomePosts)
+                return;
+
+            _isLoadingMore = true;
+            try
+            {
+                var page = await _homeFeed.GetHomePostsPageAsync(_homePagingCursorUtc, HomePageSize, ct);
+                if (page == null || page.Count == 0)
+                {
+                    _noMoreHomePosts = true;
+                    return;
+                }
+
+                _homePagingCursorUtc = page[^1].CreatedAtUtc;
+                if (page.Count < HomePageSize)
+                    _noMoreHomePosts = true;
+
+                HashSet<string> existingIds = new(StringComparer.Ordinal);
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    foreach (var post in Posts)
+                    {
+                        if (!string.IsNullOrWhiteSpace(post.PostId))
+                            existingIds.Add(post.PostId);
+                    }
+                });
+
+                var newItems = page.Where(p => !existingIds.Contains(p.PostId)).ToList();
+                if (newItems.Count == 0)
+                    return;
+
+                var vms = newItems.Select(HomePostVm.FromService).ToList();
+                foreach (var vm in vms)
+                {
+                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                    vm.RetryCommand = RetryHomePostCommand;
+                    vm.SyncCommand = null;
+                }
+
+                await AppendOlderPostsAsync(vms);
+
+                int currentCount = 0;
+                await MainThread.InvokeOnMainThreadAsync(() => currentCount = Posts.Count);
+
+                if (isInitial)
+                {
+                    _ = PrefetchHomeMediaAsync(0, Math.Min(currentCount - 1, 5), ct);
+                }
+                else if (currentCount > 0)
+                {
+                    var start = Math.Max(0, currentCount - vms.Count - 1);
+                    _ = PrefetchHomeMediaAsync(start, currentCount - 1, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                await ShowServerErrorPopupAsync("Errore download Home", ex);
+            }
+            finally
+            {
+                _isLoadingMore = false;
+            }
+        }
+
         private async Task LoadMoreHomePostsAsync()
         {
-            await Task.CompletedTask;
+            if (_isLoadingMore || _noMoreHomePosts)
+                return;
+
+            await FetchHomePostsPageAsync(_appearanceCts?.Token ?? CancellationToken.None, isInitial: false);
         }
 
         private async Task AppendOlderPostsAsync(IReadOnlyList<HomePostVm> newPosts)
@@ -454,6 +536,9 @@ namespace Biliardo.App.Pagine_Home
             foreach (var vm in Posts)
                 snapshot.Add(ToHomePostItem(vm));
             HomeFeedMemoryCache.Instance.Set(snapshot);
+
+            foreach (var post in visible)
+                QueueEnsurePreviewAvailable(post);
 
             foreach (var pendingPost in pending)
                 QueueEnsurePreviewAvailable(pendingPost);
@@ -493,14 +578,8 @@ namespace Biliardo.App.Pagine_Home
                 }
 
                 var contract = BuildContractFromVm(vm);
-                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
-                {
+                if (HomePostValidatorV2.IsServerReady(contract, out _))
                     visible.Add(vm);
-                }
-                else if (HomePostValidatorV2.IsServerReady(contract, out _))
-                {
-                    pending.Add(vm);
-                }
             }
         }
 
@@ -539,7 +618,6 @@ namespace Biliardo.App.Pagine_Home
                 return;
 
             var visible = new List<HomePostVm>();
-            var pending = new List<HomePostVm>();
 
             foreach (var post in items)
             {
@@ -552,28 +630,35 @@ namespace Biliardo.App.Pagine_Home
                 vm.SyncCommand = null;
 
                 var contract = BuildContractFromVm(vm);
-                if (HomePostValidatorV2.IsHomeVisible(contract, out _))
-                {
+                if (HomePostValidatorV2.IsServerReady(contract, out _))
                     visible.Add(vm);
-                }
-                else if (HomePostValidatorV2.IsServerReady(contract, out _))
-                {
-                    pending.Add(vm);
-                }
             }
 
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                Posts.Clear();
+                var snapshotIds = new HashSet<string>(visible.Select(x => x.PostId), StringComparer.Ordinal);
+                var oldestSnapshotUtc = visible.Count > 0 ? visible.Min(x => x.CreatedAtUtc) : (DateTimeOffset?)null;
+
+                if (oldestSnapshotUtc.HasValue)
+                {
+                    for (var i = Posts.Count - 1; i >= 0; i--)
+                    {
+                        var existing = Posts[i];
+                        if (existing == null)
+                            continue;
+                        if (existing.CreatedAtUtc >= oldestSnapshotUtc.Value && !snapshotIds.Contains(existing.PostId))
+                            Posts.RemoveAt(i);
+                    }
+                }
+
                 foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
-                    Posts.Add(vm);
+                    InsertSortedByCreatedAtDesc(Posts, vm);
             });
 
-            foreach (var pendingPost in pending)
-                QueueEnsurePreviewAvailable(pendingPost);
+            foreach (var post in visible)
+                QueueEnsurePreviewAvailable(post);
 
-            var snapshot = visible.Select(ToHomePostItem).ToList();
-            HomeFeedMemoryCache.Instance.Set(snapshot);
+            RefreshMemoryCacheFromPosts();
         }
 
         private void StartRealtimeUpdatesAfterFirstRender(CancellationToken ct)
@@ -588,7 +673,11 @@ namespace Biliardo.App.Pagine_Home
             _homeListener = _realtime.SubscribeHomePosts(
                 20,
                 items => _ = ApplyHomeSnapshotFromServiceAsync(items, ct),
-                ex => Debug.WriteLine($"[Home] home feed listener error: {ex}"));
+                ex =>
+                {
+                    Debug.WriteLine($"[Home] home feed listener error: {ex}");
+                    _ = ShowServerErrorPopupAsync("Errore download Home", ex);
+                });
             _listeners.Add(_homeListener);
         }
 
@@ -926,7 +1015,7 @@ namespace Biliardo.App.Pagine_Home
             });
 
             RefreshMemoryCacheFromPosts();
-            MainThread.BeginInvokeOnMainThread(() => _ = ShowPopupAsync(FormatExceptionForPopup(ex), "Errore invio post"));
+            MainThread.BeginInvokeOnMainThread(() => _ = ShowServerErrorPopupAsync("Errore invio post", ex));
         }
 
         private async Task RetryHomePostAsync(HomePostVm? vm)
@@ -1655,7 +1744,7 @@ namespace Biliardo.App.Pagine_Home
                 await UpdateCacheForPostAsync(post);
 
             var refreshed = BuildContractFromVm(post);
-            if (!HomePostValidatorV2.IsHomeVisible(refreshed, out _))
+            if (!HomePostValidatorV2.IsServerReady(refreshed, out _))
                 return;
 
             await MainThread.InvokeOnMainThreadAsync(() =>
@@ -1883,6 +1972,12 @@ namespace Biliardo.App.Pagine_Home
             PopupOverlay.IsVisible = true;
             _popupTcs = new TaskCompletionSource<bool>();
             return _popupTcs.Task;
+        }
+
+        private Task ShowServerErrorPopupAsync(string title, Exception ex)
+        {
+            var message = FormatExceptionForPopup(ex);
+            return PopupErrorHelper.ShowAsync(this, title, message);
         }
 
         private void OnPopupOkClicked(object? sender, EventArgs e)
@@ -2181,7 +2276,7 @@ namespace Biliardo.App.Pagine_Home
                 }
 
                 var contract = BuildContractFromVm(this);
-                IsReadyForDisplay = HomePostValidatorV2.IsHomeVisible(contract, out _);
+                IsReadyForDisplay = HomePostValidatorV2.IsServerReady(contract, out _);
             }
 
             private static readonly Color[] NicknamePalette = new[]

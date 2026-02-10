@@ -349,6 +349,12 @@ namespace Biliardo.App.Pagine_Messaggi
         private double _audioWavePhase;
         private int _audioWaveIndex;
 
+        private Task ShowServerErrorPopupAsync(string title, Exception ex)
+        {
+            var message = ex?.ToString() ?? "";
+            return PopupErrorHelper.ShowAsync(this, title, message);
+        }
+
         // ============================================================
         // 17) INIT: COLLEZIONI + EVENTI + EMOJI
         // ============================================================
