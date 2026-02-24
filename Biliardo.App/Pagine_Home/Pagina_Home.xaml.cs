@@ -82,6 +82,7 @@ namespace Biliardo.App.Pagine_Home
 
         public ObservableCollection<HomePostVm> Posts { get; } = new();
         private bool _isHomeLoading;
+        private bool _isHomeRefreshing;
         private HashSet<string> _likedPostIds = new(StringComparer.Ordinal);
         private string _currentUid = "";
         private FirestoreDirectoryService.UserPublicItem? _myProfile;
@@ -90,7 +91,7 @@ namespace Biliardo.App.Pagine_Home
         private readonly ListenerRegistry _listeners = new();
         private IDisposable? _homeListener;
         private IDisposable? _profileListener;
-        private const int HomePageSize = 20;
+        public Command RefreshHomeCommand { get; }
         private DateTimeOffset? _homePagingCursorUtc;
         private bool _initialPageLoaded;
 
@@ -109,11 +110,16 @@ namespace Biliardo.App.Pagine_Home
 
         // ===================== PRIORITÀ SCROLL (HARD) =====================
         // Filosofia: durante lo scroll non si fanno operazioni costose (rete, merge, prefetch, refresh cache).
-        private readonly object _scrollGateLock = new();
-        private CancellationTokenSource? _scrollIdleCts;
+        private readonly object _olderBufferLock = new();
+        private readonly List<HomePostVm> _olderBuffer = new();
         private volatile bool _isUserScrolling;
         private int _pendingPrefetchFirst = -1;
         private int _pendingPrefetchLast = -1;
+        private int _lastFirstVisibleIndex = -1;
+        private int _lastScrollDirection = 0;
+        private int _scrollEventStamp;
+        private int _scrollIdleWorkerRunning;
+        private volatile bool _pendingApplyOlderBuffer;
 
         private CancellationTokenSource? _prefetchCts;
         private CancellationTokenSource? _previewEnsureCts;
@@ -162,6 +168,7 @@ namespace Biliardo.App.Pagine_Home
             _homeMediaPipeline = new HomeMediaPipeline(_previewGenerator);
             OpenPdfCommand = new Command<HomeAttachmentVm>(async att => await OnOpenPdfFromHome(att));
             RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
+            RefreshHomeCommand = new Command(async () => await ExecutePullToRefreshAsync());
 
             ApplyHomeFeedScrollTuning();
             _firstRenderGate = new FirstRenderGate(this, FeedCollection);
@@ -234,7 +241,6 @@ namespace Biliardo.App.Pagine_Home
             StopRealtimeUpdates();
             _listeners.Clear();
 
-            CancelScrollIdleTimer();
             CancelAndDispose(ref _prefetchCts);
             CancelAndDispose(ref _previewEnsureCts);
             CancelAndDispose(ref _memRefreshCts);
@@ -282,19 +288,6 @@ namespace Biliardo.App.Pagine_Home
             try { cts.Cancel(); } catch { }
             try { cts.Dispose(); } catch { }
             cts = null;
-        }
-
-        private void CancelScrollIdleTimer()
-        {
-            lock (_scrollGateLock)
-            {
-                if (_scrollIdleCts != null)
-                {
-                    try { _scrollIdleCts.Cancel(); } catch { }
-                    try { _scrollIdleCts.Dispose(); } catch { }
-                    _scrollIdleCts = null;
-                }
-            }
         }
 
         /// <summary>
@@ -494,52 +487,59 @@ namespace Biliardo.App.Pagine_Home
             _isUserScrolling = true;
             _lastKnownVisibleIndex = lastVisibleIndex;
 
-            // Memorizza range per prefetch, ma NON eseguire ora.
+            if (_lastFirstVisibleIndex >= 0 && firstVisibleIndex >= 0)
+                _lastScrollDirection = firstVisibleIndex > _lastFirstVisibleIndex ? 1 : (firstVisibleIndex < _lastFirstVisibleIndex ? -1 : _lastScrollDirection);
+            _lastFirstVisibleIndex = firstVisibleIndex;
+
             if (firstVisibleIndex >= 0 && lastVisibleIndex >= firstVisibleIndex)
             {
                 _pendingPrefetchFirst = firstVisibleIndex;
                 _pendingPrefetchLast = lastVisibleIndex;
             }
 
-            // Interrompi tutto ciò che può impattare lo scroll.
-            CancelAndDispose(ref _prefetchCts);
-            CancelAndDispose(ref _previewEnsureCts);
-            _prefetchCts = new CancellationTokenSource();
-            _previewEnsureCts = new CancellationTokenSource();
+            Interlocked.Increment(ref _scrollEventStamp);
+            EnsureScrollIdleWorker();
+        }
 
-            // Debounce: quando l’utente smette di scrollare, sblocca lavori "low priority".
-            lock (_scrollGateLock)
+        // Debounce efficiente: un solo worker riusato (nessuna nuova CTS per ogni tick di scroll).
+        private void EnsureScrollIdleWorker()
+        {
+            if (Interlocked.CompareExchange(ref _scrollIdleWorkerRunning, 1, 0) != 0)
+                return;
+
+            _ = Task.Run(async () =>
             {
-                CancelScrollIdleTimer();
-
-                _scrollIdleCts = new CancellationTokenSource();
-                var token = _scrollIdleCts.Token;
-
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
+                    while (true)
                     {
-                        await Task.Delay(ScrollIdleDelayMs, token);
-                        if (token.IsCancellationRequested) return;
+                        var observed = Volatile.Read(ref _scrollEventStamp);
+                        await Task.Delay(ScrollIdleDelayMs);
+                        if (observed != Volatile.Read(ref _scrollEventStamp))
+                            continue;
 
                         _isUserScrolling = false;
 
-                        // Se avevamo differito il refresh cache, eseguilo ora (debounced).
                         if (_memRefreshDeferredBecauseScrolling)
                         {
                             _memRefreshDeferredBecauseScrolling = false;
                             ScheduleMemoryCacheRefresh();
                         }
 
-                        // Prefetch/preview (low-priority, solo a scroll idle)
+                        await ApplyOlderBufferIfIdleAsync();
                         await RunPendingPrefetchIfIdleAsync();
-
-                        // Rete strategica (low-priority, solo a scroll idle)
                         await RunDeferredNetworkWorkIfIdleAsync();
+                        break;
                     }
-                    catch { }
-                }, token);
-            }
+                }
+                catch { }
+                finally
+                {
+                    Interlocked.Exchange(ref _scrollIdleWorkerRunning, 0);
+                    if (_isUserScrolling)
+                        EnsureScrollIdleWorker();
+                }
+            });
         }
 
         private async Task RunPendingPrefetchIfIdleAsync()
@@ -557,23 +557,22 @@ namespace Biliardo.App.Pagine_Home
             await PrefetchHomeMediaAsync(first, last, ct);
         }
 
-        private void RequestLoadMoreIfNearEnd(int lastVisibleIndex)
+        private void RequestLoadMoreIfNearEnd(int firstVisibleIndex)
         {
             try
             {
                 if (Posts.Count <= 0)
                     return;
 
-                // “quasi fine”: se l’ultimo visibile è a N dalla fine, pianifica load-more.
-                if (lastVisibleIndex >= (Posts.Count - 1 - LoadMoreThresholdItems))
+                // Prefetch post vecchi quando l'utente scorre verso il basso e supera ~metà lista in RAM.
+                if (_lastScrollDirection > 0)
                 {
-                    _pendingLoadMoreRequest = true;
+                    var trigger = (int)(Posts.Count * (PaginaHomeSettings.prefetch_trigger_percent / 100.0));
+                    if (firstVisibleIndex >= trigger)
+                        _pendingLoadMoreRequest = true;
                 }
             }
-            catch
-            {
-                // no-op
-            }
+            catch { }
         }
 
         private void OnHomeFeedScrolled(object sender, ItemsViewScrolledEventArgs e)
@@ -589,7 +588,7 @@ namespace Biliardo.App.Pagine_Home
             MarkScrollActivity(e.FirstVisibleItemIndex, e.LastVisibleItemIndex);
 
             // Trigger load-more STRATEGICO: set flag soltanto (nessuna rete qui).
-            RequestLoadMoreIfNearEnd(e.LastVisibleItemIndex);
+            RequestLoadMoreIfNearEnd(e.FirstVisibleItemIndex);
         }
 
         private bool CanRunBackgroundNetworkNow()
@@ -641,21 +640,14 @@ namespace Biliardo.App.Pagine_Home
                 if (!CanRunBackgroundNetworkNow() || ct.IsCancellationRequested)
                     return;
 
-                // 2) Quasi fine lista: carica pagina successiva (più vecchia).
+                // 2) Trigger a metà lista verso i post vecchi: fetch in background e apply solo da idle.
                 if (_pendingLoadMoreRequest)
                 {
-                    // Ricontrolla “near end” usando l’ultimo indice noto (simulazione utente: se ha riscrollato su, non caricare).
-                    var lastVis = _lastKnownVisibleIndex;
-                    if (lastVis >= 0 && Posts.Count > 0 && lastVis >= (Posts.Count - 1 - LoadMoreThresholdItems))
-                    {
-                        _pendingLoadMoreRequest = false;
-                        await LoadMoreHomePostsLowPriorityAsync(ct);
-                    }
-                    else
-                    {
-                        _pendingLoadMoreRequest = false;
-                    }
+                    _pendingLoadMoreRequest = false;
+                    await LoadMoreHomePostsLowPriorityAsync(ct);
                 }
+
+                await ApplyOlderBufferIfIdleAsync();
             }
             catch
             {
@@ -775,6 +767,76 @@ namespace Biliardo.App.Pagine_Home
             }, ct);
         }
 
+
+        private async Task ExecutePullToRefreshAsync()
+        {
+            if (_isLoadingMore)
+                return;
+
+            IsRefreshingHome = true;
+            try
+            {
+                await FetchHomePostsPageAsync(_appearanceCts?.Token ?? CancellationToken.None, isInitial: true, forceLatest: true);
+            }
+            finally
+            {
+                IsRefreshingHome = false;
+            }
+        }
+
+        public bool IsRefreshingHome
+        {
+            get => _isHomeRefreshing;
+            private set
+            {
+                if (_isHomeRefreshing == value) return;
+                _isHomeRefreshing = value;
+                OnPropertyChanged();
+            }
+        }
+
+        private async Task ApplyOlderBufferIfIdleAsync()
+        {
+            if (_isUserScrolling || !_pendingApplyOlderBuffer)
+                return;
+
+            List<HomePostVm> buffered;
+            lock (_olderBufferLock)
+            {
+                if (_olderBuffer.Count == 0)
+                {
+                    _pendingApplyOlderBuffer = false;
+                    return;
+                }
+
+                buffered = new List<HomePostVm>(_olderBuffer);
+                _olderBuffer.Clear();
+                _pendingApplyOlderBuffer = false;
+            }
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var existing = new HashSet<string>(Posts.Select(x => x.PostId), StringComparer.Ordinal);
+                foreach (var vm in buffered.OrderByDescending(x => x.CreatedAtUtc))
+                {
+                    if (!existing.Add(vm.PostId))
+                        continue;
+                    Posts.Add(vm);
+                }
+            });
+
+            if (!PaginaHomeSettings.post_illimitati)
+            {
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    while (Posts.Count > PaginaHomeSettings.max_post_in_ram)
+                        Posts.RemoveAt(Posts.Count - 1);
+                });
+            }
+
+            ScheduleMemoryCacheRefresh();
+        }
+
         private async Task LoadOrRefreshLatestHomePostsLowPriorityAsync(CancellationToken ct)
         {
             // Requisito: rete solo a scroll idle
@@ -827,7 +889,7 @@ namespace Biliardo.App.Pagine_Home
                 if (!CanRunBackgroundNetworkNow())
                     return;
 
-                var page = await _homeFeed.GetHomePostsPageAsync(cursor, HomePageSize, ct);
+                var page = await _homeFeed.GetHomePostsPageAsync(cursor, PaginaHomeSettings.page_size, ct);
                 if (page == null || page.Count == 0)
                 {
                     // Solo per load-more: se cursor non null e page empty => fine pagine
@@ -840,7 +902,7 @@ namespace Biliardo.App.Pagine_Home
                 if (!forceLatest)
                 {
                     _homePagingCursorUtc = page[^1].CreatedAtUtc;
-                    if (page.Count < HomePageSize)
+                    if (page.Count < PaginaHomeSettings.page_size)
                         _noMoreHomePosts = true;
                 }
 
@@ -869,18 +931,27 @@ namespace Biliardo.App.Pagine_Home
                     vm.SyncCommand = null;
                 }
 
-                // Merge:
-                //  - refresh latest: inserisci sorted desc (di fatto va sopra)
-                //  - load-more older: append/insert sorted desc (va in fondo ma ordine è comunque per timestamp)
-                await AppendOlderPostsAsync(vms);
-
-                // Aggiorna cache RAM (debounced)
-                ScheduleMemoryCacheRefresh();
+                if (forceLatest)
+                {
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        foreach (var vm in vms.OrderByDescending(x => x.CreatedAtUtc))
+                            Posts.Insert(0, vm);
+                    });
+                    ScheduleMemoryCacheRefresh();
+                }
+                else
+                {
+                    lock (_olderBufferLock)
+                    {
+                        _olderBuffer.AddRange(vms);
+                        _pendingApplyOlderBuffer = _olderBuffer.Count > 0;
+                    }
+                }
 
                 int currentCount = 0;
                 await MainThread.InvokeOnMainThreadAsync(() => currentCount = Posts.Count);
 
-                // Prefetch/preview: solo se idle e online
                 if (CanRunBackgroundNetworkNow())
                 {
                     if (isInitial)
@@ -891,7 +962,7 @@ namespace Biliardo.App.Pagine_Home
                     }
                     else if (currentCount > 0)
                     {
-                        var start = Math.Max(0, currentCount - vms.Count - 1);
+                        var start = Math.Max(0, currentCount - 1);
                         _pendingPrefetchFirst = start;
                         _pendingPrefetchLast = currentCount - 1;
                         _ = RunPendingPrefetchIfIdleAsync();
@@ -1319,10 +1390,14 @@ namespace Biliardo.App.Pagine_Home
             {
                 vm.RetryCommand = RetryHomePostCommand;
                 InsertSortedByCreatedAtDesc(Posts, vm);
-                FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
-            });
 
-            _ = ScrollHomeToTopWithRetryAsync(considerKeyboard: true);
+                // Evita rimbalzi: auto-scroll solo se l'utente è già in top e non sta scrollando.
+                if (!_isUserScrolling && (_lastKnownVisibleIndex <= 1 || _lastFirstVisibleIndex <= 1))
+                {
+                    FeedCollection.ScrollTo(0, position: ScrollToPosition.Start, animate: false);
+                    _ = ScrollHomeToTopWithRetryAsync(considerKeyboard: true);
+                }
+            });
 
             // Aggiorna RAM feed (debounced)
             ScheduleMemoryCacheRefresh();
@@ -2854,6 +2929,8 @@ namespace Biliardo.App.Pagine_Home
             private bool _isDownloading;
             private bool _isPreviewDownloading;
             private int _downloadCountdownSeconds;
+            private ImageSource? _cachedPreviewSource;
+            private bool _cachedHasPreview;
 
             public string Type { get; set; } = "";
             public string? StoragePath { get; set; }
@@ -2871,6 +2948,7 @@ namespace Biliardo.App.Pagine_Home
                     if (_localPath == value)
                         return;
                     _localPath = value;
+                    RebuildPreviewCache();
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(DisplayPreviewSource));
                     OnPropertyChanged(nameof(HasPreviewSource));
@@ -2893,6 +2971,7 @@ namespace Biliardo.App.Pagine_Home
                     if (_thumbLocalPath == value)
                         return;
                     _thumbLocalPath = value;
+                    RebuildPreviewCache();
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(DisplayPreviewSource));
                     OnPropertyChanged(nameof(HasPreviewSource));
@@ -2917,7 +2996,7 @@ namespace Biliardo.App.Pagine_Home
             public bool IsEvent => Type == "event";
             public string AddressLabel => !string.IsNullOrWhiteSpace(Address) ? Address! : $"{Latitude:0.0000}, {Longitude:0.0000}";
             public bool RequiresPreview => HomeAttachmentPreviewRules.RequiresPreview(Type, ContentType, FileName);
-            public bool HasPreviewSource => !RequiresPreview || DisplayPreviewSource != null;
+            public bool HasPreviewSource => !RequiresPreview || _cachedHasPreview;
 
             public string? GetPreviewRemotePath() => ThumbStoragePath;
 
@@ -2975,21 +3054,33 @@ namespace Biliardo.App.Pagine_Home
 
             public bool IsBusy => IsDownloading || IsPreviewDownloading;
 
-            public ImageSource? DisplayPreviewSource
+            public ImageSource? DisplayPreviewSource => _cachedPreviewSource;
+
+            // Cache immagine locale: niente I/O nei getter bindati.
+            private void RebuildPreviewCache()
             {
-                get
+                _cachedPreviewSource = null;
+                _cachedHasPreview = false;
+
+                try
                 {
-                    try
+                    if (!string.IsNullOrWhiteSpace(_localPath) && File.Exists(_localPath))
                     {
-                        if (!string.IsNullOrWhiteSpace(LocalPath) && File.Exists(LocalPath))
-                            return ImageSource.FromFile(LocalPath);
-
-                        if (!string.IsNullOrWhiteSpace(ThumbLocalPath) && File.Exists(ThumbLocalPath))
-                            return ImageSource.FromFile(ThumbLocalPath);
+                        _cachedPreviewSource = ImageSource.FromFile(_localPath);
+                        _cachedHasPreview = true;
+                        return;
                     }
-                    catch { }
 
-                    return null;
+                    if (!string.IsNullOrWhiteSpace(_thumbLocalPath) && File.Exists(_thumbLocalPath))
+                    {
+                        _cachedPreviewSource = ImageSource.FromFile(_thumbLocalPath);
+                        _cachedHasPreview = true;
+                    }
+                }
+                catch
+                {
+                    _cachedPreviewSource = null;
+                    _cachedHasPreview = false;
                 }
             }
 
