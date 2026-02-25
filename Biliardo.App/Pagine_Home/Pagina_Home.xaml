@@ -137,10 +137,12 @@
                                Color="White"
                                HorizontalOptions="Center"
                                VerticalOptions="Start" />
-            <CollectionView x:Name="FeedCollection"
+            <RefreshView IsRefreshing="{Binding IsRefreshingHome}" Command="{Binding RefreshHomeCommand}">
+                <CollectionView x:Name="FeedCollection"
                             ItemsSource="{Binding Posts}"
                             SelectionMode="None"
                             Margin="0,6,0,6"
+                            ItemsUpdatingScrollMode="KeepScrollOffset"
                             Scrolled="OnHomeFeedScrolled">
                 <CollectionView.ItemTemplate>
                     <DataTemplate>
@@ -148,8 +150,7 @@
                                 StrokeThickness="1"
                                 BackgroundColor="#101010"
                                 Padding="12"
-                                Margin="0,0,0,10"
-                                IsVisible="{Binding IsReadyForDisplay}">
+                                Margin="0,0,0,10">
                             <Border.StrokeShape>
                                 <RoundRectangle CornerRadius="14" />
                             </Border.StrokeShape>
@@ -390,6 +391,7 @@
                     </DataTemplate>
                 </CollectionView.ItemTemplate>
             </CollectionView>
+            </RefreshView>
 
             <composer:ComposerBarView Grid.Row="1"
                                       x:Name="HomeComposer"
