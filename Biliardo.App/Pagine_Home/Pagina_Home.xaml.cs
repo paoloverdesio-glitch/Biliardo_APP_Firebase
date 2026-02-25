@@ -132,6 +132,7 @@ namespace Biliardo.App.Pagine_Home
         private readonly SemaphoreSlim _refreshSemaphore = new(1, 1);
         private readonly HashSet<string> _postIdIndex = new(StringComparer.Ordinal);
         private readonly object _postIdIndexLock = new();
+        private readonly IHomeFeedJankMonitor _homeFeedJankMonitor;
 
         // ===================== CACHE REFRESH (DEBOUNCE) ====================
         // Evita refresh completo della cache RAM mentre si scrolla (jank).
@@ -167,6 +168,7 @@ namespace Biliardo.App.Pagine_Home
             OpenPdfCommand = new Command<HomeAttachmentVm>(async att => await OnOpenPdfFromHome(att));
             RetryHomePostCommand = new Command<HomePostVm>(async post => await RetryHomePostAsync(post));
             RefreshHomeCommand = new Command(async () => await ExecutePullToRefreshAsync());
+            _homeFeedJankMonitor = HomeFeedJankMonitorFactory.Create();
 
             ApplyHomeFeedScrollTuning();
             _firstRenderGate = new FirstRenderGate(this, FeedCollection);

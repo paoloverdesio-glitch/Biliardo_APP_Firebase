@@ -58,6 +58,7 @@ namespace Biliardo.App.Pagine_Home
 
             ApplyHomeFeedScrollTuning();
             ResetPrefetchTokens();
+            _homeFeedJankMonitor.Start();
 
             // Reset stato di paging ad ogni apertura (evita condizioni “pagina non carica mai”).
             _initialPageLoaded = false;
@@ -110,6 +111,7 @@ namespace Biliardo.App.Pagine_Home
             CancelAndDispose(ref _prefetchCts);
             CancelAndDispose(ref _previewEnsureCts);
             CancelAndDispose(ref _memRefreshCts);
+            _homeFeedJankMonitor.Stop();
 
             _appearanceCts?.Cancel();
             _appearanceCts?.Dispose();
