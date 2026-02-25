@@ -363,6 +363,9 @@ namespace Biliardo.App.Pagine_Home
 
         private static HomeAttachmentContractV2 ToContract(HomeAttachmentVm att)
         {
+            var validPreviewLocalPath = HomeAttachmentVm.GetValidExistingPathOrNull(att.ThumbLocalPath);
+            var validFullLocalPath = HomeAttachmentVm.GetValidExistingPathOrNull(att.LocalPath);
+
             return new HomeAttachmentContractV2(
                 Type: att.Type ?? "",
                 FileName: att.FileName,
@@ -373,8 +376,8 @@ namespace Biliardo.App.Pagine_Home
                 PreviewStoragePath: att.GetPreviewRemotePath(),
                 FullStoragePath: att.StoragePath,
                 DownloadUrl: att.DownloadUrl,
-                PreviewLocalPath: att.ThumbLocalPath,
-                FullLocalPath: att.LocalPath,
+                PreviewLocalPath: validPreviewLocalPath,
+                FullLocalPath: validFullLocalPath,
                 LqipBase64: att.LqipBase64,
                 PreviewType: att.PreviewType,
                 PreviewWidth: att.ThumbWidth,
@@ -423,12 +426,27 @@ namespace Biliardo.App.Pagine_Home
 
         public sealed class HomeAttachmentVm : BindableObject
         {
+            private readonly object _previewRefreshGate = new();
+            private CancellationTokenSource? _previewRefreshCts;
+            private string? _previewCacheSignature;
             private bool _isPlaying;
             private bool _isDownloading;
             private bool _isPreviewDownloading;
             private int _downloadCountdownSeconds;
             private ImageSource? _cachedPreviewSource;
             private bool _cachedHasPreview;
+
+            private const int PreviewRefreshDebounceMs = 60;
+            private static readonly TimeSpan MetadataCacheTtl = TimeSpan.FromMilliseconds(900);
+            private static readonly Dictionary<int, PathValidityEntry> PathValidityMetadataCache = new();
+            private static readonly object PathValidityMetadataCacheGate = new();
+
+            private static long _previewSetterBaselineTicks;
+            private static long _previewSetterBaselineSamples;
+            private static long _previewSetterLocalTicks;
+            private static long _previewSetterLocalSamples;
+            private static long _previewSetterThumbTicks;
+            private static long _previewSetterThumbSamples;
 
             public string Type { get; set; } = "";
             public string? StoragePath { get; set; }
@@ -443,17 +461,17 @@ namespace Biliardo.App.Pagine_Home
                 get => _localPath;
                 set
                 {
-                    if (_localPath == value)
+                    var normalized = NormalizePath(value);
+                    if (string.Equals(_localPath, normalized, StringComparison.Ordinal))
                         return;
-                    _localPath = value;
-                    RebuildPreviewCache();
+                    var sw = Stopwatch.StartNew();
+                    CapturePreviewSetterBaseline(normalized);
+                    _localPath = normalized;
+                    QueuePreviewRefresh();
                     OnPropertyChanged();
-                    OnPropertyChanged(nameof(DisplayPreviewSource));
-                    OnPropertyChanged(nameof(HasPreviewSource));
-                    OnPropertyChanged(nameof(ShowPrimaryMediaPlaceholder));
-                    OnPropertyChanged(nameof(ShowImagePreview));
-                    OnPropertyChanged(nameof(ShowVideoPreview));
-                    PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
+                    sw.Stop();
+                    Interlocked.Add(ref _previewSetterLocalTicks, sw.ElapsedTicks);
+                    Interlocked.Increment(ref _previewSetterLocalSamples);
                 }
             }
             public string? ThumbStoragePath { get; set; }
@@ -469,17 +487,17 @@ namespace Biliardo.App.Pagine_Home
                 get => _thumbLocalPath;
                 set
                 {
-                    if (_thumbLocalPath == value)
+                    var normalized = NormalizePath(value);
+                    if (string.Equals(_thumbLocalPath, normalized, StringComparison.Ordinal))
                         return;
-                    _thumbLocalPath = value;
-                    RebuildPreviewCache();
+                    var sw = Stopwatch.StartNew();
+                    CapturePreviewSetterBaseline(normalized);
+                    _thumbLocalPath = normalized;
+                    QueuePreviewRefresh();
                     OnPropertyChanged();
-                    OnPropertyChanged(nameof(DisplayPreviewSource));
-                    OnPropertyChanged(nameof(HasPreviewSource));
-                    OnPropertyChanged(nameof(ShowPrimaryMediaPlaceholder));
-                    OnPropertyChanged(nameof(ShowImagePreview));
-                    OnPropertyChanged(nameof(ShowVideoPreview));
-                    PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
+                    sw.Stop();
+                    Interlocked.Add(ref _previewSetterThumbTicks, sw.ElapsedTicks);
+                    Interlocked.Increment(ref _previewSetterThumbSamples);
                 }
             }
 
@@ -565,23 +583,30 @@ namespace Biliardo.App.Pagine_Home
             public ImageSource? DisplayPreviewSource => _cachedPreviewSource;
 
             // Cache immagine locale: niente I/O nei getter bindati.
-            private void RebuildPreviewCache()
+            private bool RebuildPreviewCache()
             {
+                var signature = BuildPreviewSignature();
+                if (string.Equals(_previewCacheSignature, signature, StringComparison.Ordinal))
+                    return false;
+
+                var previousSource = _cachedPreviewSource;
+                var previousHasPreview = _cachedHasPreview;
                 _cachedPreviewSource = null;
                 _cachedHasPreview = false;
 
                 try
                 {
-                    if (!string.IsNullOrWhiteSpace(_localPath) && File.Exists(_localPath))
+                    if (ExistsWithMetadataCache(_localPath))
                     {
-                        _cachedPreviewSource = ImageSource.FromFile(_localPath);
+                        _cachedPreviewSource = ImageSource.FromFile(_localPath!);
                         _cachedHasPreview = true;
-                        return;
+                        _previewCacheSignature = signature;
+                        return !ReferenceEquals(previousSource, _cachedPreviewSource) || previousHasPreview != _cachedHasPreview;
                     }
 
-                    if (!string.IsNullOrWhiteSpace(_thumbLocalPath) && File.Exists(_thumbLocalPath))
+                    if (ExistsWithMetadataCache(_thumbLocalPath))
                     {
-                        _cachedPreviewSource = ImageSource.FromFile(_thumbLocalPath);
+                        _cachedPreviewSource = ImageSource.FromFile(_thumbLocalPath!);
                         _cachedHasPreview = true;
                     }
                 }
@@ -590,7 +615,139 @@ namespace Biliardo.App.Pagine_Home
                     _cachedPreviewSource = null;
                     _cachedHasPreview = false;
                 }
+
+                _previewCacheSignature = signature;
+                return !ReferenceEquals(previousSource, _cachedPreviewSource) || previousHasPreview != _cachedHasPreview;
             }
+
+            private void QueuePreviewRefresh()
+            {
+                CancellationTokenSource cts;
+                lock (_previewRefreshGate)
+                {
+                    _previewRefreshCts?.Cancel();
+                    _previewRefreshCts?.Dispose();
+                    _previewRefreshCts = new CancellationTokenSource();
+                    cts = _previewRefreshCts;
+                }
+
+                _ = MainThread.InvokeOnMainThreadAsync(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(PreviewRefreshDebounceMs, cts.Token).ConfigureAwait(false);
+                        if (!cts.IsCancellationRequested && RebuildPreviewCache())
+                            NotifyPreviewBindingsChanged();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                    finally
+                    {
+                        lock (_previewRefreshGate)
+                        {
+                            if (ReferenceEquals(_previewRefreshCts, cts))
+                            {
+                                _previewRefreshCts = null;
+                                cts.Dispose();
+                            }
+                        }
+                    }
+                });
+            }
+
+            private void NotifyPreviewBindingsChanged()
+            {
+                OnPropertyChanged(nameof(DisplayPreviewSource));
+                OnPropertyChanged(nameof(HasPreviewSource));
+                OnPropertyChanged(nameof(ShowPrimaryMediaPlaceholder));
+                OnPropertyChanged(nameof(ShowImagePreview));
+                OnPropertyChanged(nameof(ShowVideoPreview));
+                PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
+            }
+
+            private string BuildPreviewSignature()
+                => string.Concat(Type, "|", _localPath, "|", _thumbLocalPath, "|", ContentType, "|", FileName);
+
+            private static string? NormalizePath(string? path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return null;
+
+                var trimmed = path.Trim();
+                return trimmed.Length == 0 ? null : trimmed;
+            }
+
+            public static string? GetValidExistingPathOrNull(string? path)
+            {
+                var normalized = NormalizePath(path);
+                return ExistsWithMetadataCache(normalized) ? normalized : null;
+            }
+
+            private static bool ExistsWithMetadataCache(string? path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return false;
+
+                var normalized = NormalizePath(path);
+                if (normalized == null)
+                    return false;
+
+                var key = StringComparer.OrdinalIgnoreCase.GetHashCode(normalized);
+                var now = DateTime.UtcNow;
+
+                lock (PathValidityMetadataCacheGate)
+                {
+                    if (PathValidityMetadataCache.TryGetValue(key, out var cached)
+                        && string.Equals(cached.Path, normalized, StringComparison.OrdinalIgnoreCase)
+                        && now - cached.TimestampUtc <= MetadataCacheTtl)
+                    {
+                        return cached.Exists;
+                    }
+                }
+
+                var exists = File.Exists(normalized);
+
+                lock (PathValidityMetadataCacheGate)
+                {
+                    PathValidityMetadataCache[key] = new PathValidityEntry(normalized, exists, now);
+                }
+
+                return exists;
+            }
+
+            private static void CapturePreviewSetterBaseline(string? normalizedPath)
+            {
+                var baselineSw = Stopwatch.StartNew();
+                if (!string.IsNullOrWhiteSpace(normalizedPath))
+                    _ = File.Exists(normalizedPath);
+                baselineSw.Stop();
+                Interlocked.Add(ref _previewSetterBaselineTicks, baselineSw.ElapsedTicks);
+                Interlocked.Increment(ref _previewSetterBaselineSamples);
+            }
+
+            public static PreviewSetterLatencySnapshot GetPreviewSetterLatencySnapshot()
+            {
+                return new PreviewSetterLatencySnapshot(
+                    BaselineAverageMs: ComputeAverageMilliseconds(_previewSetterBaselineTicks, _previewSetterBaselineSamples),
+                    LocalPathAverageMs: ComputeAverageMilliseconds(_previewSetterLocalTicks, _previewSetterLocalSamples),
+                    ThumbLocalPathAverageMs: ComputeAverageMilliseconds(_previewSetterThumbTicks, _previewSetterThumbSamples),
+                    BaselineSamples: Interlocked.Read(ref _previewSetterBaselineSamples),
+                    LocalPathSamples: Interlocked.Read(ref _previewSetterLocalSamples),
+                    ThumbLocalPathSamples: Interlocked.Read(ref _previewSetterThumbSamples));
+            }
+
+            private static double ComputeAverageMilliseconds(long ticks, long samples)
+                => samples <= 0 ? 0d : ticks * 1000d / Stopwatch.Frequency / samples;
+
+            private readonly record struct PathValidityEntry(string Path, bool Exists, DateTime TimestampUtc);
+            public readonly record struct PreviewSetterLatencySnapshot(
+                double BaselineAverageMs,
+                double LocalPathAverageMs,
+                double ThumbLocalPathAverageMs,
+                long BaselineSamples,
+                long LocalPathSamples,
+                long ThumbLocalPathSamples);
 
             public static HomeAttachmentVm FromService(FirestoreHomeFeedService.HomeAttachment att)
             {
@@ -641,8 +798,8 @@ namespace Biliardo.App.Pagine_Home
                     ThumbWidth = att.PreviewWidth,
                     ThumbHeight = att.PreviewHeight,
                     Waveform = att.Waveform,
-                    LocalPath = att.FullLocalPath,
-                    ThumbLocalPath = att.PreviewLocalPath
+                    LocalPath = GetValidExistingPathOrNull(att.FullLocalPath),
+                    ThumbLocalPath = GetValidExistingPathOrNull(att.PreviewLocalPath)
                 };
 
                 if (att.Extra != null)
