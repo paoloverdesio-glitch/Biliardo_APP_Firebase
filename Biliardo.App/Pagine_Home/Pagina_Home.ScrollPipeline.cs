@@ -83,32 +83,75 @@ namespace Biliardo.App.Pagine_Home
             if (Interlocked.CompareExchange(ref _idleDrainQueued, 1, 0) != 0)
                 return;
 
-            _feedCoordinator.EnqueueUiWork(async () =>
+            _feedCoordinator.EnqueueUiWork(() =>
             {
-                try
-                {
-                    await DrainIdleWorkAsync();
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _idleDrainQueued, 0);
-                }
+                _ = DrainIdleWorkAsync();
+                return Task.CompletedTask;
             }, "HOME_IDLE_DRAIN");
         }
 
         private async Task DrainIdleWorkAsync()
         {
-            _isUserScrolling = false;
+            var shouldRequeue = false;
+            var budgetExceeded = false;
+            var idlePass = Stopwatch.StartNew();
 
-            if (_memRefreshDeferredBecauseScrolling)
+            try
             {
-                _memRefreshDeferredBecauseScrolling = false;
-                ScheduleMemoryCacheRefresh();
+                const int idlePassBudgetMs = 22;
+
+                _isUserScrolling = false;
+
+                if (_memRefreshDeferredBecauseScrolling)
+                {
+                    _memRefreshDeferredBecauseScrolling = false;
+                    ScheduleMemoryCacheRefresh();
+                }
+
+                budgetExceeded = await ExecuteIdleStepWithinBudgetAsync(() => ApplyOlderBufferIfIdleAsync(), idlePass, idlePassBudgetMs);
+                if (!budgetExceeded)
+                    budgetExceeded = await ExecuteIdleStepWithinBudgetAsync(() => RunPendingPrefetchIfIdleAsync(), idlePass, idlePassBudgetMs);
+                if (!budgetExceeded)
+                    budgetExceeded = await ExecuteIdleStepWithinBudgetAsync(() => RunDeferredNetworkWorkIfIdleAsync(), idlePass, idlePassBudgetMs);
+
+                shouldRequeue = budgetExceeded || HasPendingIdleWork();
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Note("Home.Feed.IdleDrain.Error", ex.GetType().Name);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _idleDrainQueued, 0);
+                if (shouldRequeue)
+                    QueueIdleDrainViaCoordinator();
             }
 
-            await ApplyOlderBufferIfIdleAsync();
-            await RunPendingPrefetchIfIdleAsync();
-            await RunDeferredNetworkWorkIfIdleAsync();
+            if (budgetExceeded)
+                DiagLog.Note("Home.Feed.IdleDrain.Budget", idlePass.ElapsedMilliseconds.ToString());
+        }
+
+        private static async Task<bool> ExecuteIdleStepWithinBudgetAsync(Func<Task> step, Stopwatch idlePass, int budgetMs)
+        {
+            if (idlePass.ElapsedMilliseconds >= budgetMs)
+                return true;
+
+            await step();
+            return idlePass.ElapsedMilliseconds >= budgetMs;
+        }
+
+        private bool HasPendingIdleWork()
+        {
+            if (_pendingApplyOlderBuffer)
+                return true;
+
+            if (_pendingPrefetchFirst >= 0 && _pendingPrefetchLast >= _pendingPrefetchFirst)
+                return true;
+
+            if (_pendingInitialNetworkRefresh || _pendingLoadMoreRequest)
+                return true;
+
+            return false;
         }
 
         private async Task RunPendingPrefetchIfIdleAsync()
@@ -209,7 +252,7 @@ namespace Biliardo.App.Pagine_Home
                 if (_pendingInitialNetworkRefresh)
                 {
                     _pendingInitialNetworkRefresh = false;
-                    await LoadOrRefreshLatestHomePostsLowPriorityAsync(ct);
+                    await Task.Run(() => LoadOrRefreshLatestHomePostsLowPriorityAsync(ct), ct);
                 }
 
                 if (!CanRunBackgroundNetworkNow() || ct.IsCancellationRequested)
@@ -219,11 +262,11 @@ namespace Biliardo.App.Pagine_Home
                 if (_pendingLoadMoreRequest)
                 {
                     _pendingLoadMoreRequest = false;
-                    await LoadMoreHomePostsLowPriorityAsync(ct);
+                    await Task.Run(() => LoadMoreHomePostsLowPriorityAsync(ct), ct);
                 }
 
                 var mergeSw = Stopwatch.StartNew();
-                await ApplyOlderBufferIfIdleAsync();
+                await Task.Run(() => ApplyOlderBufferIfIdleAsync(), ct);
                 DiagLog.Note("Home.Feed.MergeIdle.DurationMs", mergeSw.ElapsedMilliseconds.ToString());
             }
             catch
