@@ -26,6 +26,7 @@ using System.Diagnostics;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -51,6 +52,11 @@ namespace Biliardo.App.Pagine_Home
             private Command<HomePostVm>? _syncCommand;
             private bool _hasFullData;
             private bool _isReadyForDisplay;
+
+            public HomePostVm()
+            {
+                Attachments.CollectionChanged += OnAttachmentsCollectionChanged;
+            }
 
             public string PostId { get; set; } = "";
             public string? ClientNonce { get; set; }
@@ -90,6 +96,7 @@ namespace Biliardo.App.Pagine_Home
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(StatusLabel));
                     OnPropertyChanged(nameof(HasStatus));
+                    OnPropertyChanged(nameof(HasStatusPlaceholder));
                     OnPropertyChanged(nameof(StatusColor));
                 }
             }
@@ -103,11 +110,13 @@ namespace Biliardo.App.Pagine_Home
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(StatusLabel));
                     OnPropertyChanged(nameof(HasStatus));
+                    OnPropertyChanged(nameof(HasStatusPlaceholder));
                     OnPropertyChanged(nameof(StatusColor));
                 }
             }
 
             public bool HasStatus => IsPendingUpload || HasSendError;
+            public bool HasStatusPlaceholder => !HasStatus;
             public string StatusLabel => HasSendError ? "Errore invio" : IsPendingUpload ? "In invio" : "";
             public Color StatusColor => HasSendError ? Colors.OrangeRed : Colors.LightGray;
 
@@ -134,6 +143,7 @@ namespace Biliardo.App.Pagine_Home
 
             public Color AuthorNicknameColor => GetNicknameColor(PostId);
             public bool HasAttachments => Attachments != null && Attachments.Count > 0;
+            public bool HasAttachmentsPlaceholder => !HasAttachments;
             public bool HasSyncAction => RequiresSync && SyncCommand != null;
 
             public bool RequiresSync
@@ -203,6 +213,12 @@ namespace Biliardo.App.Pagine_Home
                 attachment.PreviewSourceChanged += (_, __) => UpdateReadyState();
                 Attachments.Add(attachment);
                 UpdateReadyState();
+            }
+
+            private void OnAttachmentsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+            {
+                OnPropertyChanged(nameof(HasAttachments));
+                OnPropertyChanged(nameof(HasAttachmentsPlaceholder));
             }
 
             public static HomePostVm FromService(FirestoreHomeFeedService.HomePostItem post)
@@ -434,6 +450,9 @@ namespace Biliardo.App.Pagine_Home
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(DisplayPreviewSource));
                     OnPropertyChanged(nameof(HasPreviewSource));
+                    OnPropertyChanged(nameof(ShowPrimaryMediaPlaceholder));
+                    OnPropertyChanged(nameof(ShowImagePreview));
+                    OnPropertyChanged(nameof(ShowVideoPreview));
                     PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
                 }
             }
@@ -457,6 +476,9 @@ namespace Biliardo.App.Pagine_Home
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(DisplayPreviewSource));
                     OnPropertyChanged(nameof(HasPreviewSource));
+                    OnPropertyChanged(nameof(ShowPrimaryMediaPlaceholder));
+                    OnPropertyChanged(nameof(ShowImagePreview));
+                    OnPropertyChanged(nameof(ShowVideoPreview));
                     PreviewSourceChanged?.Invoke(this, EventArgs.Empty);
                 }
             }
@@ -479,6 +501,10 @@ namespace Biliardo.App.Pagine_Home
             public string AddressLabel => !string.IsNullOrWhiteSpace(Address) ? Address! : $"{Latitude:0.0000}, {Longitude:0.0000}";
             public bool RequiresPreview => HomeAttachmentPreviewRules.RequiresPreview(Type, ContentType, FileName);
             public bool HasPreviewSource => !RequiresPreview || _cachedHasPreview;
+            public bool IsPrimaryMedia => IsImage || IsVideo;
+            public bool ShowPrimaryMediaPlaceholder => IsPrimaryMedia && !HasPreviewSource;
+            public bool ShowImagePreview => IsImage && HasPreviewSource;
+            public bool ShowVideoPreview => IsVideo && HasPreviewSource;
 
             public string? GetPreviewRemotePath() => ThumbStoragePath;
 

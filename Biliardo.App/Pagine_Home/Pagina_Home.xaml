@@ -175,20 +175,34 @@
                                     </VerticalStackLayout>
                                 </HorizontalStackLayout>
 
-                                <HorizontalStackLayout Spacing="10"
-                                                      IsVisible="{Binding HasStatus}">
-                                    <Label Text="{Binding StatusLabel}"
-                                           TextColor="{Binding StatusColor}"
-                                           FontSize="12" />
-                                    <Button Text="Riprova"
-                                            IsVisible="{Binding HasSendError}"
-                                            Command="{Binding RetryCommand}"
-                                            CommandParameter="{Binding .}"
-                                            BackgroundColor="#B00020"
-                                            TextColor="White"
-                                            FontSize="12"
-                                            Padding="6,2" />
-                                </HorizontalStackLayout>
+                                <Grid HeightRequest="26"
+                                      MinimumHeightRequest="26">
+                                    <HorizontalStackLayout Spacing="10"
+                                                           IsVisible="{Binding HasStatus}">
+                                        <Label Text="{Binding StatusLabel}"
+                                               TextColor="{Binding StatusColor}"
+                                               FontSize="12" />
+                                        <Button Text="Riprova"
+                                                IsVisible="{Binding HasSendError}"
+                                                Command="{Binding RetryCommand}"
+                                                CommandParameter="{Binding .}"
+                                                BackgroundColor="#B00020"
+                                                TextColor="White"
+                                                FontSize="12"
+                                                Padding="6,2" />
+                                    </HorizontalStackLayout>
+
+                                    <Border IsVisible="{Binding HasStatusPlaceholder}"
+                                            Stroke="#00000000"
+                                            BackgroundColor="#22FFFFFF"
+                                            HeightRequest="26"
+                                            HorizontalOptions="Fill"
+                                            VerticalOptions="Center">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="6" />
+                                        </Border.StrokeShape>
+                                    </Border>
+                                </Grid>
 
                                 <Label Text="{Binding Text}"
                                        TextColor="White"
@@ -198,43 +212,71 @@
                                 <!-- Allegati -->
                                 <VerticalStackLayout Margin="0,0,0,4"
                                                      Spacing="6"
-                                                     IsVisible="{Binding HasAttachments}"
-                                                     BindableLayout.ItemsSource="{Binding Attachments}">
-                                    <BindableLayout.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid>
-                                                <Image IsVisible="{Binding IsImage}"
-                                                       Source="{Binding DisplayPreviewSource}"
-                                                       Aspect="AspectFill"
-                                                       HeightRequest="180">
-                                                    <Image.GestureRecognizers>
-                                                        <TapGestureRecognizer Tapped="OnOpenImageTapped" />
-                                                    </Image.GestureRecognizers>
-                                                </Image>
+                                                     MinimumHeightRequest="74">
+                                    <Border IsVisible="{Binding HasAttachmentsPlaceholder}"
+                                            Stroke="#2B2B2B"
+                                            StrokeThickness="1"
+                                            BackgroundColor="#181818"
+                                            HeightRequest="74"
+                                            HorizontalOptions="Fill">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="8" />
+                                        </Border.StrokeShape>
+                                    </Border>
 
-                                                <Grid IsVisible="{Binding IsVideo}"
-                                                      HeightRequest="180">
-                                                    <Grid.GestureRecognizers>
-                                                        <TapGestureRecognizer Tapped="OnOpenVideoTapped" />
-                                                    </Grid.GestureRecognizers>
-                                                    <Image Source="{Binding DisplayPreviewSource}"
-                                                           Aspect="AspectFill"
-                                                           HeightRequest="180" />
-                                                    <Border BackgroundColor="#66000000"
-                                                            StrokeThickness="0"
-                                                            HorizontalOptions="Center"
-                                                            VerticalOptions="Center"
-                                                            Padding="10">
-                                                        <Border.StrokeShape>
-                                                            <RoundRectangle CornerRadius="24" />
-                                                        </Border.StrokeShape>
-                                                        <Label Text="▶"
-                                                               TextColor="White"
-                                                               FontSize="20"
-                                                               VerticalOptions="Center"
-                                                               HorizontalOptions="Center" />
-                                                    </Border>
-                                                </Grid>
+                                    <VerticalStackLayout IsVisible="{Binding HasAttachments}"
+                                                         Spacing="6"
+                                                         BindableLayout.ItemsSource="{Binding Attachments}">
+                                        <BindableLayout.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid>
+                                                    <Grid IsVisible="{Binding IsPrimaryMedia}"
+                                                          HeightRequest="180"
+                                                          MinimumHeightRequest="180">
+                                                        <Border IsVisible="{Binding ShowPrimaryMediaPlaceholder}"
+                                                                Stroke="#2B2B2B"
+                                                                StrokeThickness="1"
+                                                                BackgroundColor="#1A1A1A"
+                                                                HorizontalOptions="Fill"
+                                                                VerticalOptions="Fill">
+                                                            <Border.StrokeShape>
+                                                                <RoundRectangle CornerRadius="8" />
+                                                            </Border.StrokeShape>
+                                                        </Border>
+
+                                                        <Image IsVisible="{Binding ShowImagePreview}"
+                                                               Source="{Binding DisplayPreviewSource}"
+                                                               Aspect="AspectFill"
+                                                               HeightRequest="180">
+                                                            <Image.GestureRecognizers>
+                                                                <TapGestureRecognizer Tapped="OnOpenImageTapped" />
+                                                            </Image.GestureRecognizers>
+                                                        </Image>
+
+                                                        <Grid IsVisible="{Binding ShowVideoPreview}"
+                                                              HeightRequest="180">
+                                                            <Grid.GestureRecognizers>
+                                                                <TapGestureRecognizer Tapped="OnOpenVideoTapped" />
+                                                            </Grid.GestureRecognizers>
+                                                            <Image Source="{Binding DisplayPreviewSource}"
+                                                                   Aspect="AspectFill"
+                                                                   HeightRequest="180" />
+                                                            <Border BackgroundColor="#66000000"
+                                                                    StrokeThickness="0"
+                                                                    HorizontalOptions="Center"
+                                                                    VerticalOptions="Center"
+                                                                    Padding="10">
+                                                                <Border.StrokeShape>
+                                                                    <RoundRectangle CornerRadius="24" />
+                                                                </Border.StrokeShape>
+                                                                <Label Text="▶"
+                                                                       TextColor="White"
+                                                                       FontSize="20"
+                                                                       VerticalOptions="Center"
+                                                                       HorizontalOptions="Center" />
+                                                            </Border>
+                                                        </Grid>
+                                                    </Grid>
 
                                                 <ui:LocationPreviewView IsVisible="{Binding IsLocation}"
                                                                         Latitude="{Binding Latitude}"
@@ -306,9 +348,10 @@
                                                        HorizontalOptions="Center"
                                                        VerticalOptions="End"
                                                        Margin="0,28,0,0" />
-                                            </Grid>
-                                        </DataTemplate>
-                                    </BindableLayout.ItemTemplate>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </BindableLayout.ItemTemplate>
+                                    </VerticalStackLayout>
                                 </VerticalStackLayout>
 
                                 <!-- ✅ FIX #3: azioni senza cornice grigia (no Border/Button chrome) -->
