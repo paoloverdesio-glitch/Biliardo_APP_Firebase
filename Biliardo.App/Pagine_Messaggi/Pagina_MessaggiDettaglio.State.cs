@@ -255,6 +255,11 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private bool _userNearBottom = true;
         private bool _isLoadingOlder;
+        private const int OlderTrimTimeBudgetMs = 5;
+        private const int OlderUiItemsSoftLimit = 260;
+        private readonly List<ChatMessageVm> _olderBufferPending = new();
+        private readonly object _olderBufferLock = new();
+        private CancellationTokenSource? _olderBufferApplyCts;
         private CancellationTokenSource? _appearanceCts;
 
         // Modali: evita stop aggiornamenti realtime quando apro un modal (foto fullscreen, bottom sheet, ecc.)

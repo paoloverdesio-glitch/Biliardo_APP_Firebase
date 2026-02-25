@@ -182,7 +182,124 @@ namespace Biliardo.App.Pagine_Messaggi
 
         private async Task LoadOlderMessagesAsync()
         {
-            await Task.CompletedTask;
+            if (_isLoadingOlder)
+                return;
+
+            _isLoadingOlder = true;
+            try
+            {
+                ScheduleApplyOlderBufferIfIdle();
+            }
+            finally
+            {
+                _isLoadingOlder = false;
+            }
+        }
+
+        private void ScheduleApplyOlderBufferIfIdle()
+        {
+            try { _olderBufferApplyCts?.Cancel(); } catch { }
+            try { _olderBufferApplyCts?.Dispose(); } catch { }
+
+            _olderBufferApplyCts = new CancellationTokenSource();
+            var token = _olderBufferApplyCts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(ScrollIdleDelay, token);
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    await ApplyOlderBufferIfIdleAsync(token);
+                }
+                catch { }
+            }, token);
+        }
+
+        private async Task ApplyOlderBufferIfIdleAsync(CancellationToken ct)
+        {
+            if (ct.IsCancellationRequested)
+                return;
+
+            if (IsScrollBusy())
+            {
+                LogTrimStats(0, 0, trimDeferred: true);
+                ScheduleApplyOlderBufferIfIdle();
+                return;
+            }
+
+            List<ChatMessageVm>? olderBatch = null;
+            lock (_olderBufferLock)
+            {
+                if (_olderBufferPending.Count > 0)
+                {
+                    olderBatch = new List<ChatMessageVm>(_olderBufferPending);
+                    _olderBufferPending.Clear();
+                }
+            }
+
+            // FASE 1: append older (separata dal trim)
+            if (olderBatch != null && olderBatch.Count > 0)
+            {
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    foreach (var vm in olderBatch)
+                    {
+                        if (vm != null)
+                            Messaggi.Insert(0, vm);
+                    }
+                });
+            }
+
+            // Non concatenare mutate UI nello stesso pass.
+            await Task.Yield();
+
+            if (ct.IsCancellationRequested || IsScrollBusy())
+            {
+                LogTrimStats(0, 0, trimDeferred: true);
+                ScheduleApplyOlderBufferIfIdle();
+                return;
+            }
+
+            // FASE 2: trim con budget temporale (5ms default)
+            var trimSw = Stopwatch.StartNew();
+            var trimRemovedCount = 0;
+            var trimDeferred = false;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                while (Messaggi.Count > OlderUiItemsSoftLimit)
+                {
+                    if (trimSw.ElapsedMilliseconds >= OlderTrimTimeBudgetMs)
+                    {
+                        trimDeferred = true;
+                        break;
+                    }
+
+                    if (IsScrollBusy())
+                    {
+                        trimDeferred = true;
+                        break;
+                    }
+
+                    Messaggi.RemoveAt(0);
+                    trimRemovedCount++;
+                }
+            });
+
+            trimSw.Stop();
+            LogTrimStats(trimRemovedCount, trimSw.ElapsedMilliseconds, trimDeferred);
+
+            if (trimDeferred)
+                ScheduleApplyOlderBufferIfIdle();
+        }
+
+        private static void LogTrimStats(int trimRemovedCount, long trimDurationMs, bool trimDeferred)
+        {
+            Debug.WriteLine(
+                $"[ChatDetail][OlderTrim] trim_removed_count={trimRemovedCount} trim_duration_ms={trimDurationMs} trim_deferred={trimDeferred}");
         }
 
         private async Task StartFirestoreListenersAsync(CancellationToken ct)
