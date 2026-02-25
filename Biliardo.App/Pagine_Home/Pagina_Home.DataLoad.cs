@@ -687,6 +687,7 @@ namespace Biliardo.App.Pagine_Home
                 CancelAndDispose(ref _memRefreshCts);
                 _memRefreshCts = new CancellationTokenSource();
                 var token = _memRefreshCts.Token;
+                var scheduledVersion = ++_memRefreshVersion;
 
                 _ = Task.Run(async () =>
                 {
@@ -695,22 +696,226 @@ namespace Biliardo.App.Pagine_Home
                         await Task.Delay(250, token);
                         if (token.IsCancellationRequested) return;
 
-                        // Snapshot leggero sul thread UI (solo riferimento VM), conversione DTO in background.
-                        List<HomePostVm> snapshotVms = new();
+                        var uiSw = Stopwatch.StartNew();
+                        List<CacheSnapshotPost> snapshot = new();
                         await MainThread.InvokeOnMainThreadAsync(() =>
                         {
                             var limit = Math.Max(50, PaginaHomeSettings.memory_cache_snapshot_limit);
-                            snapshotVms = Posts.Take(limit).ToList();
+                            snapshot = TakeMinimalUiSnapshot(limit);
                         });
+                        uiSw.Stop();
 
-                        var snapshot = snapshotVms.Select(ToHomePostItem).ToList();
-                        HomeFeedMemoryCache.Instance.Set(snapshot);
-                        DiagLog.Note("Home.Feed.CacheSnapshot.Count", snapshot.Count.ToString());
+                        if (token.IsCancellationRequested) return;
+                        if (scheduledVersion != Volatile.Read(ref _memRefreshVersion)) return;
+
+                        DiagLog.Note("cache_snapshot_ui_ms", uiSw.ElapsedMilliseconds.ToString());
+
+                        var bgSw = Stopwatch.StartNew();
+                        var cacheItems = ConvertSnapshotToHomePostItems(snapshot, token);
+                        if (cacheItems == null)
+                            return;
+
+                        if (scheduledVersion != Volatile.Read(ref _memRefreshVersion))
+                            return;
+
+                        HomeFeedMemoryCache.Instance.Set(cacheItems);
+                        bgSw.Stop();
+
+                        DiagLog.Note("cache_snapshot_bg_ms", bgSw.ElapsedMilliseconds.ToString());
+                        DiagLog.Note("Home.Feed.CacheSnapshot.Count", cacheItems.Count.ToString());
                     }
                     catch { }
                 }, token);
             }
         }
+
+        private List<CacheSnapshotPost> TakeMinimalUiSnapshot(int limit)
+        {
+            var boundedLimit = Math.Min(limit, Posts.Count);
+            var snapshot = new List<CacheSnapshotPost>(boundedLimit);
+
+            for (var i = 0; i < boundedLimit; i++)
+            {
+                var vm = Posts[i];
+                if (vm == null)
+                    continue;
+
+                var attachments = new List<CacheSnapshotAttachment>(vm.Attachments?.Count ?? 0);
+                if (vm.Attachments != null)
+                {
+                    foreach (var att in vm.Attachments)
+                    {
+                        if (att == null)
+                            continue;
+
+                        attachments.Add(new CacheSnapshotAttachment(
+                            Type: att.Type,
+                            StoragePath: att.StoragePath,
+                            DownloadUrl: att.DownloadUrl,
+                            FileName: att.FileName,
+                            ContentType: att.ContentType,
+                            SizeBytes: att.SizeBytes,
+                            DurationMs: att.DurationMs,
+                            Kind: att.Kind,
+                            Width: att.Width,
+                            Height: att.Height,
+                            Latitude: att.Latitude,
+                            Longitude: att.Longitude,
+                            Address: att.Address,
+                            ThumbStoragePath: att.ThumbStoragePath,
+                            LqipBase64: att.LqipBase64,
+                            PreviewType: att.PreviewType,
+                            ThumbWidth: att.ThumbWidth,
+                            ThumbHeight: att.ThumbHeight,
+                            Waveform: att.Waveform));
+                    }
+                }
+
+                snapshot.Add(new CacheSnapshotPost(
+                    PostId: vm.PostId,
+                    ClientNonce: vm.ClientNonce,
+                    AuthorUid: vm.AuthorUid,
+                    AuthorNickname: vm.AuthorNickname,
+                    AuthorFirstName: vm.AuthorFirstName,
+                    AuthorLastName: vm.AuthorLastName,
+                    AuthorAvatarPath: vm.AuthorAvatarPath,
+                    AuthorAvatarUrl: vm.AuthorAvatarUrl,
+                    CreatedAtUtc: vm.CreatedAtUtc,
+                    Text: vm.Text,
+                    Attachments: attachments,
+                    LikeCount: vm.LikeCount,
+                    CommentCount: vm.CommentCount,
+                    ShareCount: vm.ShareCount,
+                    Deleted: vm.Deleted,
+                    DeletedAtUtc: vm.DeletedAtUtc,
+                    RepostOfPostId: vm.RepostOfPostId,
+                    SchemaVersion: vm.SchemaVersion,
+                    Ready: vm.Ready,
+                    IsLiked: vm.IsLiked));
+            }
+
+            return snapshot;
+        }
+
+        private static List<FirestoreHomeFeedService.HomePostItem>? ConvertSnapshotToHomePostItems(
+            List<CacheSnapshotPost> snapshot,
+            CancellationToken token)
+        {
+            var items = new List<FirestoreHomeFeedService.HomePostItem>(snapshot.Count);
+            foreach (var post in snapshot)
+            {
+                if (token.IsCancellationRequested)
+                    return null;
+
+                var attachments = new List<FirestoreHomeFeedService.HomeAttachment>(post.Attachments.Count);
+                foreach (var att in post.Attachments)
+                {
+                    if (token.IsCancellationRequested)
+                        return null;
+
+                    attachments.Add(new FirestoreHomeFeedService.HomeAttachment(
+                        Type: att.Type ?? "",
+                        StoragePath: att.StoragePath,
+                        DownloadUrl: att.DownloadUrl,
+                        FileName: att.FileName,
+                        ContentType: att.ContentType,
+                        SizeBytes: att.SizeBytes,
+                        DurationMs: att.DurationMs,
+                        Extra: BuildAttachmentExtra(att),
+                        ThumbStoragePath: att.ThumbStoragePath,
+                        LqipBase64: att.LqipBase64,
+                        PreviewType: att.PreviewType,
+                        ThumbWidth: att.ThumbWidth,
+                        ThumbHeight: att.ThumbHeight,
+                        Waveform: att.Waveform));
+                }
+
+                items.Add(new FirestoreHomeFeedService.HomePostItem(
+                    PostId: post.PostId,
+                    AuthorUid: post.AuthorUid,
+                    AuthorNickname: post.AuthorNickname,
+                    AuthorFirstName: post.AuthorFirstName,
+                    AuthorLastName: post.AuthorLastName,
+                    AuthorAvatarPath: post.AuthorAvatarPath,
+                    AuthorAvatarUrl: post.AuthorAvatarUrl,
+                    CreatedAtUtc: post.CreatedAtUtc,
+                    Text: post.Text ?? "",
+                    Attachments: attachments,
+                    LikeCount: post.LikeCount,
+                    CommentCount: post.CommentCount,
+                    ShareCount: post.ShareCount,
+                    Deleted: post.Deleted,
+                    DeletedAtUtc: post.DeletedAtUtc,
+                    RepostOfPostId: post.RepostOfPostId,
+                    ClientNonce: post.ClientNonce,
+                    SchemaVersion: post.SchemaVersion,
+                    Ready: post.Ready,
+                    IsLiked: post.IsLiked));
+            }
+
+            return items;
+        }
+
+        private static Dictionary<string, object>? BuildAttachmentExtra(CacheSnapshotAttachment att)
+        {
+            if (att == null)
+                return null;
+
+            if (string.Equals(att.Type, "location", StringComparison.Ordinal))
+            {
+                return new Dictionary<string, object>
+                {
+                    ["lat"] = att.Latitude ?? 0,
+                    ["lon"] = att.Longitude ?? 0,
+                    ["address"] = att.Address ?? ""
+                };
+            }
+
+            return null;
+        }
+
+        private sealed record CacheSnapshotPost(
+            string PostId,
+            string? ClientNonce,
+            string AuthorUid,
+            string AuthorNickname,
+            string AuthorFirstName,
+            string AuthorLastName,
+            string? AuthorAvatarPath,
+            string? AuthorAvatarUrl,
+            DateTimeOffset CreatedAtUtc,
+            string? Text,
+            IReadOnlyList<CacheSnapshotAttachment> Attachments,
+            int LikeCount,
+            int CommentCount,
+            int ShareCount,
+            bool Deleted,
+            DateTimeOffset? DeletedAtUtc,
+            string? RepostOfPostId,
+            int SchemaVersion,
+            bool Ready,
+            bool IsLiked);
+
+        private sealed record CacheSnapshotAttachment(
+            string? Type,
+            string? StoragePath,
+            string? DownloadUrl,
+            string? FileName,
+            string? ContentType,
+            long SizeBytes,
+            long DurationMs,
+            string? Kind,
+            int? Width,
+            int? Height,
+            double? Latitude,
+            double? Longitude,
+            string? Address,
+            string? ThumbStoragePath,
+            string? LqipBase64,
+            string? PreviewType,
+            int? ThumbWidth,
+            int? ThumbHeight,
+            IReadOnlyList<int>? Waveform);
 
     }
 }
