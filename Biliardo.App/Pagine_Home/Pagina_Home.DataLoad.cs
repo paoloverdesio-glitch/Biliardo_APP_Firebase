@@ -297,7 +297,9 @@ namespace Biliardo.App.Pagine_Home
                 return (batchLocal, overflowLocal);
             });
 
-            await ApplyOlderBatchOnUiAsync(prepared.batchLocal);
+            await MeasureElapsedAsync(
+                () => ApplyOlderBatchOnUiAsync(prepared.batchLocal),
+                RecordApplyBatchDuration);
             diagScope.SetCardinality("applied_count", prepared.batchLocal.Count);
 
             if (prepared.overflowLocal != null && prepared.overflowLocal.Count > 0)
@@ -449,7 +451,9 @@ namespace Biliardo.App.Pagine_Home
                     return;
                 }
 
-                var page = await _homeFeed.GetHomePostsPageAsync(cursor, PaginaHomeSettings.page_size, ct);
+                var page = await MeasureElapsedAsync(
+                    () => _homeFeed.GetHomePostsPageAsync(cursor, PaginaHomeSettings.page_size, ct),
+                    elapsedMs => RecordFetchDuration(elapsedMs, forceLatest));
                 if (page == null || page.Count == 0)
                 {
                     // Solo per load-more: se cursor non null e page empty => fine pagine
@@ -497,7 +501,9 @@ namespace Biliardo.App.Pagine_Home
                 if (forceLatest)
                 {
                     using var applyScope = HomeFeedDiagScope.Start("apply_latest");
-                    await ApplyLatestBatchOnUiAsync(vms);
+                    await MeasureElapsedAsync(
+                        () => ApplyLatestBatchOnUiAsync(vms),
+                        RecordApplyBatchDuration);
                     applyScope.SetCardinality("applied_count", vms.Count);
                     int postsCount = 0;
                     await MainThread.InvokeOnMainThreadAsync(() => postsCount = Posts.Count);

@@ -133,6 +133,18 @@ namespace Biliardo.App.Pagine_Home
         private readonly HashSet<string> _postIdIndex = new(StringComparer.Ordinal);
         private readonly object _postIdIndexLock = new();
         private readonly IHomeFeedJankMonitor _homeFeedJankMonitor;
+        private readonly object _feedMetricsLock = new();
+        private DateTimeOffset _feedMetricsSessionStartUtc = DateTimeOffset.UtcNow;
+        private DateTimeOffset? _feedMetricsLastScrollEventUtc;
+        private int _feedMetricsScrollSamples;
+        private int _feedMetricsHitchCount;
+        private long _feedMetricsMaxScrollGapMs;
+        private long _feedMetricsFetchDurationMsSum;
+        private int _feedMetricsFetchCount;
+        private long _feedMetricsRefreshLatestDurationMsSum;
+        private int _feedMetricsRefreshLatestCount;
+        private long _feedMetricsApplyBatchDurationMsSum;
+        private int _feedMetricsApplyBatchCount;
 
         // ===================== CACHE REFRESH (DEBOUNCE) ====================
         // Evita refresh completo della cache RAM mentre si scrolla (jank).

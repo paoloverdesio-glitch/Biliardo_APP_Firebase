@@ -67,6 +67,7 @@ namespace Biliardo.App.Pagine_Home
             _pendingInitialNetworkRefresh = false;
             _pendingLoadMoreRequest = false;
             _lastKnownVisibleIndex = -1;
+            ResetFeedMetricsSession();
 
             // 1) Render immediato da RAM (se presente), senza bloccare UI.
             await LoadFromCacheAndRenderImmediatelyAsync();
@@ -112,6 +113,7 @@ namespace Biliardo.App.Pagine_Home
             CancelAndDispose(ref _previewEnsureCts);
             CancelAndDispose(ref _memRefreshCts);
             _homeFeedJankMonitor.Stop();
+            FlushFeedMetricsSession();
 
             _appearanceCts?.Cancel();
             _appearanceCts?.Dispose();
