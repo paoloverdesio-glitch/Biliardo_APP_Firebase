@@ -61,6 +61,7 @@ namespace Biliardo.App.Pagine_Home
         private void MarkScrollActivity(int firstVisibleIndex, int lastVisibleIndex)
         {
             _isUserScrolling = true;
+            _feedCoordinator.NotifyActivity();
             _lastKnownVisibleIndex = lastVisibleIndex;
 
             if (_lastFirstVisibleIndex >= 0 && firstVisibleIndex >= 0)
@@ -73,48 +74,41 @@ namespace Biliardo.App.Pagine_Home
                 _pendingPrefetchLast = lastVisibleIndex;
             }
 
-            Interlocked.Increment(ref _scrollEventStamp);
-            EnsureScrollIdleWorker();
+            QueueIdleDrainViaCoordinator();
         }
 
-        private void EnsureScrollIdleWorker()
+        // Unico orchestratore idle: demandiamo al ScrollWorkCoordinator il flush quando lo scroll è fermo.
+        private void QueueIdleDrainViaCoordinator()
         {
-            if (Interlocked.CompareExchange(ref _scrollIdleWorkerRunning, 1, 0) != 0)
+            if (Interlocked.CompareExchange(ref _idleDrainQueued, 1, 0) != 0)
                 return;
 
-            _ = Task.Run(async () =>
+            _feedCoordinator.EnqueueUiWork(async () =>
             {
                 try
                 {
-                    while (true)
-                    {
-                        var observed = Volatile.Read(ref _scrollEventStamp);
-                        await Task.Delay(ScrollIdleDelayMs);
-                        if (observed != Volatile.Read(ref _scrollEventStamp))
-                            continue;
-
-                        _isUserScrolling = false;
-
-                        if (_memRefreshDeferredBecauseScrolling)
-                        {
-                            _memRefreshDeferredBecauseScrolling = false;
-                            ScheduleMemoryCacheRefresh();
-                        }
-
-                        await ApplyOlderBufferIfIdleAsync();
-                        await RunPendingPrefetchIfIdleAsync();
-                        await RunDeferredNetworkWorkIfIdleAsync();
-                        break;
-                    }
+                    await DrainIdleWorkAsync();
                 }
-                catch { }
                 finally
                 {
-                    Interlocked.Exchange(ref _scrollIdleWorkerRunning, 0);
-                    if (_isUserScrolling)
-                        EnsureScrollIdleWorker();
+                    Interlocked.Exchange(ref _idleDrainQueued, 0);
                 }
-            });
+            }, "HOME_IDLE_DRAIN");
+        }
+
+        private async Task DrainIdleWorkAsync()
+        {
+            _isUserScrolling = false;
+
+            if (_memRefreshDeferredBecauseScrolling)
+            {
+                _memRefreshDeferredBecauseScrolling = false;
+                ScheduleMemoryCacheRefresh();
+            }
+
+            await ApplyOlderBufferIfIdleAsync();
+            await RunPendingPrefetchIfIdleAsync();
+            await RunDeferredNetworkWorkIfIdleAsync();
         }
 
         private async Task RunPendingPrefetchIfIdleAsync()
@@ -182,7 +176,10 @@ namespace Biliardo.App.Pagine_Home
         private async Task RunDeferredNetworkWorkIfIdleAsync()
         {
             if (!CanRunBackgroundNetworkNow())
+            {
+                DiagLog.Note("Home.Feed.Network.Skip", "not_idle_or_offline");
                 return;
+            }
 
             // Non accodare multiple esecuzioni: 1 solo worker alla volta.
             if (!await _networkWorkSemaphore.WaitAsync(0))
@@ -191,7 +188,10 @@ namespace Biliardo.App.Pagine_Home
             try
             {
                 if (!CanRunBackgroundNetworkNow())
+                {
+                    DiagLog.Note("Home.Feed.Network.Skip", "became_busy_or_offline");
                     return;
+                }
 
                 var ct = _appearanceCts?.Token ?? CancellationToken.None;
 
@@ -222,7 +222,9 @@ namespace Biliardo.App.Pagine_Home
                     await LoadMoreHomePostsLowPriorityAsync(ct);
                 }
 
+                var mergeSw = Stopwatch.StartNew();
                 await ApplyOlderBufferIfIdleAsync();
+                DiagLog.Note("Home.Feed.MergeIdle.DurationMs", mergeSw.ElapsedMilliseconds.ToString());
             }
             catch
             {

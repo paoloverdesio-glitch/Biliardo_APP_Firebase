@@ -43,6 +43,43 @@ namespace Biliardo.App.Pagine_Home
 {
     public partial class Pagina_Home
     {
+
+        private void TrackPostId(string? postId)
+        {
+            if (string.IsNullOrWhiteSpace(postId))
+                return;
+            lock (_postIdIndexLock)
+                _postIdIndex.Add(postId);
+        }
+
+        private void UntrackPostId(string? postId)
+        {
+            if (string.IsNullOrWhiteSpace(postId))
+                return;
+            lock (_postIdIndexLock)
+                _postIdIndex.Remove(postId);
+        }
+
+        private void RebuildPostIdIndexFromCurrentPostsUnsafe()
+        {
+            lock (_postIdIndexLock)
+            {
+                _postIdIndex.Clear();
+                for (var i = 0; i < Posts.Count; i++)
+                {
+                    var id = Posts[i].PostId;
+                    if (!string.IsNullOrWhiteSpace(id))
+                        _postIdIndex.Add(id);
+                }
+            }
+        }
+
+        private HashSet<string> SnapshotPostIdIndex()
+        {
+            lock (_postIdIndexLock)
+                return new HashSet<string>(_postIdIndex, StringComparer.Ordinal);
+        }
+
         private Task SetIsRefreshingHomeAsync(bool value)
         {
             if (MainThread.IsMainThread)
@@ -87,6 +124,7 @@ namespace Biliardo.App.Pagine_Home
                         Posts.Clear();
                         foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                             Posts.Add(vm);
+                        RebuildPostIdIndexFromCurrentPostsUnsafe();
                     });
 
                     // Preview ensure: solo se non stiamo scrollando e con token cancellabile
@@ -143,28 +181,41 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task ExecutePullToRefreshAsync()
         {
+            if (!await _refreshSemaphore.WaitAsync(0))
+            {
+                DiagLog.Note("Home.Feed.Refresh.Skip", "refresh_in_progress");
+                await SetIsRefreshingHomeAsync(false);
+                return;
+            }
+
             if (_isLoadingMore)
             {
+                DiagLog.Note("Home.Feed.Refresh.Skip", "load_in_progress");
+                _refreshSemaphore.Release();
                 await SetIsRefreshingHomeAsync(false);
                 return;
             }
 
             await SetIsRefreshingHomeAsync(true);
+            var sw = Stopwatch.StartNew();
             try
             {
+                DiagLog.Step("Home.Feed.Refresh", "Start");
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(_appearanceCts?.Token ?? CancellationToken.None, timeoutCts.Token);
 
                 // Refresh latest deve ignorare lo stato no-more delle pagine vecchie.
                 await FetchHomePostsPageAsync(linked.Token, isInitial: true, forceLatest: true);
+                DiagLog.Note("Home.Feed.Refresh.DurationMs", sw.ElapsedMilliseconds.ToString());
             }
             catch (OperationCanceledException)
             {
-                // timeout/cancel: spegne comunque lo spinner refresh.
+                DiagLog.Note("Home.Feed.Refresh.Skip", "cancelled_or_timeout");
             }
             finally
             {
                 await SetIsRefreshingHomeAsync(false);
+                _refreshSemaphore.Release();
             }
         }
 
@@ -197,21 +248,15 @@ namespace Biliardo.App.Pagine_Home
                 .OrderByDescending(x => x.CreatedAtUtc)
                 .ToList();
 
+            var indexedIds = SnapshotPostIdIndex();
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                var existing = new HashSet<string>(StringComparer.Ordinal);
-                for (var i = 0; i < Posts.Count; i++)
-                {
-                    var id = Posts[i].PostId;
-                    if (!string.IsNullOrWhiteSpace(id))
-                        existing.Add(id);
-                }
-
                 foreach (var vm in batch)
                 {
-                    if (!existing.Add(vm.PostId))
+                    if (!indexedIds.Add(vm.PostId))
                         continue;
                     Posts.Add(vm);
+                    TrackPostId(vm.PostId);
                 }
             });
 
@@ -228,8 +273,21 @@ namespace Biliardo.App.Pagine_Home
             {
                 await MainThread.InvokeOnMainThreadAsync(() =>
                 {
-                    while (Posts.Count > PaginaHomeSettings.max_post_in_ram)
-                        Posts.RemoveAt(Posts.Count - 1);
+                    const int trimChunk = 12;
+                    var toTrim = Math.Max(0, Posts.Count - PaginaHomeSettings.max_post_in_ram);
+                    var chunk = Math.Min(trimChunk, toTrim);
+                    for (var i = 0; i < chunk; i++)
+                    {
+                        var last = Posts.Count - 1;
+                        if (last < 0)
+                            break;
+                        var removedId = Posts[last].PostId;
+                        Posts.RemoveAt(last);
+                        UntrackPostId(removedId);
+                    }
+
+                    if (Posts.Count > PaginaHomeSettings.max_post_in_ram)
+                        _pendingApplyOlderBuffer = true;
                 });
             }
 
@@ -266,10 +324,16 @@ namespace Biliardo.App.Pagine_Home
         {
             // Durante scroll: nessun lavoro di rete/merge.
             if (_isUserScrolling)
+            {
+                DiagLog.Note("Home.Feed.Fetch.Skip", "scrolling");
                 return;
+            }
 
             if (_isLoadingMore || (!forceLatest && _noMoreHomePosts))
+            {
+                DiagLog.Note("Home.Feed.Fetch.Skip", _isLoadingMore ? "loading_more" : "no_more_posts");
                 return;
+            }
 
             // Evita condizioni dove un refresh iniziale non avviene mai:
             // - se posts vuoto, “initial” deve poter partire.
@@ -289,7 +353,10 @@ namespace Biliardo.App.Pagine_Home
 
                 // Re-check rete idle prima della chiamata.
                 if (!CanRunBackgroundNetworkNow())
+                {
+                    DiagLog.Note("Home.Feed.Fetch.Skip", "network_not_idle_or_offline");
                     return;
+                }
 
                 var page = await _homeFeed.GetHomePostsPageAsync(cursor, PaginaHomeSettings.page_size, ct);
                 if (page == null || page.Count == 0)
@@ -308,15 +375,7 @@ namespace Biliardo.App.Pagine_Home
                         _noMoreHomePosts = true;
                 }
 
-                HashSet<string> existingIds = new(StringComparer.Ordinal);
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    foreach (var post in Posts)
-                    {
-                        if (!string.IsNullOrWhiteSpace(post.PostId))
-                            existingIds.Add(post.PostId);
-                    }
-                });
+                var existingIds = SnapshotPostIdIndex();
 
                 var newItems = page.Where(p => !existingIds.Contains(p.PostId)).ToList();
                 if (newItems.Count == 0)
@@ -338,8 +397,12 @@ namespace Biliardo.App.Pagine_Home
                     await MainThread.InvokeOnMainThreadAsync(() =>
                     {
                         foreach (var vm in vms.OrderByDescending(x => x.CreatedAtUtc))
+                        {
                             Posts.Insert(0, vm);
+                            TrackPostId(vm.PostId);
+                        }
                     });
+                    DiagLog.Note("Home.Feed.Merge.LatestCount", vms.Count.ToString());
                     ScheduleMemoryCacheRefresh();
                 }
                 else
@@ -348,6 +411,7 @@ namespace Biliardo.App.Pagine_Home
                     {
                         _olderBuffer.AddRange(vms);
                         _pendingApplyOlderBuffer = _olderBuffer.Count > 0;
+                        DiagLog.Note("Home.Feed.OlderBuffer.Size", _olderBuffer.Count.ToString());
                     }
                 }
 
@@ -395,6 +459,8 @@ namespace Biliardo.App.Pagine_Home
             {
                 foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                     InsertSortedByCreatedAtDesc(Posts, vm);
+
+                RebuildPostIdIndexFromCurrentPostsUnsafe();
             });
 
             // Aggiorna RAM feed (debounced, non durante scroll)
@@ -493,6 +559,8 @@ namespace Biliardo.App.Pagine_Home
 
                 foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                     InsertSortedByCreatedAtDesc(Posts, vm);
+
+                RebuildPostIdIndexFromCurrentPostsUnsafe();
             });
 
             foreach (var post in visible)
@@ -523,15 +591,17 @@ namespace Biliardo.App.Pagine_Home
                         await Task.Delay(250, token);
                         if (token.IsCancellationRequested) return;
 
-                        // Snapshot sul thread UI (sicuro), poi set su cache RAM.
-                        List<FirestoreHomeFeedService.HomePostItem> snapshot = new();
+                        // Snapshot leggero sul thread UI (solo riferimento VM), conversione DTO in background.
+                        List<HomePostVm> snapshotVms = new();
                         await MainThread.InvokeOnMainThreadAsync(() =>
                         {
                             var limit = Math.Max(50, PaginaHomeSettings.memory_cache_snapshot_limit);
-                            snapshot = Posts.Take(limit).Select(ToHomePostItem).ToList();
+                            snapshotVms = Posts.Take(limit).ToList();
                         });
 
+                        var snapshot = snapshotVms.Select(ToHomePostItem).ToList();
                         HomeFeedMemoryCache.Instance.Set(snapshot);
+                        DiagLog.Note("Home.Feed.CacheSnapshot.Count", snapshot.Count.ToString());
                     }
                     catch { }
                 }, token);

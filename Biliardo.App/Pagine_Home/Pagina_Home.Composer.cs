@@ -246,6 +246,7 @@ namespace Biliardo.App.Pagine_Home
             {
                 vm.RetryCommand = RetryHomePostCommand;
                 InsertSortedByCreatedAtDesc(Posts, vm);
+                TrackPostId(vm.PostId);
 
                 // Evita rimbalzi: auto-scroll solo se l'utente è già in top e non sta scrollando.
                 if (!_isUserScrolling && (_lastKnownVisibleIndex <= 1 || _lastFirstVisibleIndex <= 1))

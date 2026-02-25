@@ -113,26 +113,25 @@ namespace Biliardo.App.Pagine_Home
         private int _pendingPrefetchLast = -1;
         private int _lastFirstVisibleIndex = -1;
         private int _lastScrollDirection = 0;
-        private int _scrollEventStamp;
-        private int _scrollIdleWorkerRunning;
         private volatile bool _pendingApplyOlderBuffer;
+        private int _idleDrainQueued;
 
         private CancellationTokenSource? _prefetchCts;
         private CancellationTokenSource? _previewEnsureCts;
-
-        private const int ScrollIdleDelayMs = 350;
 
         // ===================== POLICY RETE (NUOVA) =========================
         // Rete consentita SOLO quando lo scroll è idle, e in task di background.
         // Due trigger strategici:
         //  1) apertura app (dopo primo render)
         //  2) quasi fine lista (threshold)
-        private const int LoadMoreThresholdItems = 4; // “quasi fine”
         private volatile bool _pendingInitialNetworkRefresh;
         private volatile bool _pendingLoadMoreRequest;
         private volatile int _lastKnownVisibleIndex = -1;
 
         private readonly SemaphoreSlim _networkWorkSemaphore = new(1, 1);
+        private readonly SemaphoreSlim _refreshSemaphore = new(1, 1);
+        private readonly HashSet<string> _postIdIndex = new(StringComparer.Ordinal);
+        private readonly object _postIdIndexLock = new();
 
         // ===================== CACHE REFRESH (DEBOUNCE) ====================
         // Evita refresh completo della cache RAM mentre si scrolla (jank).
@@ -227,7 +226,10 @@ namespace Biliardo.App.Pagine_Home
 
         private void ApplyServerPostToPending(HomePostVm pending, FirestoreHomeFeedService.HomePostItem post)
         {
+            var oldPostId = pending.PostId;
             pending.PostId = post.PostId;
+            UntrackPostId(oldPostId);
+            TrackPostId(pending.PostId);
             pending.IsPendingUpload = false;
             pending.HasSendError = false;
             pending.RequiresSync = false;
