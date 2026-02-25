@@ -155,6 +155,18 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
+
+        private Task SetIsRefreshingHomeAsync(bool value)
+        {
+            if (MainThread.IsMainThread)
+            {
+                IsRefreshingHome = value;
+                return Task.CompletedTask;
+            }
+
+            return MainThread.InvokeOnMainThreadAsync(() => IsRefreshingHome = value);
+        }
+
         // ===================== 3) COSTRUTTORE ============================
         public Pagina_Home()
         {
@@ -755,6 +767,13 @@ namespace Biliardo.App.Pagine_Home
                             catch { }
                             finally
                             {
+                                var previewKey = att.GetPreviewRemotePath();
+                                if (!string.IsNullOrWhiteSpace(previewKey))
+                                {
+                                    lock (_prefetchMediaKeys)
+                                        _prefetchMediaKeys.Remove(previewKey);
+                                }
+
                                 MainThread.BeginInvokeOnMainThread(() => att.IsPreviewDownloading = false);
                                 try { sem.Release(); } catch { }
                             }
@@ -771,16 +790,27 @@ namespace Biliardo.App.Pagine_Home
         private async Task ExecutePullToRefreshAsync()
         {
             if (_isLoadingMore)
+            {
+                await SetIsRefreshingHomeAsync(false);
                 return;
+            }
 
-            IsRefreshingHome = true;
+            await SetIsRefreshingHomeAsync(true);
             try
             {
-                await FetchHomePostsPageAsync(_appearanceCts?.Token ?? CancellationToken.None, isInitial: true, forceLatest: true);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(_appearanceCts?.Token ?? CancellationToken.None, timeoutCts.Token);
+
+                // Refresh latest deve ignorare lo stato no-more delle pagine vecchie.
+                await FetchHomePostsPageAsync(linked.Token, isInitial: true, forceLatest: true);
+            }
+            catch (OperationCanceledException)
+            {
+                // timeout/cancel: spegne comunque lo spinner refresh.
             }
             finally
             {
-                IsRefreshingHome = false;
+                await SetIsRefreshingHomeAsync(false);
             }
         }
 
@@ -814,16 +844,42 @@ namespace Biliardo.App.Pagine_Home
                 _pendingApplyOlderBuffer = false;
             }
 
+            const int appendBatchSize = 16;
+            var overflow = buffered.Count > appendBatchSize
+                ? buffered.Skip(appendBatchSize).ToList()
+                : null;
+
+            var batch = buffered
+                .Take(appendBatchSize)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .ToList();
+
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
-                var existing = new HashSet<string>(Posts.Select(x => x.PostId), StringComparer.Ordinal);
-                foreach (var vm in buffered.OrderByDescending(x => x.CreatedAtUtc))
+                var existing = new HashSet<string>(StringComparer.Ordinal);
+                for (var i = 0; i < Posts.Count; i++)
+                {
+                    var id = Posts[i].PostId;
+                    if (!string.IsNullOrWhiteSpace(id))
+                        existing.Add(id);
+                }
+
+                foreach (var vm in batch)
                 {
                     if (!existing.Add(vm.PostId))
                         continue;
                     Posts.Add(vm);
                 }
             });
+
+            if (overflow != null && overflow.Count > 0)
+            {
+                lock (_olderBufferLock)
+                {
+                    _olderBuffer.InsertRange(0, overflow);
+                    _pendingApplyOlderBuffer = _olderBuffer.Count > 0;
+                }
+            }
 
             if (!PaginaHomeSettings.post_illimitati)
             {
@@ -869,7 +925,7 @@ namespace Biliardo.App.Pagine_Home
             if (_isUserScrolling)
                 return;
 
-            if (_isLoadingMore || _noMoreHomePosts)
+            if (_isLoadingMore || (!forceLatest && _noMoreHomePosts))
                 return;
 
             // Evita condizioni dove un refresh iniziale non avviene mai:
@@ -883,6 +939,9 @@ namespace Biliardo.App.Pagine_Home
             {
                 // forceLatest: cursor null => pagina più recente.
                 // load-more: cursor = oldest => pagina più vecchia.
+                if (forceLatest)
+                    _noMoreHomePosts = false;
+
                 DateTimeOffset? cursor = forceLatest ? null : _homePagingCursorUtc;
 
                 // Re-check rete idle prima della chiamata.
@@ -2178,7 +2237,8 @@ namespace Biliardo.App.Pagine_Home
                         List<FirestoreHomeFeedService.HomePostItem> snapshot = new();
                         await MainThread.InvokeOnMainThreadAsync(() =>
                         {
-                            snapshot = Posts.Select(ToHomePostItem).ToList();
+                            var limit = Math.Max(50, PaginaHomeSettings.memory_cache_snapshot_limit);
+                            snapshot = Posts.Take(limit).Select(ToHomePostItem).ToList();
                         });
 
                         HomeFeedMemoryCache.Instance.Set(snapshot);

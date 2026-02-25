@@ -14,4 +14,7 @@ public static class PaginaHomeSettings
 
     // Dimensione pagina Firestore.
     public static int page_size = 20;
+
+    // Limite snapshot cache RAM serializzato per evitare freeze su liste enormi.
+    public static int memory_cache_snapshot_limit = 300;
 }
