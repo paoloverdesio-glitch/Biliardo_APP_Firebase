@@ -2,7 +2,6 @@ using Biliardo.App.Servizi_Diagnostics;
 using System;
 #if ANDROID
 using Android.Views;
-using Android.OS;
 #endif
 
 namespace Biliardo.App.Pagine_Home
@@ -37,7 +36,7 @@ namespace Biliardo.App.Pagine_Home
             _lastFrameNs = 0;
             _jankCount = 0;
             _worstFrameMs = 0;
-            _lastFlushTicks = Environment.TickCount64;
+            _lastFlushTicks = System.Environment.TickCount64;
             Choreographer.Instance.PostFrameCallback(this);
         }
 
@@ -70,7 +69,7 @@ namespace Biliardo.App.Pagine_Home
 
             _lastFrameNs = frameTimeNanos;
 
-            var now = Environment.TickCount64;
+            var now = System.Environment.TickCount64;
             if (now - _lastFlushTicks >= 2000)
             {
                 Flush();
