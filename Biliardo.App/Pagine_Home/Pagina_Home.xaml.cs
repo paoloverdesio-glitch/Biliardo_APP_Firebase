@@ -137,6 +137,7 @@ namespace Biliardo.App.Pagine_Home
         // Evita refresh completo della cache RAM mentre si scrolla (jank).
         private readonly object _memRefreshLock = new();
         private CancellationTokenSource? _memRefreshCts;
+        private int _memRefreshVersion;
         private bool _memRefreshDeferredBecauseScrolling;
 
         public bool IsHomeLoading
