@@ -271,8 +271,8 @@ namespace Biliardo.App.Pagine_Home
                 .Select(att => new
                 {
                     Key = BuildAttachmentKey(att.Type, att.FileName, att.SizeBytes),
-                    att.LocalPath,
-                    att.ThumbLocalPath
+                    LocalPath = HomeAttachmentVm.GetValidExistingPathOrNull(att.LocalPath),
+                    ThumbLocalPath = HomeAttachmentVm.GetValidExistingPathOrNull(att.ThumbLocalPath)
                 })
                 .ToList();
 
@@ -319,11 +319,11 @@ namespace Biliardo.App.Pagine_Home
                 {
                     var rebuilt = HomeAttachmentVm.FromService(att);
                     if (!string.IsNullOrWhiteSpace(rebuilt.StoragePath) && localByFullRemote.TryGetValue(rebuilt.StoragePath, out var fullLocal))
-                        rebuilt.LocalPath = fullLocal;
+                        rebuilt.LocalPath = HomeAttachmentVm.GetValidExistingPathOrNull(fullLocal);
 
                     var previewRemotePath = rebuilt.GetPreviewRemotePath();
                     if (!string.IsNullOrWhiteSpace(previewRemotePath) && localByPreviewRemote.TryGetValue(previewRemotePath, out var previewLocal))
-                        rebuilt.ThumbLocalPath = previewLocal;
+                        rebuilt.ThumbLocalPath = HomeAttachmentVm.GetValidExistingPathOrNull(previewLocal);
 
                     vm.AttachAttachment(rebuilt);
                 }
