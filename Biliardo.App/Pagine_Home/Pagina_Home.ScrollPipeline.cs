@@ -189,6 +189,7 @@ namespace Biliardo.App.Pagine_Home
 
         private void OnHomeFeedScrolled(object sender, ItemsViewScrolledEventArgs e)
         {
+            RecordScrollGapSample();
             if (Posts.Count == 0)
             {
                 // Se la lista è vuota, abbiamo comunque bisogno del refresh iniziale rete (ma solo a idle).
