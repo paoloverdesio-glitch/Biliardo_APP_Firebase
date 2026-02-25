@@ -43,11 +43,6 @@ namespace Biliardo.App.Pagine_Home
 {
     public partial class Pagina_Home
     {
-#if WINDOWS
-using WindowsMediaSource = Windows.Media.Core.MediaSource;
-using Windows.Media.Playback;
-#endif
-
         public sealed class HomePostVm : BindableObject
         {
             private bool _isPendingUpload;
@@ -682,20 +677,13 @@ using Windows.Media.Playback;
             }
         }
 
-#if ANDROID
-                return new AndroidAudioPlayback();
-#elif WINDOWS
-                return new WindowsAudioPlayback();
-#else
-                return new NoopAudioPlayback();
-#endif
-
         private sealed class NoopAudioPlayback : IAudioPlayback
         {
             public Task PlayAsync(string filePath) => throw new NotSupportedException("Playback audio supportato solo su Android/Windows (per ora).");
             public void StopPlaybackSafe() { }
         }
 
+#if ANDROID
         private sealed class AndroidAudioPlayback : IAudioPlayback
         {
             private Android.Media.MediaPlayer? _player;
@@ -725,7 +713,9 @@ using Windows.Media.Playback;
                 catch { }
             }
         }
+#endif
 
+#if WINDOWS
         private sealed class WindowsAudioPlayback : IAudioPlayback
         {
             private MediaPlayer? _player;
@@ -754,6 +744,6 @@ using Windows.Media.Playback;
                 catch { }
             }
         }
-
+#endif
     }
 }
