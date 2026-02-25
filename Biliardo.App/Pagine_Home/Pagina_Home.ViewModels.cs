@@ -635,9 +635,9 @@ namespace Biliardo.App.Pagine_Home
                 {
                     try
                     {
-                        await Task.Delay(PreviewRefreshDebounceMs, cts.Token).ConfigureAwait(false);
+                        await Task.Delay(PreviewRefreshDebounceMs, cts.Token);
                         if (!cts.IsCancellationRequested && RebuildPreviewCache())
-                            NotifyPreviewBindingsChanged();
+                            await NotifyPreviewBindingsChangedInIdleAsync(cts.Token);
                     }
                     catch (OperationCanceledException)
                     {
@@ -654,6 +654,15 @@ namespace Biliardo.App.Pagine_Home
                         }
                     }
                 });
+            }
+
+            private async Task NotifyPreviewBindingsChangedInIdleAsync(CancellationToken cancellationToken)
+            {
+                await Task.Yield();
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                NotifyPreviewBindingsChanged();
             }
 
             private void NotifyPreviewBindingsChanged()
