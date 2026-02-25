@@ -203,24 +203,34 @@ namespace Biliardo.App.Pagine_Home
             RequestLoadMoreIfNearEnd(e.FirstVisibleItemIndex);
         }
 
-        private bool CanRunBackgroundNetworkNow()
+        private bool CanRunBackgroundNetworkNow(out HomeFeedDiagReason reason)
         {
             // Requisito: rete consentita solo a scroll fermo.
             if (_isUserScrolling)
+            {
+                reason = HomeFeedDiagReason.Scrolling;
                 return false;
+            }
 
             // Evita tentativi inutili offline: la UI non deve sembrare “bloccata”.
             if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+            {
+                reason = HomeFeedDiagReason.Offline;
                 return false;
+            }
 
+            reason = HomeFeedDiagReason.None;
             return true;
         }
 
+        private bool CanRunBackgroundNetworkNow()
+            => CanRunBackgroundNetworkNow(out _);
+
         private async Task RunDeferredNetworkWorkIfIdleAsync()
         {
-            if (!CanRunBackgroundNetworkNow())
+            if (!CanRunBackgroundNetworkNow(out var reason))
             {
-                DiagLog.Note("Home.Feed.Network.Skip", "not_idle_or_offline");
+                DiagLog.Note("Home.Feed.Network.Skip", reason.ToDiagValue());
                 return;
             }
 
@@ -230,9 +240,9 @@ namespace Biliardo.App.Pagine_Home
 
             try
             {
-                if (!CanRunBackgroundNetworkNow())
+                if (!CanRunBackgroundNetworkNow(out reason))
                 {
-                    DiagLog.Note("Home.Feed.Network.Skip", "became_busy_or_offline");
+                    DiagLog.Note("Home.Feed.Network.Skip", reason.ToDiagValue());
                     return;
                 }
 
