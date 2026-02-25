@@ -34,6 +34,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Runtime.CompilerServices;
 #if WINDOWS
 using WindowsMediaSource = Windows.Media.Core.MediaSource;
 using Windows.Media.Playback;
@@ -73,6 +74,35 @@ namespace Biliardo.App.Pagine_Home
                 }
             }
         }
+
+#if DEBUG
+        private const int PostIdIndexDebugCheckEveryMutations = 32;
+        private int _postIdIndexDebugMutationCount;
+
+        private void ValidatePostIdIndexConsistencyDebug([CallerMemberName] string? mutationPath = null)
+        {
+            _postIdIndexDebugMutationCount++;
+            if ((_postIdIndexDebugMutationCount % PostIdIndexDebugCheckEveryMutations) != 0)
+                return;
+
+            var distinctPostIdsInPosts = Posts
+                .Select(x => x?.PostId)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .Count();
+
+            int indexedCount;
+            lock (_postIdIndexLock)
+                indexedCount = _postIdIndex.Count;
+
+            if (indexedCount != distinctPostIdsInPosts)
+            {
+                DiagLog.Note(
+                    "Home.PostIdIndex.DebugMismatch",
+                    $"path={mutationPath ?? "unknown"};indexed={indexedCount};distinct_posts={distinctPostIdsInPosts}");
+            }
+        }
+#endif
 
         private HashSet<string> SnapshotPostIdIndex()
         {
@@ -122,9 +152,18 @@ namespace Biliardo.App.Pagine_Home
                     await MainThread.InvokeOnMainThreadAsync(() =>
                     {
                         Posts.Clear();
+                        lock (_postIdIndexLock)
+                            _postIdIndex.Clear();
+
                         foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
+                        {
                             Posts.Add(vm);
-                        RebuildPostIdIndexFromCurrentPostsUnsafe();
+                            TrackPostId(vm.PostId);
+                        }
+
+#if DEBUG
+                        ValidatePostIdIndexConsistencyDebug();
+#endif
                     });
 
                     // Preview ensure: solo se non stiamo scrollando e con token cancellabile
@@ -286,6 +325,10 @@ namespace Biliardo.App.Pagine_Home
                     Posts.Add(vm);
                     TrackPostId(vm.PostId);
                 }
+
+#if DEBUG
+                ValidatePostIdIndexConsistencyDebug();
+#endif
             });
         }
 
@@ -309,6 +352,10 @@ namespace Biliardo.App.Pagine_Home
 
                 if (Posts.Count > PaginaHomeSettings.max_post_in_ram)
                     _pendingApplyOlderBuffer = true;
+
+#if DEBUG
+                ValidatePostIdIndexConsistencyDebug();
+#endif
             });
         }
 
@@ -466,9 +513,25 @@ namespace Biliardo.App.Pagine_Home
             {
                 foreach (var vm in vms.OrderByDescending(x => x.CreatedAtUtc))
                 {
+                    var existingIndex = Posts
+                        .Select((post, index) => new { post, index })
+                        .FirstOrDefault(x => x.post?.PostId == vm.PostId)
+                        ?.index ?? -1;
+
+                    if (existingIndex >= 0)
+                    {
+                        var removedId = Posts[existingIndex].PostId;
+                        Posts.RemoveAt(existingIndex);
+                        UntrackPostId(removedId);
+                    }
+
                     Posts.Insert(0, vm);
                     TrackPostId(vm.PostId);
                 }
+
+#if DEBUG
+                ValidatePostIdIndexConsistencyDebug();
+#endif
             });
         }
 
@@ -486,7 +549,9 @@ namespace Biliardo.App.Pagine_Home
                 foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                     InsertSortedByCreatedAtDesc(Posts, vm);
 
-                RebuildPostIdIndexFromCurrentPostsUnsafe();
+#if DEBUG
+                ValidatePostIdIndexConsistencyDebug();
+#endif
             });
 
             // Aggiorna RAM feed (debounced, non durante scroll)
@@ -499,7 +564,7 @@ namespace Biliardo.App.Pagine_Home
                 QueueEnsurePreviewAvailable(pendingPost);
         }
 
-        private static void InsertSortedByCreatedAtDesc(ObservableCollection<HomePostVm> posts, HomePostVm item)
+        private void InsertSortedByCreatedAtDesc(ObservableCollection<HomePostVm> posts, HomePostVm item)
         {
             if (posts == null || item == null)
                 return;
@@ -509,7 +574,10 @@ namespace Biliardo.App.Pagine_Home
             {
                 var index = posts.IndexOf(existing);
                 if (index >= 0)
+                {
                     posts.RemoveAt(index);
+                    UntrackPostId(existing.PostId);
+                }
             }
 
             var insertIndex = 0;
@@ -517,6 +585,11 @@ namespace Biliardo.App.Pagine_Home
                 insertIndex++;
 
             posts.Insert(insertIndex, item);
+            TrackPostId(item.PostId);
+
+#if DEBUG
+            ValidatePostIdIndexConsistencyDebug();
+#endif
         }
 
         private void SplitHomePostsByVisibility(IEnumerable<HomePostVm> source, List<HomePostVm> visible, List<HomePostVm> pending)
@@ -579,14 +652,19 @@ namespace Biliardo.App.Pagine_Home
                         if (existing == null)
                             continue;
                         if (existing.CreatedAtUtc >= oldestSnapshotUtc.Value && !snapshotIds.Contains(existing.PostId))
+                        {
+                            UntrackPostId(existing.PostId);
                             Posts.RemoveAt(i);
+                        }
                     }
                 }
 
                 foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                     InsertSortedByCreatedAtDesc(Posts, vm);
 
-                RebuildPostIdIndexFromCurrentPostsUnsafe();
+#if DEBUG
+                ValidatePostIdIndexConsistencyDebug();
+#endif
             });
 
             foreach (var post in visible)
