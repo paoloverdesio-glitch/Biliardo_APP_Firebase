@@ -119,6 +119,7 @@ namespace Biliardo.App.Pagine_Home
         private CancellationTokenSource? _previewEnsureCts;
 
         private const int ScrollIdleDelayMs = 350;
+        private const int IdlePassBudgetMs = 32;
 
         // ===================== POLICY RETE (NUOVA) =========================
         // Rete consentita SOLO quando lo scroll è idle, e in task di background.
@@ -217,7 +218,7 @@ namespace Biliardo.App.Pagine_Home
             _pendingInitialNetworkRefresh = true;
 
             // Se già idle, avvia subito il lavoro in background (non blocca UI).
-            _ = RunDeferredNetworkWorkIfIdleAsync();
+            QueueIdleDrainViaCoordinator("on-appearing-initial-refresh");
         }
 
         protected override void OnDisappearing()
@@ -524,22 +525,46 @@ namespace Biliardo.App.Pagine_Home
 
                         _isUserScrolling = false;
 
-                        // Se avevamo differito il refresh cache, eseguilo ora (debounced).
-                        if (_memRefreshDeferredBecauseScrolling)
-                        {
-                            _memRefreshDeferredBecauseScrolling = false;
-                            ScheduleMemoryCacheRefresh();
-                        }
-
-                        // Prefetch/preview (low-priority, solo a scroll idle)
-                        await RunPendingPrefetchIfIdleAsync();
-
-                        // Rete strategica (low-priority, solo a scroll idle)
-                        await RunDeferredNetworkWorkIfIdleAsync();
+                        QueueIdleDrainViaCoordinator("scroll-idle");
                     }
                     catch { }
                 }, token);
             }
+        }
+
+        private void QueueIdleDrainViaCoordinator(string reason)
+        {
+            _feedCoordinator.EnqueueUiWork(async () =>
+            {
+                var startedAt = Stopwatch.StartNew();
+
+                if (_isUserScrolling)
+                    return;
+
+                if (_memRefreshDeferredBecauseScrolling)
+                {
+                    _memRefreshDeferredBecauseScrolling = false;
+                    ScheduleMemoryCacheRefresh();
+                }
+
+                if (startedAt.ElapsedMilliseconds >= IdlePassBudgetMs)
+                {
+                    QueueIdleDrainViaCoordinator("budget-mem-refresh");
+                    return;
+                }
+
+                // Solo orchestrazione leggera sul main thread: i blocchi pesanti girano in background.
+                _ = Task.Run(async () => await RunPendingPrefetchIfIdleAsync());
+
+                if (startedAt.ElapsedMilliseconds >= IdlePassBudgetMs)
+                {
+                    QueueIdleDrainViaCoordinator("budget-prefetch");
+                    return;
+                }
+
+                _ = Task.Run(async () => await RunDeferredNetworkWorkIfIdleAsync());
+                await Task.CompletedTask;
+            }, $"home-idle-drain:{reason}");
         }
 
         private async Task RunPendingPrefetchIfIdleAsync()
@@ -631,11 +656,19 @@ namespace Biliardo.App.Pagine_Home
                 if (!CanRunBackgroundNetworkNow() || ct.IsCancellationRequested)
                     return;
 
+                var idlePassStartedAt = Stopwatch.StartNew();
+
                 // 1) Apertura app: refresh latest page (o load se vuoto).
                 if (_pendingInitialNetworkRefresh)
                 {
                     _pendingInitialNetworkRefresh = false;
                     await LoadOrRefreshLatestHomePostsLowPriorityAsync(ct);
+                }
+
+                if (idlePassStartedAt.ElapsedMilliseconds >= IdlePassBudgetMs)
+                {
+                    QueueIdleDrainViaCoordinator("budget-initial-network");
+                    return;
                 }
 
                 if (!CanRunBackgroundNetworkNow() || ct.IsCancellationRequested)
@@ -646,7 +679,8 @@ namespace Biliardo.App.Pagine_Home
                 {
                     // Ricontrolla “near end” usando l’ultimo indice noto (simulazione utente: se ha riscrollato su, non caricare).
                     var lastVis = _lastKnownVisibleIndex;
-                    if (lastVis >= 0 && Posts.Count > 0 && lastVis >= (Posts.Count - 1 - LoadMoreThresholdItems))
+                    var postsCount = await GetPostsCountOnUiAsync();
+                    if (lastVis >= 0 && postsCount > 0 && lastVis >= (postsCount - 1 - LoadMoreThresholdItems))
                     {
                         _pendingLoadMoreRequest = false;
                         await LoadMoreHomePostsLowPriorityAsync(ct);
@@ -656,6 +690,9 @@ namespace Biliardo.App.Pagine_Home
                         _pendingLoadMoreRequest = false;
                     }
                 }
+
+                if (idlePassStartedAt.ElapsedMilliseconds >= IdlePassBudgetMs)
+                    QueueIdleDrainViaCoordinator("budget-load-more");
             }
             catch
             {
@@ -827,7 +864,7 @@ namespace Biliardo.App.Pagine_Home
                 if (!CanRunBackgroundNetworkNow())
                     return;
 
-                var page = await _homeFeed.GetHomePostsPageAsync(cursor, HomePageSize, ct);
+                var page = await Task.Run(async () => await _homeFeed.GetHomePostsPageAsync(cursor, HomePageSize, ct), ct);
                 if (page == null || page.Count == 0)
                 {
                     // Solo per load-more: se cursor non null e page empty => fine pagine
@@ -844,15 +881,7 @@ namespace Biliardo.App.Pagine_Home
                         _noMoreHomePosts = true;
                 }
 
-                HashSet<string> existingIds = new(StringComparer.Ordinal);
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    foreach (var post in Posts)
-                    {
-                        if (!string.IsNullOrWhiteSpace(post.PostId))
-                            existingIds.Add(post.PostId);
-                    }
-                });
+                var existingIds = await SnapshotExistingPostIdsOnUiAsync();
 
                 var newItems = page.Where(p => !existingIds.Contains(p.PostId)).ToList();
                 if (newItems.Count == 0)
@@ -861,21 +890,17 @@ namespace Biliardo.App.Pagine_Home
                     return;
                 }
 
-                var vms = newItems.Select(HomePostVm.FromService).ToList();
-                foreach (var vm in vms)
-                {
-                    vm.IsLiked = _likedPostIds.Contains(vm.PostId);
-                    vm.RetryCommand = RetryHomePostCommand;
-                    vm.SyncCommand = null;
-                }
+                var preparedBatch = await Task.Run(() => PrepareFetchedBatch(newItems), ct);
 
-                // Merge:
-                //  - refresh latest: inserisci sorted desc (di fatto va sopra)
-                //  - load-more older: append/insert sorted desc (va in fondo ma ordine è comunque per timestamp)
-                await AppendOlderPostsAsync(vms);
+                // Merge solo su UI: append/prepend finale.
+                if (forceLatest)
+                    await ApplyLatestBatchOnUi(preparedBatch.Visible);
+                else
+                    await ApplyOlderBatchOnUi(preparedBatch.Visible);
 
-                // Aggiorna cache RAM (debounced)
-                ScheduleMemoryCacheRefresh();
+                foreach (var pendingPost in preparedBatch.Pending)
+                    QueueEnsurePreviewAvailable(pendingPost);
+
 
                 int currentCount = 0;
                 await MainThread.InvokeOnMainThreadAsync(() => currentCount = Posts.Count);
@@ -891,7 +916,8 @@ namespace Biliardo.App.Pagine_Home
                     }
                     else if (currentCount > 0)
                     {
-                        var start = Math.Max(0, currentCount - vms.Count - 1);
+                        var preparedCount = preparedBatch.Visible.Count + preparedBatch.Pending.Count;
+                        var start = Math.Max(0, currentCount - preparedCount - 1);
                         _pendingPrefetchFirst = start;
                         _pendingPrefetchLast = currentCount - 1;
                         _ = RunPendingPrefetchIfIdleAsync();
@@ -932,6 +958,68 @@ namespace Biliardo.App.Pagine_Home
 
             foreach (var pendingPost in pending)
                 QueueEnsurePreviewAvailable(pendingPost);
+        }
+
+        private sealed record PreparedHomeBatch(List<HomePostVm> Visible, List<HomePostVm> Pending);
+
+        private PreparedHomeBatch PrepareFetchedBatch(IReadOnlyList<FirestoreHomeFeedService.HomePostItem> newItems)
+        {
+            var vms = newItems.Select(HomePostVm.FromService).ToList();
+            foreach (var vm in vms)
+            {
+                vm.IsLiked = _likedPostIds.Contains(vm.PostId);
+                vm.RetryCommand = RetryHomePostCommand;
+                vm.SyncCommand = null;
+            }
+
+            var visible = new List<HomePostVm>();
+            var pending = new List<HomePostVm>();
+            SplitHomePostsByVisibility(vms, visible, pending);
+            return new PreparedHomeBatch(visible, pending);
+        }
+
+        private async Task ApplyOlderBatchOnUi(IReadOnlyList<HomePostVm> visiblePosts)
+        {
+            if (visiblePosts == null || visiblePosts.Count == 0)
+                return;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                foreach (var vm in visiblePosts.OrderByDescending(x => x.CreatedAtUtc))
+                    InsertSortedByCreatedAtDesc(Posts, vm);
+            });
+
+            ScheduleMemoryCacheRefresh();
+
+            foreach (var post in visiblePosts)
+                QueueEnsurePreviewAvailable(post);
+        }
+
+        private async Task ApplyLatestBatchOnUi(IReadOnlyList<HomePostVm> visiblePosts)
+        {
+            await ApplyOlderBatchOnUi(visiblePosts);
+        }
+
+        private async Task<HashSet<string>> SnapshotExistingPostIdsOnUiAsync()
+        {
+            var existingIds = new HashSet<string>(StringComparer.Ordinal);
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                foreach (var post in Posts)
+                {
+                    if (!string.IsNullOrWhiteSpace(post.PostId))
+                        existingIds.Add(post.PostId);
+                }
+            });
+
+            return existingIds;
+        }
+
+        private async Task<int> GetPostsCountOnUiAsync()
+        {
+            var count = 0;
+            await MainThread.InvokeOnMainThreadAsync(() => count = Posts.Count);
+            return count;
         }
 
         private static void InsertSortedByCreatedAtDesc(ObservableCollection<HomePostVm> posts, HomePostVm item)
