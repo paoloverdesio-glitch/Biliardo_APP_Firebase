@@ -56,6 +56,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Globalization;
 using MauiMediaSource = CommunityToolkit.Maui.Views.MediaSource;
 
 #if WINDOWS
@@ -131,6 +132,22 @@ namespace Biliardo.App.Pagine_Home
         private volatile int _lastKnownVisibleIndex = -1;
 
         private readonly SemaphoreSlim _networkWorkSemaphore = new(1, 1);
+        private readonly HomeFeedJankMonitor _homeFeedJankMonitor = new();
+
+        private const int MaxPostsInMemory = 200;
+
+        private enum HomeFeedDiagReason
+        {
+            refresh_in_progress,
+            loading_more,
+            offline,
+            scrolling,
+            no_more_posts,
+            not_near_end,
+            no_new_posts,
+            cancelled,
+            idle
+        }
 
         // ===================== CACHE REFRESH (DEBOUNCE) ====================
         // Evita refresh completo della cache RAM mentre si scrolla (jank).
@@ -194,6 +211,8 @@ namespace Biliardo.App.Pagine_Home
             _pendingLoadMoreRequest = false;
             _lastKnownVisibleIndex = -1;
 
+            _homeFeedJankMonitor.Start();
+
             // 1) Render immediato da RAM (se presente), senza bloccare UI.
             await LoadFromCacheAndRenderImmediatelyAsync();
 
@@ -233,6 +252,7 @@ namespace Biliardo.App.Pagine_Home
 
             StopRealtimeUpdates();
             _listeners.Clear();
+            _homeFeedJankMonitor.Stop();
 
             CancelScrollIdleTimer();
             CancelAndDispose(ref _prefetchCts);
@@ -593,22 +613,36 @@ namespace Biliardo.App.Pagine_Home
         }
 
         private bool CanRunBackgroundNetworkNow()
+            => CanRunBackgroundNetworkNow(out _);
+
+        private bool CanRunBackgroundNetworkNow(out HomeFeedDiagReason reason)
         {
             // Requisito: rete consentita solo a scroll fermo.
             if (_isUserScrolling)
+            {
+                reason = HomeFeedDiagReason.scrolling;
                 return false;
+            }
 
             // Evita tentativi inutili offline: la UI non deve sembrare “bloccata”.
             if (Connectivity.Current.NetworkAccess != NetworkAccess.Internet)
+            {
+                reason = HomeFeedDiagReason.offline;
                 return false;
+            }
+
+            reason = HomeFeedDiagReason.idle;
 
             return true;
         }
 
         private async Task RunDeferredNetworkWorkIfIdleAsync()
         {
-            if (!CanRunBackgroundNetworkNow())
+            if (!CanRunBackgroundNetworkNow(out var startReason))
+            {
+                NoteReason("Home.NetworkWork.Skip", startReason);
                 return;
+            }
 
             // Non accodare multiple esecuzioni: 1 solo worker alla volta.
             if (!await _networkWorkSemaphore.WaitAsync(0))
@@ -616,8 +650,11 @@ namespace Biliardo.App.Pagine_Home
 
             try
             {
-                if (!CanRunBackgroundNetworkNow())
+                if (!CanRunBackgroundNetworkNow(out var gateReason))
+                {
+                    NoteReason("Home.NetworkWork.Skip", gateReason);
                     return;
+                }
 
                 var ct = _appearanceCts?.Token ?? CancellationToken.None;
 
@@ -653,6 +690,7 @@ namespace Biliardo.App.Pagine_Home
                     }
                     else
                     {
+                        NoteReason("Home.LoadMore.Skip", HomeFeedDiagReason.not_near_end);
                         _pendingLoadMoreRequest = false;
                     }
                 }
@@ -777,9 +815,14 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task LoadOrRefreshLatestHomePostsLowPriorityAsync(CancellationToken ct)
         {
+            using var refreshScope = StartHomeOpScope("refresh", HomeFeedDiagReason.idle);
+
             // Requisito: rete solo a scroll idle
-            if (!CanRunBackgroundNetworkNow())
+            if (!CanRunBackgroundNetworkNow(out var reason))
+            {
+                refreshScope.MarkReason(reason);
                 return;
+            }
 
             // Se è la prima volta in questa apertura, usiamo la pagina “latest” (cursor null) per:
             //  - riempire se vuoto
@@ -788,12 +831,16 @@ namespace Biliardo.App.Pagine_Home
 
             // Dopo fetch, ricostruisci cursor oldest per load-more.
             TryRebuildPagingCursorFromCurrentPosts();
+            refreshScope.AddMetric("posts_count", Posts.Count);
         }
 
         private async Task LoadMoreHomePostsLowPriorityAsync(CancellationToken ct)
         {
-            if (!CanRunBackgroundNetworkNow())
+            if (!CanRunBackgroundNetworkNow(out var reason))
+            {
+                NoteReason("Home.LoadMore.Skip", reason);
                 return;
+            }
 
             await FetchHomePostsPageAsync(ct, isInitial: false, forceLatest: false);
 
@@ -803,12 +850,26 @@ namespace Biliardo.App.Pagine_Home
 
         private async Task FetchHomePostsPageAsync(CancellationToken ct, bool isInitial, bool forceLatest)
         {
+            using var fetchScope = StartHomeOpScope(forceLatest ? "fetch_latest" : "fetch_older", HomeFeedDiagReason.idle);
+
             // Durante scroll: nessun lavoro di rete/merge.
             if (_isUserScrolling)
+            {
+                fetchScope.MarkReason(HomeFeedDiagReason.scrolling);
                 return;
+            }
 
-            if (_isLoadingMore || _noMoreHomePosts)
+            if (_isLoadingMore)
+            {
+                fetchScope.MarkReason(HomeFeedDiagReason.loading_more);
                 return;
+            }
+
+            if (_noMoreHomePosts)
+            {
+                fetchScope.MarkReason(HomeFeedDiagReason.no_more_posts);
+                return;
+            }
 
             // Evita condizioni dove un refresh iniziale non avviene mai:
             // - se posts vuoto, “initial” deve poter partire.
@@ -824,15 +885,20 @@ namespace Biliardo.App.Pagine_Home
                 DateTimeOffset? cursor = forceLatest ? null : _homePagingCursorUtc;
 
                 // Re-check rete idle prima della chiamata.
-                if (!CanRunBackgroundNetworkNow())
+                if (!CanRunBackgroundNetworkNow(out var gateReason))
+                {
+                    fetchScope.MarkReason(gateReason);
                     return;
+                }
 
                 var page = await _homeFeed.GetHomePostsPageAsync(cursor, HomePageSize, ct);
+                fetchScope.AddMetric("page_count", page?.Count ?? 0);
                 if (page == null || page.Count == 0)
                 {
                     // Solo per load-more: se cursor non null e page empty => fine pagine
                     if (!forceLatest)
                         _noMoreHomePosts = true;
+                    fetchScope.MarkReason(HomeFeedDiagReason.no_new_posts);
                     return;
                 }
 
@@ -855,9 +921,11 @@ namespace Biliardo.App.Pagine_Home
                 });
 
                 var newItems = page.Where(p => !existingIds.Contains(p.PostId)).ToList();
+                fetchScope.AddMetric("new_items", newItems.Count);
                 if (newItems.Count == 0)
                 {
                     // In refresh latest, è normale che non ci siano novità.
+                    fetchScope.MarkReason(HomeFeedDiagReason.no_new_posts);
                     return;
                 }
 
@@ -872,13 +940,22 @@ namespace Biliardo.App.Pagine_Home
                 // Merge:
                 //  - refresh latest: inserisci sorted desc (di fatto va sopra)
                 //  - load-more older: append/insert sorted desc (va in fondo ma ordine è comunque per timestamp)
-                await AppendOlderPostsAsync(vms);
+                var olderBuffer = forceLatest
+                    ? new List<HomePostVm>()
+                    : vms.OrderByDescending(x => x.CreatedAtUtc).ToList();
+
+                fetchScope.AddMetric("older_buffer_size", olderBuffer.Count);
+
+                var appliedCount = await AppendOlderPostsAsync(forceLatest ? vms : olderBuffer, forceLatest ? "apply_latest" : "apply_older");
+                fetchScope.AddMetric("applied_count", appliedCount);
 
                 // Aggiorna cache RAM (debounced)
                 ScheduleMemoryCacheRefresh();
+                await TrimHomeFeedIfNeededAsync();
 
                 int currentCount = 0;
                 await MainThread.InvokeOnMainThreadAsync(() => currentCount = Posts.Count);
+                fetchScope.AddMetric("posts_count", currentCount);
 
                 // Prefetch/preview: solo se idle e online
                 if (CanRunBackgroundNetworkNow())
@@ -898,6 +975,10 @@ namespace Biliardo.App.Pagine_Home
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                fetchScope.MarkReason(HomeFeedDiagReason.cancelled);
+            }
             catch (Exception ex)
             {
                 // Popup: non deve bloccare lo scroll. Qui siamo in worker (idle), ok.
@@ -909,20 +990,30 @@ namespace Biliardo.App.Pagine_Home
             }
         }
 
-        private async Task AppendOlderPostsAsync(IReadOnlyList<HomePostVm> newPosts)
+        private async Task<int> AppendOlderPostsAsync(IReadOnlyList<HomePostVm> newPosts, string operationName)
         {
+            using var applyScope = StartHomeOpScope(operationName, HomeFeedDiagReason.idle);
+
             if (newPosts == null || newPosts.Count == 0)
-                return;
+            {
+                applyScope.MarkReason(HomeFeedDiagReason.no_new_posts);
+                return 0;
+            }
 
             var visible = new List<HomePostVm>();
             var pending = new List<HomePostVm>();
             SplitHomePostsByVisibility(newPosts, visible, pending);
+
+            applyScope.AddMetric("older_buffer_size", newPosts.Count);
+            applyScope.AddMetric("applied_count", visible.Count);
 
             await MainThread.InvokeOnMainThreadAsync(() =>
             {
                 foreach (var vm in visible.OrderByDescending(x => x.CreatedAtUtc))
                     InsertSortedByCreatedAtDesc(Posts, vm);
             });
+
+            applyScope.AddMetric("posts_count", Posts.Count);
 
             // Aggiorna RAM feed (debounced, non durante scroll)
             ScheduleMemoryCacheRefresh();
@@ -932,6 +1023,8 @@ namespace Biliardo.App.Pagine_Home
 
             foreach (var pendingPost in pending)
                 QueueEnsurePreviewAvailable(pendingPost);
+
+            return visible.Count;
         }
 
         private static void InsertSortedByCreatedAtDesc(ObservableCollection<HomePostVm> posts, HomePostVm item)
@@ -2094,10 +2187,15 @@ namespace Biliardo.App.Pagine_Home
 
                 _ = Task.Run(async () =>
                 {
+                    using var snapshotScope = StartHomeOpScope("snapshot_cache", HomeFeedDiagReason.idle);
                     try
                     {
                         await Task.Delay(250, token);
-                        if (token.IsCancellationRequested) return;
+                        if (token.IsCancellationRequested)
+                        {
+                            snapshotScope.MarkReason(HomeFeedDiagReason.cancelled);
+                            return;
+                        }
 
                         // Snapshot sul thread UI (sicuro), poi set su cache RAM.
                         List<FirestoreHomeFeedService.HomePostItem> snapshot = new();
@@ -2106,10 +2204,74 @@ namespace Biliardo.App.Pagine_Home
                             snapshot = Posts.Select(ToHomePostItem).ToList();
                         });
 
+                        snapshotScope.AddMetric("posts_count", snapshot.Count);
+
                         HomeFeedMemoryCache.Instance.Set(snapshot);
                     }
                     catch { }
                 }, token);
+            }
+        }
+
+        private async Task TrimHomeFeedIfNeededAsync()
+        {
+            using var trimScope = StartHomeOpScope("trim", HomeFeedDiagReason.idle);
+            int removed = 0;
+
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                while (Posts.Count > MaxPostsInMemory)
+                {
+                    Posts.RemoveAt(Posts.Count - 1);
+                    removed++;
+                }
+
+                trimScope.AddMetric("applied_count", removed);
+                trimScope.AddMetric("posts_count", Posts.Count);
+            });
+        }
+
+        private HomeFeedDiagScope StartHomeOpScope(string operation, HomeFeedDiagReason startReason)
+            => new(operation, startReason);
+
+        private static void NoteReason(string context, HomeFeedDiagReason reason)
+            => DiagLog.Note($"{context}.reason", reason.ToString());
+
+        private sealed class HomeFeedDiagScope : IDisposable
+        {
+            private readonly string _operation;
+            private readonly Stopwatch _sw;
+            private readonly Dictionary<string, string> _metrics = new(StringComparer.Ordinal);
+            private HomeFeedDiagReason _reason;
+
+            public HomeFeedDiagScope(string operation, HomeFeedDiagReason startReason)
+            {
+                _operation = operation;
+                _reason = startReason;
+                _sw = Stopwatch.StartNew();
+                DiagLog.Step($"Home.{_operation}", "start");
+                DiagLog.Note($"Home.{_operation}.start_reason", _reason.ToString());
+            }
+
+            public void MarkReason(HomeFeedDiagReason reason)
+            {
+                _reason = reason;
+            }
+
+            public void AddMetric(string key, int value)
+            {
+                _metrics[key] = value.ToString(CultureInfo.InvariantCulture);
+            }
+
+            public void Dispose()
+            {
+                _sw.Stop();
+                foreach (var metric in _metrics)
+                    DiagLog.Note($"Home.{_operation}.{metric.Key}", metric.Value);
+
+                DiagLog.Note($"Home.{_operation}.elapsed_ms", _sw.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
+                DiagLog.Note($"Home.{_operation}.end_reason", _reason.ToString());
+                DiagLog.Step($"Home.{_operation}", "end");
             }
         }
 
