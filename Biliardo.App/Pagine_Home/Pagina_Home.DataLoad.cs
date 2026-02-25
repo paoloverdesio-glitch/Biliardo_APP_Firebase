@@ -238,60 +238,78 @@ namespace Biliardo.App.Pagine_Home
                 _pendingApplyOlderBuffer = false;
             }
 
-            const int appendBatchSize = 16;
-            var overflow = buffered.Count > appendBatchSize
-                ? buffered.Skip(appendBatchSize).ToList()
-                : null;
-
-            var batch = buffered
-                .Take(appendBatchSize)
-                .OrderByDescending(x => x.CreatedAtUtc)
-                .ToList();
-
-            var indexedIds = SnapshotPostIdIndex();
-            await MainThread.InvokeOnMainThreadAsync(() =>
+            var prepared = await Task.Run(() =>
             {
-                foreach (var vm in batch)
-                {
-                    if (!indexedIds.Add(vm.PostId))
-                        continue;
-                    Posts.Add(vm);
-                    TrackPostId(vm.PostId);
-                }
+                const int appendBatchSize = 16;
+                var overflowLocal = buffered.Count > appendBatchSize
+                    ? buffered.Skip(appendBatchSize).ToList()
+                    : null;
+
+                var batchLocal = buffered
+                    .Take(appendBatchSize)
+                    .OrderByDescending(x => x.CreatedAtUtc)
+                    .ToList();
+
+                return (batchLocal, overflowLocal);
             });
 
-            if (overflow != null && overflow.Count > 0)
+            await ApplyOlderBatchOnUiAsync(prepared.batchLocal);
+
+            if (prepared.overflowLocal != null && prepared.overflowLocal.Count > 0)
             {
                 lock (_olderBufferLock)
                 {
-                    _olderBuffer.InsertRange(0, overflow);
+                    _olderBuffer.InsertRange(0, prepared.overflowLocal);
                     _pendingApplyOlderBuffer = _olderBuffer.Count > 0;
                 }
             }
 
             if (!PaginaHomeSettings.post_illimitati)
-            {
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    const int trimChunk = 12;
-                    var toTrim = Math.Max(0, Posts.Count - PaginaHomeSettings.max_post_in_ram);
-                    var chunk = Math.Min(trimChunk, toTrim);
-                    for (var i = 0; i < chunk; i++)
-                    {
-                        var last = Posts.Count - 1;
-                        if (last < 0)
-                            break;
-                        var removedId = Posts[last].PostId;
-                        Posts.RemoveAt(last);
-                        UntrackPostId(removedId);
-                    }
-
-                    if (Posts.Count > PaginaHomeSettings.max_post_in_ram)
-                        _pendingApplyOlderBuffer = true;
-                });
-            }
+                await TrimOlderPostsOnUiAsync();
 
             ScheduleMemoryCacheRefresh();
+        }
+
+        private Task ApplyOlderBatchOnUiAsync(IReadOnlyList<HomePostVm> batch)
+        {
+            if (batch == null || batch.Count == 0)
+                return Task.CompletedTask;
+
+            var indexedIds = SnapshotPostIdIndex();
+            return MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                foreach (var vm in batch)
+                {
+                    if (!indexedIds.Add(vm.PostId))
+                        continue;
+
+                    Posts.Add(vm);
+                    TrackPostId(vm.PostId);
+                }
+            });
+        }
+
+        private Task TrimOlderPostsOnUiAsync()
+        {
+            return MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                const int trimChunk = 12;
+                var toTrim = Math.Max(0, Posts.Count - PaginaHomeSettings.max_post_in_ram);
+                var chunk = Math.Min(trimChunk, toTrim);
+                for (var i = 0; i < chunk; i++)
+                {
+                    var last = Posts.Count - 1;
+                    if (last < 0)
+                        break;
+
+                    var removedId = Posts[last].PostId;
+                    Posts.RemoveAt(last);
+                    UntrackPostId(removedId);
+                }
+
+                if (Posts.Count > PaginaHomeSettings.max_post_in_ram)
+                    _pendingApplyOlderBuffer = true;
+            });
         }
 
         private async Task LoadOrRefreshLatestHomePostsLowPriorityAsync(CancellationToken ct)
@@ -394,14 +412,7 @@ namespace Biliardo.App.Pagine_Home
 
                 if (forceLatest)
                 {
-                    await MainThread.InvokeOnMainThreadAsync(() =>
-                    {
-                        foreach (var vm in vms.OrderByDescending(x => x.CreatedAtUtc))
-                        {
-                            Posts.Insert(0, vm);
-                            TrackPostId(vm.PostId);
-                        }
-                    });
+                    await ApplyLatestBatchOnUiAsync(vms);
                     DiagLog.Note("Home.Feed.Merge.LatestCount", vms.Count.ToString());
                     ScheduleMemoryCacheRefresh();
                 }
@@ -444,6 +455,21 @@ namespace Biliardo.App.Pagine_Home
             {
                 _isLoadingMore = false;
             }
+        }
+
+        private Task ApplyLatestBatchOnUiAsync(IReadOnlyList<HomePostVm> vms)
+        {
+            if (vms == null || vms.Count == 0)
+                return Task.CompletedTask;
+
+            return MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                foreach (var vm in vms.OrderByDescending(x => x.CreatedAtUtc))
+                {
+                    Posts.Insert(0, vm);
+                    TrackPostId(vm.PostId);
+                }
+            });
         }
 
         private async Task AppendOlderPostsAsync(IReadOnlyList<HomePostVm> newPosts)
